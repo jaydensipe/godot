@@ -59,8 +59,7 @@ void ActionMapEditor::_event_config_confirmed() {
 	// Check for duplicate events on action
 	for (Ref<InputEvent> event : events) {
 		if (ev->is_match(event, true)) {
-			warning->set_text(TTR(vformat("Action \"%s\" already has an Event with this Input.", current_action_name)));
-			warning->popup_centered();
+			show_message(TTR(vformat("Action \"%s\" already has an Event with this Input.", current_action_name)));
 			return;
 		}
 	}
