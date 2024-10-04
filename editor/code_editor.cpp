@@ -66,6 +66,8 @@ void GotoLineDialog::ok_pressed() {
 	text_editor->remove_secondary_carets();
 	text_editor->unfold_line(line_number);
 	text_editor->set_caret_line(line_number);
+	text_editor->set_code_hint("");
+	text_editor->cancel_code_completion();
 	hide();
 }
 
@@ -176,6 +178,8 @@ bool FindReplaceBar::_search(uint32_t p_flags, int p_from_line, int p_from_col) 
 			text_editor->unfold_line(pos.y);
 			text_editor->select(pos.y, pos.x, pos.y, pos.x + text.length());
 			text_editor->center_viewport_to_caret(0);
+			text_editor->set_code_hint("");
+			text_editor->cancel_code_completion();
 
 			line_col_changed_for_result = true;
 		}
@@ -640,6 +644,8 @@ void FindReplaceBar::_search_text_submitted(const String &p_text) {
 	} else {
 		search_next();
 	}
+
+	callable_mp(search_text, &LineEdit::edit).call_deferred();
 }
 
 void FindReplaceBar::_replace_text_submitted(const String &p_text) {
