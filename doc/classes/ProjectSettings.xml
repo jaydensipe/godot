@@ -999,6 +999,9 @@
 			prime-run %command%
 			[/codeblock]
 		</member>
+		<member name="editor/run/automatically_add_preview_nodes_when_running_single_3d_scene" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], when using Run Current Scene or Run Specific Scene, the editor's preview Environment, Sun and Camera will be duplicated and added to the scene if no other [WorldEnvironment], [DirectionalLight3D] or [Camera3D] nodes are present. This will also be disabled for the [WorldEnvironment] and [DirectionalLight3D] if the preview Environment/Sun is toggled off.
+		</member>
 		<member name="editor/script/search_in_file_extensions" type="PackedStringArray" setter="" getter="">
 			Text-based file extensions to include in the script editor's "Find in Files" feature. You can add e.g. [code]tscn[/code] if you wish to also parse your scene files, especially if you use built-in scripts which are serialized in the scene files.
 		</member>
