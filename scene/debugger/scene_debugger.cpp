@@ -35,13 +35,17 @@
 #include "core/io/marshalls.h"
 #include "core/object/script_language.h"
 #include "core/templates/local_vector.h"
+#include "core/variant/variant_utility.h"
 #include "scene/2d/physics/collision_object_2d.h"
 #include "scene/2d/physics/collision_polygon_2d.h"
 #include "scene/2d/physics/collision_shape_2d.h"
 #ifndef _3D_DISABLED
+#include "scene/3d/camera_3d.h"
+#include "scene/3d/light_3d.h"
 #include "scene/3d/physics/collision_object_3d.h"
 #include "scene/3d/physics/collision_shape_3d.h"
 #include "scene/3d/visual_instance_3d.h"
+#include "scene/3d/world_environment.h"
 #include "scene/resources/surface_tool.h"
 #endif // _3D_DISABLED
 #include "scene/gui/popup_menu.h"
@@ -173,6 +177,42 @@ Error SceneDebugger::parse_message(void *p_user, const String &p_msg, const Arra
 		}
 		scene_tree->get_root()->set_camera_3d_override_transform(transform);
 		runtime_node_select->_queue_selection_update();
+	} else if (p_msg == "add_preview_nodes_to_current_3d_scene") {
+		ERR_FAIL_COND_V(p_args.size() < 6, ERR_INVALID_DATA);
+		const bool should_add_world_environment = p_args[0];
+		const bool should_add_directional_light_3d = p_args[1];
+		const bool should_add_camera_3d = p_args[2];
+
+		if (should_add_world_environment) {
+			WARN_PRINT_ED("Current scene was run without a WorldEnvironment node; adding preview WorldEnvironment to the scene. This will not carry over to the exported project.\nYou can disable this by changing `editor/run/automatically_add_preview_nodes_when_running_single_3d_scene` in the Project Settings.");
+
+			WorldEnvironment *world_environment = Object::cast_to<WorldEnvironment>(VariantUtilityFunctions::bytes_to_var_with_objects(p_args[3]));
+			ERR_FAIL_COND_V(world_environment == nullptr, ERR_INVALID_DATA);
+
+			scene_tree->get_root()->add_child(world_environment, false, Node::INTERNAL_MODE_BACK);
+			world_environment->set_name("WorldEnvironmentPreview");
+		}
+
+		if (should_add_directional_light_3d) {
+			WARN_PRINT_ED("Current scene was run without a DirectionalLight3D node; adding preview DirectionalLight3D to the scene. This will not carry over to the exported project.\nYou can disable this by changing `editor/run/automatically_add_preview_nodes_when_running_single_3d_scene` in the Project Settings.");
+
+			DirectionalLight3D *sun = Object::cast_to<DirectionalLight3D>(VariantUtilityFunctions::bytes_to_var_with_objects(p_args[4]));
+			ERR_FAIL_COND_V(sun == nullptr, ERR_INVALID_DATA);
+
+			scene_tree->get_root()->add_child(sun, false, Node::INTERNAL_MODE_BACK);
+			sun->set_name("SunPreview");
+		}
+
+		if (should_add_camera_3d) {
+			WARN_PRINT_ED("Current scene was run without a Camera3D node; adding preview Camera3D to the scene. This will not carry over to the exported project.\nYou can disable this by changing `editor/run/automatically_add_preview_nodes_when_running_single_3d_scene` in the Project Settings.");
+
+			Camera3D *camera_3d = Object::cast_to<Camera3D>(VariantUtilityFunctions::bytes_to_var_with_objects(p_args[5]));
+			ERR_FAIL_COND_V(camera_3d == nullptr, ERR_INVALID_DATA);
+
+			scene_tree->get_root()->add_child(camera_3d, false, Node::INTERNAL_MODE_BACK);
+			camera_3d->set_name("Camera3DPreview");
+			camera_3d->make_current();
+		}
 #endif // _3D_DISABLED
 
 	} else if (p_msg == "set_object_property") {
