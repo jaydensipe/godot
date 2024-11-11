@@ -44,7 +44,7 @@ Error RenderingDeviceDriver::_reflect_spirv(VectorView<ShaderStageSPIRVData> p_s
 		ShaderStage stage_flag = (ShaderStage)(1 << p_spirv[i].shader_stage);
 
 		if (p_spirv[i].shader_stage == SHADER_STAGE_COMPUTE) {
-			r_reflection.is_compute = true;
+			r_reflection.pipeline_type = PipelineType::COMPUTE;
 			ERR_FAIL_COND_V_MSG(p_spirv.size() != 1, FAILED,
 					"Compute shaders can only receive one stage, dedicated to compute.");
 		}
@@ -58,7 +58,7 @@ Error RenderingDeviceDriver::_reflect_spirv(VectorView<ShaderStageSPIRVData> p_s
 			ERR_FAIL_COND_V_MSG(result != SPV_REFLECT_RESULT_SUCCESS, FAILED,
 					"Reflection of SPIR-V shader stage '" + String(SHADER_STAGE_NAMES[p_spirv[i].shader_stage]) + "' failed parsing shader.");
 
-			if (r_reflection.is_compute) {
+			if (r_reflection.pipeline_type == PipelineType::COMPUTE) {
 				r_reflection.compute_local_size[0] = module.entry_points->local_size.x;
 				r_reflection.compute_local_size[1] = module.entry_points->local_size.y;
 				r_reflection.compute_local_size[2] = module.entry_points->local_size.z;
