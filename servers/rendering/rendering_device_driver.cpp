@@ -48,6 +48,10 @@ Error RenderingDeviceDriver::_reflect_spirv(VectorView<ShaderStageSPIRVData> p_s
 			ERR_FAIL_COND_V_MSG(p_spirv.size() != 1, FAILED,
 					"Compute shaders can only receive one stage, dedicated to compute.");
 		}
+		if (p_spirv[i].shader_stage == SHADER_STAGE_RAYGEN || p_spirv[i].shader_stage == SHADER_STAGE_MISS || p_spirv[i].shader_stage == SHADER_STAGE_CLOSEST_HIT) {
+			r_reflection.pipeline_type = PipelineType::RAYTRACING;
+		}
+
 		ERR_FAIL_COND_V_MSG(r_reflection.stages.has_flag(stage_flag), FAILED,
 				"Stage " + String(SHADER_STAGE_NAMES[p_spirv[i].shader_stage]) + " submitted more than once.");
 
@@ -136,8 +140,7 @@ Error RenderingDeviceDriver::_reflect_spirv(VectorView<ShaderStageSPIRVData> p_s
 							need_array_dimensions = true;
 						} break;
 						case SPV_REFLECT_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR: {
-							ERR_PRINT("Acceleration structure not supported.");
-							continue;
+							uniform.type = UNIFORM_TYPE_ACCELERATION_STRUCTURE;
 						} break;
 					}
 
