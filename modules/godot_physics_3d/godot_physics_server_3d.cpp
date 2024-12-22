@@ -134,6 +134,27 @@ real_t GodotPhysicsServer3D::shape_get_margin(RID p_shape) const {
 	return 0.0;
 }
 
+const char PER_SHAPE_MATERIAL_UNSUPPORTED_MSG[] =
+		"Per-shape material properties are not supported when using Godot Physics. Any such values will be ignored.";
+
+real_t GodotPhysicsServer3D::shape_get_friction(RID p_shape) const {
+	WARN_PRINT(PER_SHAPE_MATERIAL_UNSUPPORTED_MSG);
+	return 0.0;
+}
+
+void GodotPhysicsServer3D::shape_set_friction(RID p_shape, real_t p_friction) {
+	WARN_PRINT(PER_SHAPE_MATERIAL_UNSUPPORTED_MSG);
+}
+
+real_t GodotPhysicsServer3D::shape_get_bounce(RID p_shape) const {
+	WARN_PRINT(PER_SHAPE_MATERIAL_UNSUPPORTED_MSG);
+	return 0.0;
+}
+
+void GodotPhysicsServer3D::shape_set_bounce(RID p_shape, real_t p_bounce) {
+	WARN_PRINT(PER_SHAPE_MATERIAL_UNSUPPORTED_MSG);
+}
+
 real_t GodotPhysicsServer3D::shape_get_custom_solver_bias(RID p_shape) const {
 	const GodotShape3D *shape = shape_owner.get_or_null(p_shape);
 	ERR_FAIL_NULL_V(shape, 0);

@@ -66,6 +66,22 @@ void Shape3D::set_margin(real_t p_margin) {
 	PhysicsServer3D::get_singleton()->shape_set_margin(shape, margin);
 }
 
+Ref<PhysicsMaterial> Shape3D::get_physics_material() const {
+	return physics_material;
+}
+
+void Shape3D::set_physics_material(Ref<PhysicsMaterial> p_material) {
+	physics_material = p_material;
+	if (p_material == nullptr) {
+		// Unset friction and bounce to make the physics engine use the body's material.
+		PhysicsServer3D::get_singleton()->shape_set_friction(shape, NAN);
+		PhysicsServer3D::get_singleton()->shape_set_bounce(shape, NAN);
+	} else {
+		PhysicsServer3D::get_singleton()->shape_set_friction(shape, p_material->computed_friction());
+		PhysicsServer3D::get_singleton()->shape_set_bounce(shape, p_material->computed_bounce());
+	}
+}
+
 #ifdef DEBUG_ENABLED
 
 void Shape3D::set_debug_color(const Color &p_color) {
@@ -174,10 +190,14 @@ void Shape3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_margin", "margin"), &Shape3D::set_margin);
 	ClassDB::bind_method(D_METHOD("get_margin"), &Shape3D::get_margin);
 
+	ClassDB::bind_method(D_METHOD("set_physics_material", "material"), &Shape3D::set_physics_material);
+	ClassDB::bind_method(D_METHOD("get_physics_material"), &Shape3D::get_physics_material);
+
 	ClassDB::bind_method(D_METHOD("get_debug_mesh"), &Shape3D::get_debug_mesh);
 
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "custom_solver_bias", PROPERTY_HINT_RANGE, "0,1,0.001"), "set_custom_solver_bias", "get_custom_solver_bias");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "margin", PROPERTY_HINT_RANGE, "0,10,0.001,or_greater,suffix:m"), "set_margin", "get_margin");
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "physics_material", PROPERTY_HINT_RESOURCE_TYPE, "PhysicsMaterial"), "set_physics_material", "get_physics_material");
 }
 
 Shape3D::Shape3D() {

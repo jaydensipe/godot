@@ -49,6 +49,10 @@ JPH::ShapeRefC JoltShapedObject3D::_try_build_shape() {
 	for (JoltShapeInstance3D &shape : shapes) {
 		if (shape.is_enabled() && shape.try_build()) {
 			built_shapes += 1;
+
+			if (shape.get_shape()->uses_shape_material()) {
+				add_shape_material();
+			}
 		}
 	}
 
@@ -167,7 +171,14 @@ void JoltShapedObject3D::_update_shape() {
 		return;
 	}
 
-	space->get_body_iface().SetShape(jolt_id, jolt_shape, false, JPH::EActivation::DontActivate);
+	JPH::BodyInterface &iface = space->get_body_iface();
+
+	if (uses_shape_materials()) {
+		// This body/area uses per-shape physics materials, manifold reduction is not safe (can merge shapes with different materials).
+		iface.SetUseManifoldReduction(jolt_id, false);
+	}
+
+	iface.SetShape(jolt_id, jolt_shape, false, JPH::EActivation::DontActivate);
 
 	_shapes_built();
 }
@@ -302,6 +313,10 @@ JPH::ShapeRefC JoltShapedObject3D::build_shape() {
 void JoltShapedObject3D::add_shape(JoltShape3D *p_shape, Transform3D p_transform, bool p_disabled) {
 	JOLT_ENSURE_SCALE_NOT_ZERO(p_transform, vformat("An invalid transform was passed when adding shape at index %d to physics body '%s'.", shapes.size(), to_string()));
 
+	if (p_shape->uses_shape_material()) {
+		add_shape_material();
+	}
+
 	shapes.push_back(JoltShapeInstance3D(this, p_shape, p_transform.orthonormalized(), p_transform.basis.get_scale(), p_disabled));
 
 	_shapes_changed();
@@ -310,6 +325,9 @@ void JoltShapedObject3D::add_shape(JoltShape3D *p_shape, Transform3D p_transform
 void JoltShapedObject3D::remove_shape(const JoltShape3D *p_shape) {
 	for (int i = shapes.size() - 1; i >= 0; i--) {
 		if (shapes[i].get_shape() == p_shape) {
+			if (shapes[i].get_shape()->uses_shape_material()) {
+				remove_shape_material();
+			}
 			shapes.remove_at(i);
 		}
 	}
@@ -331,6 +349,12 @@ JoltShape3D *JoltShapedObject3D::get_shape(int p_index) const {
 
 void JoltShapedObject3D::set_shape(int p_index, JoltShape3D *p_shape) {
 	ERR_FAIL_INDEX(p_index, (int)shapes.size());
+
+	// Only add to the per-shape material count if the old shape uses a default material.
+	if (p_shape->uses_shape_material() && !shapes[p_index].get_shape()->uses_shape_material()) {
+		add_shape_material();
+	}
+
 	shapes[p_index] = JoltShapeInstance3D(this, p_shape);
 
 	_shapes_changed();
@@ -422,6 +446,18 @@ void JoltShapedObject3D::set_shape_disabled(int p_index, bool p_disabled) {
 	}
 
 	_shapes_changed();
+}
+
+void JoltShapedObject3D::add_shape_material() {
+	shape_materials_count++;
+}
+
+void JoltShapedObject3D::remove_shape_material() {
+	shape_materials_count--;
+}
+
+bool JoltShapedObject3D::uses_shape_materials() const {
+	return shape_materials_count > 0;
 }
 
 void JoltShapedObject3D::post_step(float p_step, JPH::Body &p_jolt_body) {

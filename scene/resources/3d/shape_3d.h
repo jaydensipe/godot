@@ -32,6 +32,7 @@
 #define SHAPE_3D_H
 
 #include "core/io/resource.h"
+#include "scene/resources/physics_material.h"
 
 class ArrayMesh;
 class Material;
@@ -46,6 +47,7 @@ class Shape3D : public Resource {
 
 	Ref<ArrayMesh> debug_mesh_cache;
 	Ref<Material> collision_material;
+	Ref<PhysicsMaterial> physics_material;
 
 	// Not wrapped in `#ifdef DEBUG_ENABLED` as it is used for rendering.
 	Color debug_color = Color(0.0, 0.0, 0.0, 0.0);
@@ -80,6 +82,9 @@ public:
 
 	real_t get_margin() const;
 	void set_margin(real_t p_margin);
+
+	Ref<PhysicsMaterial> get_physics_material() const;
+	void set_physics_material(Ref<PhysicsMaterial> p_material);
 
 #ifdef DEBUG_ENABLED
 	void set_debug_color(const Color &p_color);

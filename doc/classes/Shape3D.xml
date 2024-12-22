@@ -27,5 +27,9 @@
 			The collision margin for the shape. This is not used in Godot Physics.
 			Collision margins allow collision detection to be more efficient by adding an extra shell around shapes. Collision algorithms are more expensive when objects overlap by more than their margin, so a higher value for margins is better for performance, at the cost of accuracy around edges as it makes them less sharp.
 		</member>
+		<member name="physics_material" type="PhysicsMaterial" setter="set_physics_material" getter="get_physics_material">
+			The shape's physics material. This is not used in Godot Physics.
+			Setting a physics material lets the body have different parts with different properties, like the head and handle on a hammer. This can make collisions with the body more expensive.
+		</member>
 	</members>
 </class>

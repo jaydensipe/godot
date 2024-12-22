@@ -1033,6 +1033,40 @@
 				[b]Note:[/b] This is not used in Godot Physics.
 			</description>
 		</method>
+		<method name="shape_set_friction">
+			<return type="void" />
+			<param index="0" name="shape" type="RID" />
+			<param index="1" name="friction" type="float" />
+			<description>
+				Sets the friction for the shape. Passing [constant @GDScript.NAN] as the parameter will use the body's friction.
+				[b]Note:[/b] This is not used in Godot Physics.
+			</description>
+		</method>
+		<method name="shape_set_bounce">
+			<return type="void" />
+			<param index="0" name="shape" type="RID" />
+			<param index="1" name="bounce" type="float" />
+			<description>
+				Sets the bounciness for the shape. Passing [constant @GDScript.NAN] as the parameter will use the body's bounciness.
+				[b]Note:[/b] This is not used in Godot Physics.
+			</description>
+		</method>
+		<method name="shape_get_friction">
+			<return type="float" />
+			<param index="0" name="shape" type="RID" />
+			<description>
+				Returns the friction for the shape.
+				[b]Note:[/b] This is not used in Godot Physics, so will always return [code]0[/code].
+			</description>
+		</method>
+		<method name="shape_get_bounce">
+			<return type="float" />
+			<param index="0" name="shape" type="RID" />
+			<description>
+				Returns the bounciness for the shape.
+				[b]Note:[/b] This is not used in Godot Physics, so will always return [code]0[/code].
+			</description>
+		</method>
 		<method name="slider_joint_get_param" qualifiers="const">
 			<return type="float" />
 			<param index="0" name="joint" type="RID" />
