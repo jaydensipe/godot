@@ -507,11 +507,17 @@ void GameView::_embed_options_menu_menu_id_pressed(int p_id) {
 		case GAME_VIEW_SINGLE: {
 			// The dual view setting is global for both game views.
 			EditorSettings::get_singleton()->set_project_metadata("game_view", "dual_game_view", false);
-			plugin->enable_dual_game_view(false);
+			plugin->enable_dual_game_view(false, false);
 		} break;
-		case GAME_VIEW_DUAL: {
+		case GAME_VIEW_DUAL_VERTICAL: {
 			EditorSettings::get_singleton()->set_project_metadata("game_view", "dual_game_view", true);
-			plugin->enable_dual_game_view(true);
+			EditorSettings::get_singleton()->set_project_metadata("game_view", "dual_view_vertical", true);
+			plugin->enable_dual_game_view(true, true);
+		} break;
+		case GAME_VIEW_DUAL_HORIZONTAL: {
+			EditorSettings::get_singleton()->set_project_metadata("game_view", "dual_game_view", true);
+			EditorSettings::get_singleton()->set_project_metadata("game_view", "dual_view_vertical", false);
+			plugin->enable_dual_game_view(true, false);
 		} break;
 	}
 	_update_embed_menu_options();
@@ -612,8 +618,10 @@ void GameView::_update_embed_menu_options() {
 
 	if (subwindow_embedding_available) {
 		bool dual_view_enabled = (bool)EditorSettings::get_singleton()->get_project_metadata("game_view", "dual_game_view", false);
+		bool dual_view_vertical = (bool)EditorSettings::get_singleton()->get_project_metadata("game_view", "dual_view_vertical", false);
 		menu->set_item_checked(menu->get_item_index(GAME_VIEW_SINGLE), !dual_view_enabled);
-		menu->set_item_checked(menu->get_item_index(GAME_VIEW_DUAL), dual_view_enabled);
+		menu->set_item_checked(menu->get_item_index(GAME_VIEW_DUAL_VERTICAL), dual_view_enabled && dual_view_vertical);
+		menu->set_item_checked(menu->get_item_index(GAME_VIEW_DUAL_HORIZONTAL), dual_view_enabled && !dual_view_vertical);
 	}
 
 	fixed_size_button->set_pressed(embed_size_mode == SIZE_MODE_FIXED);
@@ -730,7 +738,8 @@ void GameView::_notification(int p_what) {
 			if (subwindow_embedding_available) {
 				PopupMenu *embed_popup = embed_options_menu->get_popup();
 				embed_popup->set_item_icon(embed_popup->get_item_index(GAME_VIEW_SINGLE), get_editor_theme_icon(SNAME("Panels1")));
-				embed_popup->set_item_icon(embed_popup->get_item_index(GAME_VIEW_DUAL), get_editor_theme_icon(SNAME("Panels2")));
+				embed_popup->set_item_icon(embed_popup->get_item_index(GAME_VIEW_DUAL_VERTICAL), get_editor_theme_icon(SNAME("Panels2")));
+				embed_popup->set_item_icon(embed_popup->get_item_index(GAME_VIEW_DUAL_HORIZONTAL), get_editor_theme_icon(SNAME("Panels2Alt")));
 			}
 
 			debug_mute_audio_button->set_button_icon(get_editor_theme_icon(debug_mute_audio ? SNAME("AudioMute") : SNAME("AudioStreamPlayer")));
@@ -1137,7 +1146,8 @@ GameView::GameView(Ref<GameViewDebugger> p_debugger, GameViewPlugin *p_plugin, W
 	if (subwindow_embedding_available) {
 		menu->add_separator();
 		menu->add_radio_check_item(TTR("Single Game View"), GAME_VIEW_SINGLE);
-		menu->add_radio_check_item(TTR("Dual Game View"), GAME_VIEW_DUAL);
+		menu->add_radio_check_item(TTR("Dual Game View"), GAME_VIEW_DUAL_VERTICAL);
+		menu->add_radio_check_item(TTR("Dual Game View (Alt)"), GAME_VIEW_DUAL_HORIZONTAL);
 	}
 
 	main_menu_hbox->add_spacer();
@@ -1340,8 +1350,9 @@ void GameViewPlugin::game_view_changed_window_target() {
 #endif //ANDROID_ENABLED
 }
 
-void GameViewPlugin::enable_dual_game_view(bool p_enabled) {
+void GameViewPlugin::enable_dual_game_view(bool p_enabled, bool p_vertical) {
 	dual_view_enabled = p_enabled;
+	game_view_layout->set_vertical(p_vertical);
 	determine_dual_view_visible();
 }
 
@@ -1533,7 +1544,7 @@ GameViewPlugin::GameViewPlugin() {
 	debugger.instantiate();
 
 #ifndef ANDROID_ENABLED
-	game_view_layout = memnew(VSplitContainer);
+	game_view_layout = memnew(SplitContainer);
 
 	top_window_wrapper = memnew(WindowWrapper);
 	top_window_wrapper->set_window_title(vformat(TTR("%s - Godot Engine"), TTR("Game Workspace")));
@@ -1541,6 +1552,7 @@ GameViewPlugin::GameViewPlugin() {
 
 	top_game_view = memnew(GameView(top_debugger, this, top_window_wrapper, "top_game_view"));
 	top_game_view->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	top_game_view->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	top_game_view->set_time_buttons_enabled(false);
 	top_game_view->set_debugger_controls_enabled(false);
 
@@ -1548,6 +1560,7 @@ GameViewPlugin::GameViewPlugin() {
 
 	game_view_layout->add_child(top_window_wrapper);
 	top_window_wrapper->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	top_window_wrapper->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	top_window_wrapper->show();
 	top_window_wrapper->connect("window_visibility_changed", callable_mp(this, &GameViewPlugin::_focus_another_editor).unbind(1));
 
@@ -1557,16 +1570,19 @@ GameViewPlugin::GameViewPlugin() {
 
 	game_view = memnew(GameView(debugger, this, window_wrapper, "main_game_view"));
 	game_view->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	game_view->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 
 	window_wrapper->set_wrapped_control(game_view, nullptr);
 
 	game_view_layout->add_child(window_wrapper);
 	window_wrapper->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	window_wrapper->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	window_wrapper->show();
 	window_wrapper->connect("window_visibility_changed", callable_mp(this, &GameViewPlugin::_focus_another_editor).unbind(1));
 
 	EditorNode::get_singleton()->get_editor_main_screen()->get_control()->add_child(game_view_layout);
 	game_view_layout->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	game_view_layout->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	game_view_layout->hide();
 
 #endif // ANDROID_ENABLED
@@ -1575,9 +1591,9 @@ GameViewPlugin::GameViewPlugin() {
 #ifndef ANDROID_ENABLED
 	if (DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_SUBWINDOW_EMBEDDING)) {
 		bool metadata_dual_view_enabled = (bool)EditorSettings::get_singleton()->get_project_metadata("game_view", "dual_game_view", false);
-		enable_dual_game_view(metadata_dual_view_enabled);
+		enable_dual_game_view(metadata_dual_view_enabled, EditorSettings::get_singleton()->get_project_metadata("game_view", "dual_view_vertical", false));
 	} else {
-		enable_dual_game_view(false);
+		enable_dual_game_view(false, false);
 	}
 #endif // ANDROID_ENABLED
 }

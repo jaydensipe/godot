@@ -106,7 +106,8 @@ class GameView : public VBoxContainer {
 		WINDOW_SELECT_MAIN,
 		WINDOW_SELECT_CUSTOM,
 		GAME_VIEW_SINGLE,
-		GAME_VIEW_DUAL,
+		GAME_VIEW_DUAL_VERTICAL,
+		GAME_VIEW_DUAL_HORIZONTAL,
 	};
 
 	enum EmbedSizeMode {
@@ -247,7 +248,7 @@ class GameViewPlugin : public EditorPlugin {
 
 	inline static GameViewPlugin *singleton = nullptr;
 
-	VSplitContainer *game_view_layout = nullptr;
+	SplitContainer *game_view_layout = nullptr;
 
 #ifndef ANDROID_ENABLED
 	GameView *game_view = nullptr;
@@ -303,7 +304,7 @@ public:
 	GameView *get_main_game_view();
 
 	void game_view_changed_window_target();
-	void enable_dual_game_view(bool p_enabled);
+	void enable_dual_game_view(bool p_enabled, bool p_vertical);
 	void determine_dual_view_visible();
 
 #ifndef ANDROID_ENABLED
