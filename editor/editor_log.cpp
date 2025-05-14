@@ -38,6 +38,7 @@
 #include "editor/editor_settings.h"
 #include "editor/editor_string_names.h"
 #include "editor/themes/editor_scale.h"
+#include "plugins/editor_console.h"
 #include "scene/gui/separator.h"
 #include "scene/resources/font.h"
 
@@ -462,6 +463,15 @@ EditorLog::EditorLog() {
 	log->connect("meta_clicked", callable_mp(this, &EditorLog::_meta_clicked));
 	vb_left->add_child(log);
 
+	console = memnew(EditorConsolePlugin);
+	console->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	console->set_placeholder(TTR("> Enter Console Command"));
+	console->set_accessibility_name(TTRC("Enter Console Command"));
+	console->set_custom_minimum_size(Size2(50, 50));
+	console->set_visible(true);
+	console->connect(SceneStringName(text_submitted), callable_mp(console, &EditorConsolePlugin::_submit_command));
+	console->connect(SceneStringName(text_changed), callable_mp(console, &EditorConsolePlugin::_verify_command));
+
 	// Search box
 	search_box = memnew(LineEdit);
 	search_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -471,6 +481,8 @@ EditorLog::EditorLog() {
 	search_box->set_visible(true);
 	search_box->connect(SceneStringName(text_changed), callable_mp(this, &EditorLog::_search_changed));
 	vb_left->add_child(search_box);
+
+	vb_left->add_child(console);
 
 	VBoxContainer *vb_right = memnew(VBoxContainer);
 	hb->add_child(vb_right);
@@ -532,6 +544,7 @@ EditorLog::EditorLog() {
 
 	// Message Type Filters.
 	vb_right->add_child(memnew(HSeparator));
+	vb_right->set_v_size_flags(SIZE_EXPAND_FILL);
 
 	LogFilter *std_filter = memnew(LogFilter(MSG_TYPE_STD));
 	std_filter->initialize_button(TTRC("Standard Messages"), TTRC("Toggle visibility of standard output messages."), callable_mp(this, &EditorLog::_set_filter_active));
@@ -553,6 +566,11 @@ EditorLog::EditorLog() {
 	editor_filter->initialize_button(TTRC("Editor Messages"), TTRC("Toggle visibility of editor messages."), callable_mp(this, &EditorLog::_set_filter_active));
 	vb_right->add_child(editor_filter->toggle_button);
 	type_filter_map.insert(MSG_TYPE_EDITOR, editor_filter);
+
+	Button* button = memnew(Button);
+	vb_right->add_child(button);
+	button->set_anchor(SIDE_BOTTOM, ANCHOR_BEGIN);
+
 
 	add_message(GODOT_VERSION_FULL_NAME " (c) 2007-present Juan Linietsky, Ariel Manzur & Godot Contributors.");
 
