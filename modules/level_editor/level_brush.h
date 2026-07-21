@@ -16,9 +16,6 @@
 /* permit persons to whom the Software is furnished to do so, subject to  */
 /* the following conditions:                                              */
 /*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
 /* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
 /* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
 /* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
@@ -30,32 +27,36 @@
 
 #pragma once
 
-#include "core/math/plane.h"
 #include "core/templates/hash_set.h"
+#include "core/templates/local_vector.h"
 #include "scene/3d/node_3d.h"
 
 class Material;
 
-// A convex solid defined by a set of planes, Hammer-style.
-// All brush geometry (polygons, edges, vertices) is derived from plane
-// intersections, in the brush's local space.
+// A brush solid stored as explicit mesh topology (vertices + polygon faces)
+// in local space. Faces are n-gons (wound outward) and may be non-planar;
+// they are fan-triangulated for rendering, collision, and occluders.
+//
+// This is the Hammer/Blender-style data model: editing a vertex moves only
+// that vertex; faces deform to fit.
 class LevelBrush : public Node3D {
 	GDCLASS(LevelBrush, Node3D);
 
-	Vector<Plane> planes;
-	Vector<Ref<Material>> face_materials;
-
-	static Vector3 _snap(const Vector3 &p_v);
-
 public:
-	static constexpr real_t SNAP_EPSILON = CMP_EPSILON;
-
 	struct EdgeKey {
-		Vector3 a;
-		Vector3 b;
+		int a = -1;
+		int b = -1;
 
 		EdgeKey() {}
-		EdgeKey(const Vector3 &p_a, const Vector3 &p_b);
+		EdgeKey(int p_a, int p_b) {
+			if (p_a < p_b) {
+				a = p_a;
+				b = p_b;
+			} else {
+				a = p_b;
+				b = p_a;
+			}
+		}
 
 		bool operator==(const EdgeKey &p_other) const {
 			return a == p_other.a && b == p_other.b;
@@ -63,63 +64,68 @@ public:
 	};
 
 	struct EdgeKeyHasher {
-		static uint32_t hash(const EdgeKey &p_key);
+		static _FORCE_INLINE_ uint32_t hash(const EdgeKey &p_key) {
+			uint32_t h = hash_murmur3_one_32((uint32_t)p_key.a);
+			return hash_murmur3_one_32((uint32_t)p_key.b, h);
+		}
 	};
 
-	int get_face_count() const { return planes.size(); }
+private:
+	LocalVector<Vector3> verts;
+	// Faces as index loops into verts, wound so they face outward.
+	LocalVector<LocalVector<int>> faces;
+	LocalVector<Ref<Material>> face_materials;
 
-	void set_face_plane(int p_face, const Plane &p_plane);
-	Plane get_face_plane(int p_face) const;
+	void _update_face_count_storage();
+
+public:
+	int get_vertex_count() const { return (int)verts.size(); }
+	Vector3 get_vertex(int p_index) const;
+	void set_vertex(int p_index, const Vector3 &p_pos);
+
+	int get_face_count() const { return (int)faces.size(); }
+	LocalVector<int> get_face(int p_face) const;
+	Vector3 get_face_normal(int p_face) const; // Newell's method, robust for n-gons.
+	Vector3 get_face_center(int p_face) const;
 
 	void set_face_material(int p_face, const Ref<Material> &p_material);
 	Ref<Material> get_face_material(int p_face) const;
 
-	// Serialized form.
-	void set_planes_data(const PackedVector4Array &p_planes);
-	PackedVector4Array get_planes_data() const;
-	void set_face_materials_data(const Array &p_materials);
-	Array get_face_materials_data() const;
-
-	// Returns the local-space polygon for face p_face (deduplicated, wound
-	// so it faces away from the solid). Empty if degenerate.
-	Vector<Vector3> get_face_polygon(int p_face) const;
-
-	// All unique edges and vertices of the convex solid (local space).
+	// All unique edges as vertex-index pairs.
 	HashSet<EdgeKey, EdgeKeyHasher> get_edges() const;
-	Vector<Vector3> get_vertices() const;
 
 	Vector3 get_center() const;
-	bool is_valid() const { return !get_vertices().is_empty(); }
+	bool is_valid() const { return verts.size() >= 4 && !faces.is_empty(); }
 
-	// Plane-based ray test in local space; returns entry face or -1.
+	// Ray test against fan-triangulated faces. Returns face index or -1.
+	// Ray is in local space.
 	int ray_intersect(const Vector3 &p_origin, const Vector3 &p_dir, real_t &r_dist) const;
 
-	// Initialize as an axis-aligned box with the given local-space AABB.
+	// Initialize as an axis-aligned box (8 verts, 6 quads) with the given
+	// local-space AABB.
 	void setup_box(const AABB &p_aabb);
+
+	// Move vertices directly (Blender-style). Only the given vertices move.
+	void move_vertices(const Vector<int> &p_vertices, const Vector3 &p_delta);
+
+	// Extrude a face: duplicates the face loop, offsets it along the face
+	// normal, and stitches side quads. Returns the new cap face index (or -1).
+	int extrude_face(int p_face, real_t p_distance);
+
+	// Bake helpers (local space; caller applies transforms).
+	void get_bake_surface_data(int p_face, Vector<Vector3> &r_vertices, Vector<Vector3> &r_normals, Vector<Vector2> &r_uvs) const;
+	void get_collision_faces(Vector<Vector3> &r_faces) const;
 
 	// Deep copy (not added to any tree). Caller owns the result.
 	LevelBrush *duplicate_brush() const;
 
-	// Move the given faces along p_delta (any direction, local space).
-	void translate_faces(const Vector<int> &p_faces, const Vector3 &p_delta);
-
-	// Deformation move: recompute the planes of faces incident to each moved
-	// element so the vertices/edges themselves move (normals tilt, Hammer-style).
-	// p_deltas maps original snapped vertex position -> new local-space position.
-	void move_elements(const Vector<Vector3> &p_vertices, const Vector<EdgeKey> &p_edges, const Vector<int> &p_faces, const Vector3 &p_delta);
-
-	// Extrude faces outward along their normals (positive = expand).
-	void extrude_faces(const Vector<int> &p_faces, real_t p_distance);
-	void extrude_edge(const EdgeKey &p_edge, real_t p_distance);
-	void extrude_vertex(const Vector3 &p_vertex, real_t p_distance);
-
-	// Merge faces that ended up coplanar. Keeps the material of the lowest
-	// merged face index.
-	void merge_coplanar_faces();
-
-	// Bake helpers. Local space; the caller applies transforms.
-	void get_bake_surface_data(int p_face, Vector<Vector3> &r_vertices, Vector<Vector3> &r_normals, Vector<Vector2> &r_uvs) const;
-	void get_collision_faces(Vector<Vector3> &r_faces) const;
+	// Serialized form.
+	void set_vertices_data(const PackedVector3Array &p_verts);
+	PackedVector3Array get_vertices_data() const;
+	void set_faces_data(const Array &p_faces); // Array of PackedInt32Array.
+	Array get_faces_data() const;
+	void set_face_materials_data(const Array &p_materials);
+	Array get_face_materials_data() const;
 
 	LevelBrush() {}
 	virtual ~LevelBrush() {}

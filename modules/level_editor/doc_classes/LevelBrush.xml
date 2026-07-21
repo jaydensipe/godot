@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <class name="LevelBrush" inherits="Node3D" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
 	<brief_description>
-		A convex solid defined by a set of planes, Hammer-style.
+		A brush solid stored as explicit mesh topology (vertices + polygon faces).
 	</brief_description>
 	<description>
-		LevelBrush stores a convex volume as a list of outward-facing planes (in local space) plus an optional per-face material. Polygons, edges, and vertices are derived from plane intersections on demand, so plane edits (extrude, clip) always produce a watertight solid.
+		LevelBrush stores a solid as local-space vertices and outward-wound n-gon faces, with an optional per-face material. Faces may be non-planar; they are fan-triangulated for rendering, collision, and occluders.
+		Editing a vertex moves only that vertex and the faces deform to fit (Blender-style), while face extrusion creates new cap + wall geometry (Hammer-style).
 		Brushes are added as children of a [LevelMap] node and can be moved, rotated, and scaled like any other [Node3D].
 	</description>
 	<tutorials>
@@ -13,7 +14,7 @@
 		<method name="get_face_count">
 			<return type="int" />
 			<description>
-				Returns the number of faces (planes).
+				Returns the number of faces.
 			</description>
 		</method>
 		<method name="get_face_material">
@@ -23,11 +24,17 @@
 				Returns the material assigned to [param face], or [code]null[/code].
 			</description>
 		</method>
-		<method name="get_face_plane">
-			<return type="Plane" />
-			<param index="0" name="face" type="int" />
+		<method name="get_vertex">
+			<return type="Vector3" />
+			<param index="0" name="index" type="int" />
 			<description>
-				Returns the outward-facing plane of [param face].
+				Returns the local-space position of vertex [param index].
+			</description>
+		</method>
+		<method name="get_vertex_count">
+			<return type="int" />
+			<description>
+				Returns the number of vertices.
 			</description>
 		</method>
 		<method name="set_face_material">
@@ -38,19 +45,19 @@
 				Assigns [param material] to [param face].
 			</description>
 		</method>
-		<method name="set_face_plane">
+		<method name="set_vertex">
 			<return type="void" />
-			<param index="0" name="face" type="int" />
-			<param index="1" name="plane" type="Plane" />
+			<param index="0" name="index" type="int" />
+			<param index="1" name="pos" type="Vector3" />
 			<description>
-				Replaces the plane of [param face]. The brush geometry is recomputed on next access.
+				Sets the local-space position of vertex [param index].
 			</description>
 		</method>
 		<method name="setup_box">
 			<return type="void" />
 			<param index="0" name="aabb" type="AABB" />
 			<description>
-				Initializes this brush as an axis-aligned box covering [param aabb] in local space.
+				Initializes this brush as an axis-aligned box (8 vertices, 6 quad faces) covering [param aabb] in local space.
 			</description>
 		</method>
 	</methods>

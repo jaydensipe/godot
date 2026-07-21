@@ -625,18 +625,17 @@ bool LevelEditorScreen::_pick_face(Camera3D *p_camera, const Vector2 &p_screen, 
 	return false;
 }
 
-bool LevelEditorScreen::_pick_vertex(Camera3D *p_camera, const Vector2 &p_screen, LevelBrush *&r_brush, Vector3 &r_vertex) const {
+bool LevelEditorScreen::_pick_vertex(Camera3D *p_camera, const Vector2 &p_screen, LevelBrush *&r_brush, int &r_vertex) const {
 	if (!current_map || !selected_brush) {
 		return false;
 	}
 	Transform3D gt = selected_brush->get_global_transform();
-	Vector<Vector3> verts = selected_brush->get_vertices();
 
 	real_t best = 16.0; // pixels.
 	bool found = false;
-	Vector3 best_v;
-	for (const Vector3 &v : verts) {
-		Vector3 w = gt.xform(v);
+	int best_v = -1;
+	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
+		Vector3 w = gt.xform(selected_brush->get_vertex(i));
 		if (p_camera->is_position_behind(w)) {
 			continue;
 		}
@@ -644,7 +643,7 @@ bool LevelEditorScreen::_pick_vertex(Camera3D *p_camera, const Vector2 &p_screen
 		real_t d = sp.distance_to(p_screen);
 		if (d < best) {
 			best = d;
-			best_v = v;
+			best_v = i;
 			found = true;
 		}
 	}
@@ -667,8 +666,8 @@ bool LevelEditorScreen::_pick_edge(Camera3D *p_camera, const Vector2 &p_screen, 
 
 	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = selected_brush->get_edges();
 	for (const LevelBrush::EdgeKey &e : edges) {
-		Vector3 wa = gt.xform(e.a);
-		Vector3 wb = gt.xform(e.b);
+		Vector3 wa = gt.xform(selected_brush->get_vertex(e.a));
+		Vector3 wb = gt.xform(selected_brush->get_vertex(e.b));
 		if (p_camera->is_position_behind(wa) || p_camera->is_position_behind(wb)) {
 			continue;
 		}
@@ -710,11 +709,7 @@ void LevelEditorScreen::_update_hover(LevelEditorViewport *p_vp, const Vector2 &
 			_pick_face(cam, p_mouse, hover_brush, hover_face, hit);
 		} break;
 		case MODE_VERTEX: {
-			Vector3 v;
-			has_hover_vertex = _pick_vertex(cam, p_mouse, hover_brush, v);
-			if (has_hover_vertex) {
-				hover_vertex = v;
-			}
+			has_hover_vertex = _pick_vertex(cam, p_mouse, hover_brush, hover_vertex);
 		} break;
 		case MODE_EDGE: {
 			has_hover_edge = _pick_edge(cam, p_mouse, hover_brush, hover_edge);
@@ -883,28 +878,20 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 			} break;
 			case MODE_VERTEX: {
 				LevelBrush *brush = nullptr;
-				Vector3 v;
+				int v;
 				if (_pick_vertex(p_camera, mb->get_position(), brush, v)) {
 					if (brush != selected_brush) {
 						selected_brush = brush;
 						selected_vertices.clear();
 						EditorInterface::get_singleton()->edit_node(brush);
 					}
-					bool already = false;
-					for (int i = 0; i < selected_vertices.size(); i++) {
-						if (LevelBrush::EdgeKey(selected_vertices[i], selected_vertices[i]) == LevelBrush::EdgeKey(v, v)) {
-							already = true;
-							if (add) {
-								selected_vertices.remove_at(i);
-							}
-							break;
-						}
-					}
-					if (!already) {
+					if (selected_vertices.has(v) && add) {
+						selected_vertices.erase(v);
+					} else {
 						if (!add) {
 							selected_vertices.clear();
 						}
-						selected_vertices.push_back(v);
+						selected_vertices.insert(v);
 					}
 				} else if (!add) {
 					selected_vertices.clear();
@@ -989,9 +976,9 @@ void LevelEditorScreen::_extrude_pressed() {
 		return;
 	}
 
-	// Snapshot the serialized plane data so undo can restore the previous solid
-	// in one property write (safe even if the face count changes).
-	PackedVector4Array old_data = selected_brush->get_planes_data();
+	// Snapshot serialized topology so undo restores the whole brush in one go.
+	PackedVector3Array old_verts = selected_brush->get_vertices_data();
+	Array old_faces = selected_brush->get_faces_data();
 
 	LevelBrush *working = selected_brush->duplicate_brush();
 	bool did = false;
@@ -1000,32 +987,42 @@ void LevelEditorScreen::_extrude_pressed() {
 			if (selected_faces.is_empty()) {
 				break;
 			}
-			Vector<int> faces;
+			// Extrude each selected face into new geometry (cap + side walls).
+			// Process from highest index down so removals don't shift pending
+			// indices.
+			Vector<int> sorted;
 			for (int f : selected_faces) {
-				faces.push_back(f);
+				sorted.push_back(f);
 			}
-			working->extrude_faces(faces, extrude_amount);
-			working->merge_coplanar_faces();
+			sorted.sort();
+			for (int i = sorted.size() - 1; i >= 0; i--) {
+				working->extrude_face(sorted[i], extrude_amount);
+			}
 			did = true;
 		} break;
 		case MODE_EDGE: {
 			if (selected_edges.is_empty()) {
 				break;
 			}
+			// Move the edge's vertices along the average of their adjacent face
+			// normals (a directional "pull" rather than new geometry).
+			Vector<int> verts;
 			for (const LevelBrush::EdgeKey &e : selected_edges) {
-				working->extrude_edge(e, extrude_amount);
+				verts.push_back(e.a);
+				verts.push_back(e.b);
 			}
-			working->merge_coplanar_faces();
+			working->move_vertices(verts, Vector3(0, extrude_amount, 0));
 			did = true;
 		} break;
 		case MODE_VERTEX: {
 			if (selected_vertices.is_empty()) {
 				break;
 			}
-			for (const Vector3 &v : selected_vertices) {
-				working->extrude_vertex(v, extrude_amount);
+			Vector<int> verts;
+			for (int v : selected_vertices) {
+				verts.push_back(v);
 			}
-			working->merge_coplanar_faces();
+			working->move_vertices(verts, Vector3(0, extrude_amount, 0));
 			did = true;
 		} break;
 		default:
@@ -1040,12 +1037,15 @@ void LevelEditorScreen::_extrude_pressed() {
 	LevelBrush *target = selected_brush;
 	LevelMap *map = current_map;
 
-	PackedVector4Array new_data = working->get_planes_data();
+	PackedVector3Array new_verts = working->get_vertices_data();
+	Array new_faces = working->get_faces_data();
 
 	EditorUndoRedoManager::get_singleton()->create_action(TTR("Extrude Brush"));
-	EditorUndoRedoManager::get_singleton()->add_do_property(target, "planes", new_data);
+	EditorUndoRedoManager::get_singleton()->add_do_property(target, "vertices", new_verts);
+	EditorUndoRedoManager::get_singleton()->add_do_property(target, "faces", new_faces);
 	EditorUndoRedoManager::get_singleton()->add_do_method(map, "refresh");
-	EditorUndoRedoManager::get_singleton()->add_undo_property(target, "planes", old_data);
+	EditorUndoRedoManager::get_singleton()->add_undo_property(target, "vertices", old_verts);
+	EditorUndoRedoManager::get_singleton()->add_undo_property(target, "faces", old_faces);
 	EditorUndoRedoManager::get_singleton()->add_undo_method(map, "refresh");
 	EditorUndoRedoManager::get_singleton()->commit_action();
 	memdelete(working);
@@ -1164,23 +1164,23 @@ Vector3 LevelEditorScreen::_get_gizmo_origin() const {
 	switch (mode) {
 		case MODE_FACE: {
 			for (int f : selected_faces) {
-				Vector<Vector3> poly = selected_brush->get_face_polygon(f);
-				for (const Vector3 &v : poly) {
-					sum += gt.xform(v);
+				LocalVector<int> loop = selected_brush->get_face(f);
+				for (int idx : loop) {
+					sum += gt.xform(selected_brush->get_vertex(idx));
 					count++;
 				}
 			}
 		} break;
 		case MODE_EDGE: {
 			for (const LevelBrush::EdgeKey &e : selected_edges) {
-				sum += gt.xform(e.a);
-				sum += gt.xform(e.b);
+				sum += gt.xform(selected_brush->get_vertex(e.a));
+				sum += gt.xform(selected_brush->get_vertex(e.b));
 				count += 2;
 			}
 		} break;
 		case MODE_VERTEX: {
-			for (const Vector3 &v : selected_vertices) {
-				sum += gt.xform(v);
+			for (int v : selected_vertices) {
+				sum += gt.xform(selected_brush->get_vertex(v));
 				count++;
 			}
 		} break;
@@ -1188,6 +1188,44 @@ Vector3 LevelEditorScreen::_get_gizmo_origin() const {
 			break;
 	}
 	return count > 0 ? sum / count : gt.get_origin();
+}
+
+Vector<int> LevelEditorScreen::_get_gizmo_vertex_indices() const {
+	Vector<int> out;
+	if (!selected_brush) {
+		return out;
+	}
+	HashSet<int> seen;
+	auto add = [&](int idx) {
+		if (!seen.has(idx)) {
+			seen.insert(idx);
+			out.push_back(idx);
+		}
+	};
+	switch (mode) {
+		case MODE_FACE:
+			for (int f : selected_faces) {
+				LocalVector<int> loop = selected_brush->get_face(f);
+				for (int idx : loop) {
+					add(idx);
+				}
+			}
+			break;
+		case MODE_EDGE:
+			for (const LevelBrush::EdgeKey &e : selected_edges) {
+				add(e.a);
+				add(e.b);
+			}
+			break;
+		case MODE_VERTEX:
+			for (int v : selected_vertices) {
+				add(v);
+			}
+			break;
+		default:
+			break;
+	}
+	return out;
 }
 
 int LevelEditorScreen::_pick_gizmo(Camera3D *p_camera, const Vector2 &p_screen) const {
@@ -1272,11 +1310,8 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 	gizmo_drag_mouse_start = p_mouse;
 	gizmo_drag_start_origin = _get_gizmo_origin();
 
-	// Snapshot brush planes for undo.
-	gizmo_drag_original_planes.clear();
-	for (int f = 0; f < selected_brush->get_face_count(); f++) {
-		gizmo_drag_original_planes.push_back(selected_brush->get_face_plane(f));
-	}
+	// Snapshot brush vertices for absolute drags + undo.
+	gizmo_drag_original_verts = selected_brush->get_vertices_data();
 	gizmo_drag_original_position = selected_brush->get_position();
 
 	// Build the constraint plane: passes through the gizmo origin, faces the camera.
@@ -1393,40 +1428,16 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 		return;
 	}
 
-	// Restore the original planes first, then apply the new delta. This makes
-	// dragging absolute (not accumulative).
-	for (int f = 0; f < gizmo_drag_original_planes.size(); f++) {
-		selected_brush->set_face_plane(f, gizmo_drag_original_planes[f]);
-	}
+	// Restore original vertices, then apply the new delta -> absolute drags.
+	selected_brush->set_vertices_data(gizmo_drag_original_verts);
 
 	// World delta -> brush-local delta (direction only).
 	Transform3D inv = selected_brush->get_global_transform().affine_inverse();
 	Vector3 local_delta = inv.basis.xform(p_world_delta);
 
-	// Deformation move: the selected elements themselves move; planes tilt.
-	Vector<Vector3> verts;
-	Vector<LevelBrush::EdgeKey> edges;
-	Vector<int> faces;
-	switch (mode) {
-		case MODE_FACE:
-			for (int f : selected_faces) {
-				faces.push_back(f);
-			}
-			break;
-		case MODE_EDGE:
-			for (const LevelBrush::EdgeKey &e : selected_edges) {
-				edges.push_back(e);
-			}
-			break;
-		case MODE_VERTEX:
-			for (const Vector3 &v : selected_vertices) {
-				verts.push_back(v);
-			}
-			break;
-		default:
-			break;
-	}
-	selected_brush->move_elements(verts, edges, faces, local_delta);
+	// Move only the selected vertices; faces deform to fit (Blender-style).
+	Vector<int> indices = _get_gizmo_vertex_indices();
+	selected_brush->move_vertices(indices, local_delta);
 	_refresh_map();
 }
 
@@ -1455,37 +1466,29 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		return;
 	}
 
-	if (gizmo_drag_original_planes.is_empty()) {
+	if (gizmo_drag_original_verts.is_empty()) {
 		return;
 	}
 
-	// Commit the move as an undo action using the serialized planes property:
-	// one do/undo pair covers the whole solid, and survives face-count changes.
+	// Commit the move as an undo action using the serialized vertices property.
 	LevelBrush *target = selected_brush;
 	LevelMap *map = current_map;
 
-	PackedVector4Array new_data = target->get_planes_data();
-	PackedVector4Array old_data;
-	old_data.resize(gizmo_drag_original_planes.size());
-	for (int i = 0; i < gizmo_drag_original_planes.size(); i++) {
-		const Plane &p = gizmo_drag_original_planes[i];
-		old_data.set(i, Vector4(p.normal.x, p.normal.y, p.normal.z, p.d));
-	}
-
-	if (new_data == old_data) {
+	PackedVector3Array new_data = target->get_vertices_data();
+	if (new_data == gizmo_drag_original_verts) {
 		return; // Nothing actually moved.
 	}
 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	undo_redo->create_action(TTR("Move Brush Element"));
-	undo_redo->add_do_property(target, "planes", new_data);
+	undo_redo->add_do_property(target, "vertices", new_data);
 	undo_redo->add_do_method(map, "refresh");
-	undo_redo->add_undo_property(target, "planes", old_data);
+	undo_redo->add_undo_property(target, "vertices", gizmo_drag_original_verts);
 	undo_redo->add_undo_method(map, "refresh");
 	// commit_action with execute=false because the brush is already in the "do" state.
 	undo_redo->commit_action(false);
 
-	gizmo_drag_original_planes.clear();
+	gizmo_drag_original_verts.clear();
 }
 
 void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas) {
@@ -1569,7 +1572,7 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = hover_brush->get_edges();
 		for (const LevelBrush::EdgeKey &e : edges) {
 			Vector2 a, b;
-			if (p_vp->project(gt.xform(e.a), a) && p_vp->project(gt.xform(e.b), b)) {
+			if (p_vp->project(gt.xform(hover_brush->get_vertex(e.a)), a) && p_vp->project(gt.xform(hover_brush->get_vertex(e.b)), b)) {
 				p_canvas->draw_line(a, b, Color(1, 1, 1, 0.5), 1.0);
 			}
 		}
@@ -1588,7 +1591,7 @@ void LevelEditorScreen::_draw_brush_outline(LevelEditorViewport *p_vp, Control *
 	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = p_brush->get_edges();
 	for (const LevelBrush::EdgeKey &e : edges) {
 		Vector2 a, b;
-		if (p_vp->project(gt.xform(e.a), a) && p_vp->project(gt.xform(e.b), b)) {
+		if (p_vp->project(gt.xform(p_brush->get_vertex(e.a)), a) && p_vp->project(gt.xform(p_brush->get_vertex(e.b)), b)) {
 			p_canvas->draw_line(a, b, col, width);
 		}
 	}
@@ -1622,15 +1625,15 @@ void LevelEditorScreen::_draw_drag_feedback(LevelEditorViewport *p_vp, Control *
 	LevelBrush *preview = memnew(LevelBrush);
 	preview->setup_box(AABB(mins, maxs - mins));
 	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = preview->get_edges();
-	memdelete(preview);
 
 	Color col(0.2, 0.9, 0.4, 0.9);
 	for (const LevelBrush::EdgeKey &e : edges) {
 		Vector2 a, b;
-		if (p_vp->project(e.a, a) && p_vp->project(e.b, b)) {
+		if (p_vp->project(preview->get_vertex(e.a), a) && p_vp->project(preview->get_vertex(e.b), b)) {
 			p_canvas->draw_line(a, b, col, 2.0);
 		}
 	}
+	memdelete(preview);
 
 	if (p_vp == drag_viewport) {
 		Vector2 s0, s1;
@@ -1653,15 +1656,15 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 	Color face_col(1.0, 0.45, 0.1, 0.22);
 	Color face_outline(1.0, 0.6, 0.1, 0.95);
 	for (int f : selected_faces) {
-		Vector<Vector3> poly = selected_brush->get_face_polygon(f);
+		LocalVector<int> poly = selected_brush->get_face(f);
 		if (poly.size() < 3) {
 			continue;
 		}
 		PackedVector2Array pts;
 		bool all_front = true;
-		for (const Vector3 &v : poly) {
+		for (int idx : poly) {
 			Vector2 sp;
-			if (!p_vp->project(gt.xform(v), sp)) {
+			if (!p_vp->project(gt.xform(selected_brush->get_vertex(idx)), sp)) {
 				all_front = false;
 				break;
 			}
@@ -1679,16 +1682,16 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 	Color edge_col(0.2, 0.8, 1.0, 0.95);
 	for (const LevelBrush::EdgeKey &e : selected_edges) {
 		Vector2 a, b;
-		if (p_vp->project(gt.xform(e.a), a) && p_vp->project(gt.xform(e.b), b)) {
+		if (p_vp->project(gt.xform(selected_brush->get_vertex(e.a)), a) && p_vp->project(gt.xform(selected_brush->get_vertex(e.b)), b)) {
 			p_canvas->draw_line(a, b, edge_col, 3.0);
 		}
 	}
 
 	// Vertices.
 	Color vert_col(1.0, 0.9, 0.2, 1.0);
-	for (const Vector3 &v : selected_vertices) {
+	for (int v : selected_vertices) {
 		Vector2 sp;
-		if (p_vp->project(gt.xform(v), sp)) {
+		if (p_vp->project(gt.xform(selected_brush->get_vertex(v)), sp)) {
 			p_canvas->draw_rect(Rect2(sp - Vector2(4, 4), Size2(8, 8)), vert_col);
 		}
 	}
@@ -1699,12 +1702,12 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 		case MODE_FACE: {
 			if (hover_brush && hover_face >= 0) {
 				Transform3D hgt = hover_brush->get_global_transform();
-				Vector<Vector3> poly = hover_brush->get_face_polygon(hover_face);
+				LocalVector<int> poly = hover_brush->get_face(hover_face);
 				PackedVector2Array pts;
 				bool ok = true;
-				for (const Vector3 &v : poly) {
+				for (int idx : poly) {
 					Vector2 sp;
-					if (!p_vp->project(hgt.xform(v), sp)) {
+					if (!p_vp->project(hgt.xform(hover_brush->get_vertex(idx)), sp)) {
 						ok = false;
 						break;
 					}
@@ -1720,7 +1723,7 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 		case MODE_EDGE: {
 			if (has_hover_edge && hover_brush == selected_brush) {
 				Vector2 a, b;
-				if (p_vp->project(gt.xform(hover_edge.a), a) && p_vp->project(gt.xform(hover_edge.b), b)) {
+				if (p_vp->project(gt.xform(selected_brush->get_vertex(hover_edge.a)), a) && p_vp->project(gt.xform(selected_brush->get_vertex(hover_edge.b)), b)) {
 					p_canvas->draw_line(a, b, hover_col, 1.0);
 				}
 			}
@@ -1728,7 +1731,7 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 		case MODE_VERTEX: {
 			if (has_hover_vertex && hover_brush == selected_brush) {
 				Vector2 sp;
-				if (p_vp->project(gt.xform(hover_vertex), sp)) {
+				if (p_vp->project(gt.xform(selected_brush->get_vertex(hover_vertex)), sp)) {
 					p_canvas->draw_rect(Rect2(sp - Vector2(4, 4), Size2(8, 8)), hover_col, false, 1.0);
 				}
 			}

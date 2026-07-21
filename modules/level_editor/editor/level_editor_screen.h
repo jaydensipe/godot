@@ -165,18 +165,18 @@ private:
 	Vector3 drag_current;
 	bool drag_active = false;
 
-	// Selection state.
+	// Selection state (all indices refer to the selected brush's topology).
 	LevelBrush *selected_brush = nullptr;
 	HashSet<int> selected_faces;
 	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> selected_edges;
-	Vector<Vector3> selected_vertices;
+	HashSet<int> selected_vertices;
 
 	// Hover feedback.
 	LevelBrush *hover_brush = nullptr;
 	int hover_face = -1;
 	LevelBrush::EdgeKey hover_edge;
 	bool has_hover_edge = false;
-	Vector3 hover_vertex;
+	int hover_vertex = -1;
 	bool has_hover_vertex = false;
 
 	Ref<Material> current_material;
@@ -200,7 +200,7 @@ private:
 	LevelEditorViewport *gizmo_drag_viewport = nullptr;
 	Vector3 gizmo_drag_plane_normal;
 	Vector3 gizmo_drag_plane_point;
-	Vector<Plane> gizmo_drag_original_planes; // Brush planes at drag start.
+	PackedVector3Array gizmo_drag_original_verts; // Brush vertices at drag start.
 	Vector3 gizmo_drag_original_position; // Brush node position at drag start (Select mode).
 
 	Vector3 _get_gizmo_origin() const; // World-space pivot of current selection.
@@ -229,8 +229,9 @@ private:
 	real_t _snap(real_t p_v) const;
 
 	bool _pick_face(Camera3D *p_camera, const Vector2 &p_screen, LevelBrush *&r_brush, int &r_face, Vector3 &r_hit) const;
-	bool _pick_vertex(Camera3D *p_camera, const Vector2 &p_screen, LevelBrush *&r_brush, Vector3 &r_vertex) const;
+	bool _pick_vertex(Camera3D *p_camera, const Vector2 &p_screen, LevelBrush *&r_brush, int &r_vertex) const;
 	bool _pick_edge(Camera3D *p_camera, const Vector2 &p_screen, LevelBrush *&r_brush, LevelBrush::EdgeKey &r_edge) const;
+	Vector<int> _get_gizmo_vertex_indices() const; // Vertex indices the gizmo moves (per mode).
 
 	void _update_hover(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _clear_selection();
