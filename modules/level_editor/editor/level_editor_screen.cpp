@@ -68,8 +68,15 @@ LevelEditorViewport::LevelEditorViewport() {
 	subviewport->add_child(camera);
 
 	light = memnew(DirectionalLight3D);
-	light->set_rotation(Vector3(Math::deg_to_rad(-50.0), Math::deg_to_rad(-30.0), 0));
+	// Aim the sun so it shines downward and slightly from the side: tops lit,
+	// bottoms in shade. (DirectionalLight3D shines along its -Z axis.)
+	light->look_at_from_position(Vector3(10, 20, 10), Vector3(0, 0, 0), Vector3(0, 1, 0));
 	subviewport->add_child(light);
+
+	// Fill light from below/opposite so undersides aren't pitch black.
+	DirectionalLight3D *fill = memnew(DirectionalLight3D);
+	fill->look_at_from_position(Vector3(-10, -5, -10), Vector3(0, 0, 0), Vector3(0, 1, 0));
+	subviewport->add_child(fill);
 
 	world_env = memnew(WorldEnvironment);
 	Ref<Environment> env;
@@ -77,7 +84,7 @@ LevelEditorViewport::LevelEditorViewport() {
 	env->set_background(Environment::BG_COLOR);
 	env->set_bg_color(Color(0.16, 0.16, 0.18));
 	env->set_ambient_source(Environment::AMBIENT_SOURCE_COLOR);
-	env->set_ambient_light_color(Color(0.45, 0.45, 0.48));
+	env->set_ambient_light_color(Color(0.45, 0.45, 0.45));
 	env->set_ambient_light_energy(1.0);
 	world_env->set_environment(env);
 	subviewport->add_child(world_env);
@@ -515,6 +522,12 @@ LevelEditorScreen::LevelEditorScreen() {
 	toolbar->add_child(apply_material_button);
 
 	toolbar->add_child(memnew(VSeparator));
+
+	flip_faces_button = memnew(Button);
+	flip_faces_button->set_text(TTRC("Flip Faces"));
+	flip_faces_button->set_tooltip_text(TTRC("Invert the selected brush's face normals - turns a solid block into an interior room shell."));
+	flip_faces_button->connect("pressed", callable_mp(this, &LevelEditorScreen::_flip_faces_pressed));
+	toolbar->add_child(flip_faces_button);
 
 	bake_button = memnew(Button);
 	bake_button->set_text(TTRC("Bake Level"));
@@ -1835,6 +1848,30 @@ void LevelEditorScreen::_apply_material_pressed() {
 	EditorUndoRedoManager::get_singleton()->add_do_method(map, "refresh");
 	EditorUndoRedoManager::get_singleton()->add_undo_method(map, "refresh");
 	EditorUndoRedoManager::get_singleton()->commit_action();
+
+	_refresh_map();
+}
+
+void LevelEditorScreen::_flip_faces_pressed() {
+	if (!current_map || !selected_brush) {
+		return;
+	}
+
+	bool old_flipped = selected_brush->is_faces_flipped();
+	bool new_flipped = !old_flipped;
+
+	selected_brush->set_faces_flipped(new_flipped);
+
+	LevelBrush *target = selected_brush;
+	LevelMap *map = current_map;
+
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Flip Brush Faces"));
+	undo_redo->add_do_property(target, "faces_flipped", new_flipped);
+	undo_redo->add_do_method(map, "refresh");
+	undo_redo->add_undo_property(target, "faces_flipped", old_flipped);
+	undo_redo->add_undo_method(map, "refresh");
+	undo_redo->commit_action(false);
 
 	_refresh_map();
 }

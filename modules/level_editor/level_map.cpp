@@ -112,6 +112,8 @@ void LevelMap::_notification(int p_what) {
 				if (!preview_mesh_instance) {
 					preview_mesh_instance = memnew(MeshInstance3D);
 					preview_mesh_instance->set_name("_LevelPreview");
+					// Don't let the preview cast shadows on itself or the scene.
+					preview_mesh_instance->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
 					add_child(preview_mesh_instance, false, INTERNAL_MODE_FRONT);
 					preview_mesh_instance->set_owner(nullptr);
 				}
@@ -209,7 +211,8 @@ Node3D *LevelMap::bake() const {
 				brush->get_bake_surface_data(f, v, n, uv);
 				for (int i = 0; i < v.size(); i++) {
 					verts.push_back(brush_to_map.xform(v[i]));
-					normals.push_back((normal_basis.xform(n[i])).normalized());
+					Vector3 nn = (normal_basis.xform(n[i])).normalized();
+					normals.push_back(nn);
 					uvs.push_back(uv[i]);
 				}
 			}
@@ -267,7 +270,9 @@ Node3D *LevelMap::bake() const {
 LevelMap::LevelMap() {
 	default_material.instantiate();
 	default_material->set_albedo(Color(0.7, 0.7, 0.7));
-	default_material->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
+	// Back-face culling so flipped brushes (interiors) render correctly:
+	// outward faces vanish from outside, inward faces show inside.
+	default_material->set_cull_mode(BaseMaterial3D::CULL_BACK);
 
 	if (Engine::get_singleton()->is_editor_hint()) {
 		set_process(true);

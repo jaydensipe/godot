@@ -78,6 +78,7 @@ private:
 	// Faces as index loops into verts, wound so they face outward.
 	LocalVector<LocalVector<int>> faces;
 	LocalVector<Ref<Material>> face_materials;
+	bool faces_flipped = false;
 
 	void _update_face_count_storage();
 
@@ -110,6 +111,14 @@ public:
 
 	// Move vertices directly (Blender-style). Only the given vertices move.
 	void move_vertices(const Vector<int> &p_vertices, const Vector3 &p_delta);
+
+	// Reverse every face's winding (normals point inward) - turns a solid
+	// block into an interior room shell.
+	void flip_faces();
+
+	// Exported property: when true, faces are treated as flipped (interior).
+	void set_faces_flipped(bool p_flipped);
+	bool is_faces_flipped() const { return faces_flipped; }
 
 	// Extrude a face: duplicates the face loop, offsets it along the face
 	// normal, and stitches side quads. Returns the new cap face index (or -1).

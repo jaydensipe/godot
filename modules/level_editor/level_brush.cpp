@@ -41,6 +41,9 @@ void LevelBrush::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_face_material", "face"), &LevelBrush::get_face_material);
 	ClassDB::bind_method(D_METHOD("set_face_material", "face", "material"), &LevelBrush::set_face_material);
 	ClassDB::bind_method(D_METHOD("setup_box", "aabb"), &LevelBrush::setup_box);
+	ClassDB::bind_method(D_METHOD("flip_faces"), &LevelBrush::flip_faces);
+	ClassDB::bind_method(D_METHOD("set_faces_flipped", "flipped"), &LevelBrush::set_faces_flipped);
+	ClassDB::bind_method(D_METHOD("is_faces_flipped"), &LevelBrush::is_faces_flipped);
 
 	ClassDB::bind_method(D_METHOD("set_vertices_data", "vertices"), &LevelBrush::set_vertices_data);
 	ClassDB::bind_method(D_METHOD("get_vertices_data"), &LevelBrush::get_vertices_data);
@@ -52,6 +55,7 @@ void LevelBrush::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::PACKED_VECTOR3_ARRAY, "vertices", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE | PROPERTY_USAGE_EDITOR), "set_vertices_data", "get_vertices_data");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "faces", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_STORAGE), "set_faces_data", "get_faces_data");
 	ADD_PROPERTY(PropertyInfo(Variant::ARRAY, "face_materials", PROPERTY_HINT_ARRAY_TYPE, "Material", PROPERTY_USAGE_STORAGE), "set_face_materials_data", "get_face_materials_data");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "faces_flipped"), "set_faces_flipped", "is_faces_flipped");
 }
 
 void LevelBrush::_update_face_count_storage() {
@@ -211,6 +215,22 @@ void LevelBrush::setup_box(const AABB &p_aabb) {
 	_update_face_count_storage();
 }
 
+void LevelBrush::flip_faces() {
+	set_faces_flipped(!faces_flipped);
+}
+
+void LevelBrush::set_faces_flipped(bool p_flipped) {
+	if (faces_flipped == p_flipped) {
+		return;
+	}
+	faces_flipped = p_flipped;
+	// Ask the parent map to rebuild its preview.
+	Node *parent = get_parent();
+	if (parent && parent->has_method("refresh")) {
+		parent->call_deferred("refresh");
+	}
+}
+
 void LevelBrush::move_vertices(const Vector<int> &p_vertices, const Vector3 &p_delta) {
 	if (p_delta.is_zero_approx()) {
 		return;
@@ -286,7 +306,7 @@ void LevelBrush::get_bake_surface_data(int p_face, Vector<Vector3> &r_vertices, 
 		return;
 	}
 
-	const Vector3 n = get_face_normal(p_face);
+	const Vector3 n = faces_flipped ? -get_face_normal(p_face) : get_face_normal(p_face);
 
 	// Planar UV projection on the face's dominant axes.
 	Vector3 abs_n = n.abs();
@@ -305,7 +325,16 @@ void LevelBrush::get_bake_surface_data(int p_face, Vector<Vector3> &r_vertices, 
 	const real_t uv_scale = 0.25;
 
 	for (uint32_t i = 0; i + 2 < loop.size(); i++) {
-		int tri[3] = { loop[0], loop[i + 1], loop[i + 2] };
+		int tri[3];
+		if (faces_flipped) {
+			tri[0] = loop[0];
+			tri[1] = loop[i + 2];
+			tri[2] = loop[i + 1];
+		} else {
+			tri[0] = loop[0];
+			tri[1] = loop[i + 1];
+			tri[2] = loop[i + 2];
+		}
 		for (int t = 0; t < 3; t++) {
 			const Vector3 &p = verts[tri[t]];
 			r_vertices.push_back(p);
@@ -319,9 +348,15 @@ void LevelBrush::get_collision_faces(Vector<Vector3> &r_faces) const {
 	for (uint32_t f = 0; f < faces.size(); f++) {
 		const LocalVector<int> &loop = faces[f];
 		for (uint32_t i = 0; i + 2 < loop.size(); i++) {
-			r_faces.push_back(verts[loop[0]]);
-			r_faces.push_back(verts[loop[i + 1]]);
-			r_faces.push_back(verts[loop[i + 2]]);
+			if (faces_flipped) {
+				r_faces.push_back(verts[loop[0]]);
+				r_faces.push_back(verts[loop[i + 2]]);
+				r_faces.push_back(verts[loop[i + 1]]);
+			} else {
+				r_faces.push_back(verts[loop[0]]);
+				r_faces.push_back(verts[loop[i + 1]]);
+				r_faces.push_back(verts[loop[i + 2]]);
+			}
 		}
 	}
 }
@@ -331,6 +366,7 @@ LevelBrush *LevelBrush::duplicate_brush() const {
 	copy->verts = verts;
 	copy->faces = faces;
 	copy->face_materials = face_materials;
+	copy->faces_flipped = faces_flipped;
 	return copy;
 }
 

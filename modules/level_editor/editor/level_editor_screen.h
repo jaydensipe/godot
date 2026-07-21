@@ -151,6 +151,7 @@ private:
 	SpinBox *extrude_spin = nullptr;
 	Button *extrude_button = nullptr;
 	Button *apply_material_button = nullptr;
+	Button *flip_faces_button = nullptr;
 	Button *bake_button = nullptr;
 	EditorResourcePicker *material_picker = nullptr;
 
@@ -267,6 +268,7 @@ private:
 
 	void _extrude_pressed();
 	void _apply_material_pressed();
+	void _flip_faces_pressed();
 	void _bake_pressed();
 	void _material_changed(const Ref<Resource> &p_resource);
 	void _grid_size_changed(double p_value);

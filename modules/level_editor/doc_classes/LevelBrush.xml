@@ -60,5 +60,16 @@
 				Initializes this brush as an axis-aligned box (8 vertices, 6 quad faces) covering [param aabb] in local space.
 			</description>
 		</method>
+		<method name="flip_faces">
+			<return type="void" />
+			<description>
+				Toggles [member faces_flipped], reversing the effective face winding.
+			</description>
+		</method>
 	</methods>
+	<members>
+		<member name="faces_flipped" type="bool" setter="set_faces_flipped" getter="is_faces_flipped" default="false">
+			When [code]true[/code], the brush's faces point inward, turning a solid block into an interior room shell. Affects rendering, collision, and occluder winding at bake time.
+		</member>
+	</members>
 </class>
