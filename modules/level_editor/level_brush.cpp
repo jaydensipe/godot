@@ -124,7 +124,6 @@ Array LevelBrush::get_face_materials_data() const {
 void LevelBrush::set_face_plane(int p_face, const Plane &p_plane) {
 	ERR_FAIL_INDEX(p_face, planes.size());
 	planes.write[p_face] = p_plane;
-	notify_property_list_changed();
 }
 
 Plane LevelBrush::get_face_plane(int p_face) const {
@@ -135,7 +134,6 @@ Plane LevelBrush::get_face_plane(int p_face) const {
 void LevelBrush::set_face_material(int p_face, const Ref<Material> &p_material) {
 	ERR_FAIL_INDEX(p_face, face_materials.size());
 	face_materials.write[p_face] = p_material;
-	notify_property_list_changed();
 }
 
 Ref<Material> LevelBrush::get_face_material(int p_face) const {
@@ -376,6 +374,14 @@ void LevelBrush::move_elements(const Vector<Vector3> &p_vertices, const Vector<E
 		return;
 	}
 
+	// Faces slide parallel to themselves: keep the normal, shift the plane
+	// offset. Neighboring faces are left alone; the convex clip stretches
+	// them automatically. This is the Hammer "move face" behavior.
+	if (!p_faces.is_empty()) {
+		translate_faces(p_faces, p_delta);
+		return;
+	}
+
 	// Collect the set of directly-moved vertices (snapped, local space).
 	HashSet<EdgeKey, EdgeKeyHasher> moved_verts; // EdgeKey(v,v) acts as a point key.
 	for (const Vector3 &v : p_vertices) {
@@ -384,13 +390,6 @@ void LevelBrush::move_elements(const Vector<Vector3> &p_vertices, const Vector<E
 	for (const EdgeKey &e : p_edges) {
 		moved_verts.insert(EdgeKey(e.a, e.a));
 		moved_verts.insert(EdgeKey(e.b, e.b));
-	}
-	// Faces: move all of their vertices.
-	for (int f : p_faces) {
-		Vector<Vector3> poly = get_face_polygon(f);
-		for (const Vector3 &v : poly) {
-			moved_verts.insert(EdgeKey(v, v));
-		}
 	}
 
 	auto new_pos = [&](const Vector3 &p_v) -> Vector3 {

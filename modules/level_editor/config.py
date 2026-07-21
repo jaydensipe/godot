@@ -4,6 +4,7 @@ import os
 
 doc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "doc_classes")
 
+
 def can_build(env, platform):
     return True
 

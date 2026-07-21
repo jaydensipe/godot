@@ -30,7 +30,7 @@
 
 #pragma once
 
-#include "level_map.h"
+#include "../level_map.h"
 
 #include "editor/plugins/editor_plugin.h"
 #include "scene/gui/box_container.h"

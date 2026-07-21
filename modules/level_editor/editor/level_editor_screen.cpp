@@ -748,7 +748,6 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 				if (part != GIZMO_NONE) {
 					gizmo_drag_part = (GizmoPart)part;
 					_gizmo_begin_drag(vp, mb->get_position());
-					accept_event();
 					return; // Consumed by gizmo.
 				}
 			} else {
@@ -990,13 +989,9 @@ void LevelEditorScreen::_extrude_pressed() {
 		return;
 	}
 
-	// Snapshot planes so undo can restore the previous solid.
-	Vector<Plane> old_planes;
-	Vector<Ref<Material>> old_mats;
-	for (int f = 0; f < selected_brush->get_face_count(); f++) {
-		old_planes.push_back(selected_brush->get_face_plane(f));
-		old_mats.push_back(selected_brush->get_face_material(f));
-	}
+	// Snapshot the serialized plane data so undo can restore the previous solid
+	// in one property write (safe even if the face count changes).
+	PackedVector4Array old_data = selected_brush->get_planes_data();
 
 	LevelBrush *working = selected_brush->duplicate_brush();
 	bool did = false;
@@ -1045,14 +1040,12 @@ void LevelEditorScreen::_extrude_pressed() {
 	LevelBrush *target = selected_brush;
 	LevelMap *map = current_map;
 
+	PackedVector4Array new_data = working->get_planes_data();
+
 	EditorUndoRedoManager::get_singleton()->create_action(TTR("Extrude Brush"));
-	for (int f = 0; f < working->get_face_count(); f++) {
-		EditorUndoRedoManager::get_singleton()->add_do_method(target, "set_face_plane", f, working->get_face_plane(f));
-	}
+	EditorUndoRedoManager::get_singleton()->add_do_property(target, "planes", new_data);
 	EditorUndoRedoManager::get_singleton()->add_do_method(map, "refresh");
-	for (int f = 0; f < old_planes.size(); f++) {
-		EditorUndoRedoManager::get_singleton()->add_undo_method(target, "set_face_plane", f, old_planes[f]);
-	}
+	EditorUndoRedoManager::get_singleton()->add_undo_property(target, "planes", old_data);
 	EditorUndoRedoManager::get_singleton()->add_undo_method(map, "refresh");
 	EditorUndoRedoManager::get_singleton()->commit_action();
 	memdelete(working);
@@ -1274,7 +1267,6 @@ int LevelEditorScreen::_pick_gizmo(Camera3D *p_camera, const Vector2 &p_screen) 
 }
 
 void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vector2 &p_mouse) {
-	print_line(vformat("[LevelEditor] gizmo drag begin, part: %d", (int)gizmo_drag_part));
 	gizmo_dragging = true;
 	gizmo_drag_viewport = p_vp;
 	gizmo_drag_mouse_start = p_mouse;
@@ -1383,12 +1375,10 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 	_update_overlays();
 }
 
-// (debug marker)
 void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 	if (!selected_brush) {
 		return;
 	}
-	print_line(vformat("[LevelEditor] gizmo delta: %s mode: %d", p_world_delta, (int)mode));
 
 	if (mode == MODE_SELECT) {
 		// Move the whole brush node. Delta is world; convert into the parent
@@ -1469,39 +1459,28 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		return;
 	}
 
-	// Commit the move as an undo action: current planes are the "do" state,
-	// the snapshot is the "undo" state.
+	// Commit the move as an undo action using the serialized planes property:
+	// one do/undo pair covers the whole solid, and survives face-count changes.
 	LevelBrush *target = selected_brush;
 	LevelMap *map = current_map;
 
-	Vector<Plane> new_planes;
-	for (int f = 0; f < target->get_face_count(); f++) {
-		new_planes.push_back(target->get_face_plane(f));
+	PackedVector4Array new_data = target->get_planes_data();
+	PackedVector4Array old_data;
+	old_data.resize(gizmo_drag_original_planes.size());
+	for (int i = 0; i < gizmo_drag_original_planes.size(); i++) {
+		const Plane &p = gizmo_drag_original_planes[i];
+		old_data.set(i, Vector4(p.normal.x, p.normal.y, p.normal.z, p.d));
 	}
 
-	// If nothing actually moved, skip creating an undo entry.
-	bool changed = new_planes.size() != gizmo_drag_original_planes.size();
-	if (!changed) {
-		for (int i = 0; i < new_planes.size(); i++) {
-			if (!new_planes[i].is_equal_approx(gizmo_drag_original_planes[i])) {
-				changed = true;
-				break;
-			}
-		}
-	}
-	if (!changed) {
-		return;
+	if (new_data == old_data) {
+		return; // Nothing actually moved.
 	}
 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	undo_redo->create_action(TTR("Move Brush Element"));
-	for (int f = 0; f < new_planes.size(); f++) {
-		undo_redo->add_do_method(target, "set_face_plane", f, new_planes[f]);
-	}
+	undo_redo->add_do_property(target, "planes", new_data);
 	undo_redo->add_do_method(map, "refresh");
-	for (int f = 0; f < gizmo_drag_original_planes.size(); f++) {
-		undo_redo->add_undo_method(target, "set_face_plane", f, gizmo_drag_original_planes[f]);
-	}
+	undo_redo->add_undo_property(target, "planes", old_data);
 	undo_redo->add_undo_method(map, "refresh");
 	// commit_action with execute=false because the brush is already in the "do" state.
 	undo_redo->commit_action(false);

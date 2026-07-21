@@ -30,9 +30,10 @@
 
 #include "register_types.h"
 
+#include "level_brush.h"
+#include "level_map.h"
+
 #include "core/object/class_db.h"
-#include "editor/level_brush.h"
-#include "editor/level_map.h"
 
 #ifdef TOOLS_ENABLED
 #include "editor/level_editor_screen.h"
