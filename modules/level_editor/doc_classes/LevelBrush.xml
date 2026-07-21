@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="LevelBrush" inherits="Node3D" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		A convex solid defined by a set of planes, Hammer-style.
+	</brief_description>
+	<description>
+		LevelBrush stores a convex volume as a list of outward-facing planes (in local space) plus an optional per-face material. Polygons, edges, and vertices are derived from plane intersections on demand, so plane edits (extrude, clip) always produce a watertight solid.
+		Brushes are added as children of a [LevelMap] node and can be moved, rotated, and scaled like any other [Node3D].
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="get_face_count">
+			<return type="int" />
+			<description>
+				Returns the number of faces (planes).
+			</description>
+		</method>
+		<method name="get_face_material">
+			<return type="Material" />
+			<param index="0" name="face" type="int" />
+			<description>
+				Returns the material assigned to [param face], or [code]null[/code].
+			</description>
+		</method>
+		<method name="get_face_plane">
+			<return type="Plane" />
+			<param index="0" name="face" type="int" />
+			<description>
+				Returns the outward-facing plane of [param face].
+			</description>
+		</method>
+		<method name="set_face_material">
+			<return type="void" />
+			<param index="0" name="face" type="int" />
+			<param index="1" name="material" type="Material" />
+			<description>
+				Assigns [param material] to [param face].
+			</description>
+		</method>
+		<method name="set_face_plane">
+			<return type="void" />
+			<param index="0" name="face" type="int" />
+			<param index="1" name="plane" type="Plane" />
+			<description>
+				Replaces the plane of [param face]. The brush geometry is recomputed on next access.
+			</description>
+		</method>
+		<method name="setup_box">
+			<return type="void" />
+			<param index="0" name="aabb" type="AABB" />
+			<description>
+				Initializes this brush as an axis-aligned box covering [param aabb] in local space.
+			</description>
+		</method>
+	</methods>
+</class>

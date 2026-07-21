@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="LevelMap" inherits="Node3D" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		A Hammer-style brush-based level container.
+	</brief_description>
+	<description>
+		LevelMap holds a set of [LevelBrush] child nodes and provides a live editor preview plus a bake step that emits a [MeshInstance3D] with trimesh collision and an [OccluderInstance3D].
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="refresh">
+			<return type="void" />
+			<description>
+				Flags the live preview for rebuild.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="default_material" type="Material" setter="set_default_material" getter="get_default_material">
+			Material used for faces that don't have an explicit override.
+		</member>
+	</members>
+</class>
