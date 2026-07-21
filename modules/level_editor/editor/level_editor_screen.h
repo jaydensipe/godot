@@ -33,6 +33,7 @@
 #include "../level_map.h"
 
 #include "editor/plugins/editor_plugin.h"
+#include "scene/debugger/view_3d_controller.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/split_container.h"
 #include "scene/gui/subviewport_container.h"
@@ -82,18 +83,20 @@ private:
 
 	ViewType view_type = VIEW_PERSPECTIVE;
 
-	// Orbit state.
-	Vector3 pivot;
-	real_t yaw = Math::deg_to_rad(-45.0);
-	real_t pitch = Math::deg_to_rad(-30.0);
-	real_t distance = 20.0;
+	// Perspective navigation is handled by the same controller the 3D editor
+	// viewport uses (orbit/pan/zoom + RMB freelook with editor settings).
+	Ref<View3DController> view_controller;
 
+	// Ortho views keep a simple pan/zoom model.
+	Vector3 pivot;
+	real_t distance = 20.0;
 	bool panning = false;
-	bool orbiting = false;
 	Vector2 last_mouse;
 
 	void _update_camera_transform();
 	void _draw_grid();
+
+	void _process_freelook(double p_delta);
 
 	// Overlay draw hook (called from Overlay::_notification).
 	void _overlay_draw();
@@ -238,6 +241,7 @@ private:
 	void _update_overlays();
 	void _refresh_map();
 
+	void _compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) const;
 	void _commit_drag();
 
 	// Draw helpers used by the viewport overlay.

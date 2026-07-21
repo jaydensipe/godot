@@ -87,6 +87,38 @@ LevelEditorViewport::LevelEditorViewport() {
 	overlay->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
 	add_child(overlay);
 
+	view_controller.instantiate();
+	// Match the 3D editor's navigation settings.
+	view_controller->set_pan_mouse_button((View3DController::NavigationMouseButton)(int)EDITOR_GET("editors/3d/navigation/pan_mouse_button"));
+	view_controller->set_orbit_sensitivity(EDITOR_GET("editors/3d/navigation_feel/orbit_sensitivity"));
+	view_controller->set_orbit_inertia(EDITOR_GET("editors/3d/navigation_feel/orbit_inertia"));
+	view_controller->set_orbit_mouse_button((View3DController::NavigationMouseButton)(int)EDITOR_GET("editors/3d/navigation/orbit_mouse_button"));
+	view_controller->set_zoom_style((View3DController::ZoomStyle)(int)EDITOR_GET("editors/3d/navigation/zoom_style"));
+	view_controller->set_zoom_inertia(EDITOR_GET("editors/3d/navigation_feel/zoom_inertia"));
+	view_controller->set_zoom_mouse_button((View3DController::NavigationMouseButton)(int)EDITOR_GET("editors/3d/navigation/zoom_mouse_button"));
+	view_controller->set_freelook_scheme((View3DController::FreelookScheme)(int)EDITOR_GET("editors/3d/freelook/freelook_navigation_scheme"));
+	view_controller->set_freelook_base_speed(EDITOR_GET("editors/3d/freelook/freelook_base_speed"));
+	view_controller->set_freelook_sensitivity(EDITOR_GET("editors/3d/freelook/freelook_sensitivity"));
+	view_controller->set_freelook_inertia(EDITOR_GET("editors/3d/freelook/freelook_inertia"));
+	view_controller->set_freelook_speed_zoom_link(EDITOR_GET("editors/3d/freelook/freelook_speed_zoom_link"));
+	view_controller->set_freelook_invert_y_axis(EDITOR_GET("editors/3d/freelook/freelook_invert_y_axis"));
+	view_controller->set_translation_sensitivity(EDITOR_GET("editors/3d/navigation_feel/translation_sensitivity"));
+	view_controller->set_translation_inertia(EDITOR_GET("editors/3d/navigation_feel/translation_inertia"));
+	view_controller->set_z_near(camera->get_near());
+	view_controller->set_z_far(camera->get_far());
+
+	// Freelook movement keys (WASD/QE + modifiers) - reuse the 3D editor's
+	// shortcuts so user remaps apply here too.
+	view_controller->set_shortcut(View3DController::SHORTCUT_FREELOOK_FORWARD, ED_GET_SHORTCUT("spatial_editor/freelook_forward"));
+	view_controller->set_shortcut(View3DController::SHORTCUT_FREELOOK_BACKWARDS, ED_GET_SHORTCUT("spatial_editor/freelook_backwards"));
+	view_controller->set_shortcut(View3DController::SHORTCUT_FREELOOK_LEFT, ED_GET_SHORTCUT("spatial_editor/freelook_left"));
+	view_controller->set_shortcut(View3DController::SHORTCUT_FREELOOK_RIGHT, ED_GET_SHORTCUT("spatial_editor/freelook_right"));
+	view_controller->set_shortcut(View3DController::SHORTCUT_FREELOOK_UP, ED_GET_SHORTCUT("spatial_editor/freelook_up"));
+	view_controller->set_shortcut(View3DController::SHORTCUT_FREELOOK_DOWN, ED_GET_SHORTCUT("spatial_editor/freelook_down"));
+	view_controller->set_shortcut(View3DController::SHORTCUT_FREELOOK_SPEED_MOD, ED_GET_SHORTCUT("spatial_editor/freelook_speed_modifier"));
+	view_controller->set_shortcut(View3DController::SHORTCUT_FREELOOK_SLOW_MOD, ED_GET_SHORTCUT("spatial_editor/freelook_slow_modifier"));
+
+	set_process(true);
 	_update_camera_transform();
 }
 
@@ -105,33 +137,24 @@ void LevelEditorViewport::_overlay_draw() {
 
 void LevelEditorViewport::set_view_type(ViewType p_type) {
 	view_type = p_type;
+	pivot = Vector3();
 	switch (view_type) {
 		case VIEW_PERSPECTIVE:
 			camera->set_projection(Camera3D::PROJECTION_PERSPECTIVE);
-			pivot = Vector3();
-			yaw = Math::deg_to_rad(-45.0);
-			pitch = Math::deg_to_rad(-30.0);
-			distance = 20.0;
+			view_controller->cursor = View3DController::Cursor();
+			view_controller->cursor.distance = 20.0;
+			view_controller->set_view_type(View3DController::VIEW_TYPE_USER);
 			break;
 		case VIEW_TOP:
 			camera->set_projection(Camera3D::PROJECTION_ORTHOGONAL);
-			pivot = Vector3();
-			yaw = 0;
-			pitch = Math::deg_to_rad(-90.0);
 			distance = 40.0;
 			break;
 		case VIEW_FRONT:
 			camera->set_projection(Camera3D::PROJECTION_ORTHOGONAL);
-			pivot = Vector3();
-			yaw = 0;
-			pitch = 0;
 			distance = 40.0;
 			break;
 		case VIEW_SIDE:
 			camera->set_projection(Camera3D::PROJECTION_ORTHOGONAL);
-			pivot = Vector3();
-			yaw = Math::deg_to_rad(-90.0);
-			pitch = 0;
 			distance = 40.0;
 			break;
 	}
@@ -143,20 +166,48 @@ void LevelEditorViewport::_update_camera_transform() {
 		return;
 	}
 	if (view_type == VIEW_PERSPECTIVE) {
-		Basis rot(Vector3(0, 1, 0), yaw);
-		rot.rotate(Vector3(1, 0, 0), pitch);
-		Vector3 eye = pivot + rot.xform(Vector3(0, 0, distance));
-		camera->look_at_from_position(eye, pivot, Vector3(0, 1, 0));
+		if (view_controller.is_valid()) {
+			view_controller->update_camera();
+			camera->set_global_transform(view_controller->to_camera_transform());
+		}
 	} else {
 		camera->set_size(distance);
+		real_t yaw = 0.0, pitch = 0.0;
+		switch (view_type) {
+			case VIEW_TOP:
+				pitch = Math::deg_to_rad(-90.0);
+				break;
+			case VIEW_FRONT:
+				break;
+			case VIEW_SIDE:
+				yaw = Math::deg_to_rad(-90.0);
+				break;
+			default:
+				break;
+		}
 		Basis rot(Vector3(0, 1, 0), yaw);
 		rot.rotate(Vector3(1, 0, 0), pitch);
 		Vector3 fwd = rot.xform(Vector3(0, 0, -1));
 		Vector3 eye = pivot - fwd * 500.0;
-		camera->set_transform(Transform3D(rot, eye).looking_at(pivot, Vector3(0, 1, 0)));
+		// The basis already points the camera at the pivot; using looking_at()
+		// here would break the top view (view dir colinear with the up axis).
+		camera->set_transform(Transform3D(rot, eye));
 	}
 	if (overlay) {
 		overlay->update();
+	}
+}
+
+void LevelEditorViewport::_process_freelook(double p_delta) {
+	if (view_type != VIEW_PERSPECTIVE || !view_controller.is_valid()) {
+		return;
+	}
+	if (view_controller->is_freelook_enabled()) {
+		view_controller->update_freelook((float)p_delta);
+		camera->set_global_transform(view_controller->to_camera_transform());
+		if (overlay) {
+			overlay->update();
+		}
 	}
 }
 
@@ -200,8 +251,13 @@ void LevelEditorViewport::queue_overlay_redraw() {
 }
 
 void LevelEditorViewport::focus_on(const AABB &p_aabb) {
-	pivot = p_aabb.get_center();
-	distance = MAX(p_aabb.get_longest_axis_size() * 2.0, 4.0);
+	if (view_type == VIEW_PERSPECTIVE && view_controller.is_valid()) {
+		view_controller->cursor.pos = p_aabb.get_center();
+		view_controller->cursor.distance = MAX(p_aabb.get_longest_axis_size() * 2.0, 4.0);
+	} else {
+		pivot = p_aabb.get_center();
+		distance = MAX(p_aabb.get_longest_axis_size() * 2.0, 4.0);
+	}
 	_update_camera_transform();
 }
 
@@ -209,6 +265,12 @@ void LevelEditorViewport::_notification(int p_what) {
 	if (p_what == NOTIFICATION_RESIZED) {
 		if (overlay) {
 			overlay->update();
+		}
+	} else if (p_what == NOTIFICATION_PROCESS) {
+		_process_freelook(get_process_delta_time());
+	} else if (p_what == NOTIFICATION_WM_WINDOW_FOCUS_OUT) {
+		if (view_controller.is_valid()) {
+			view_controller->set_freelook_enabled(false);
 		}
 	}
 }
@@ -303,23 +365,48 @@ void LevelEditorViewport::gui_input(const Ref<InputEvent> &p_event) {
 	}
 	screen->forward_input(camera, p_event);
 
+	if (view_type == VIEW_PERSPECTIVE) {
+		// RMB hold -> freelook (same as the 3D editor viewport).
+		Ref<InputEventMouseButton> rmb = p_event;
+		if (rmb.is_valid() && rmb->get_button_index() == MouseButton::RIGHT) {
+			view_controller->set_freelook_enabled(rmb->is_pressed());
+			if (rmb->is_pressed()) {
+				grab_focus();
+			}
+		}
+
+		bool was_navigating = view_controller->is_navigating();
+		view_controller->gui_input(p_event, get_global_rect());
+		if (was_navigating || view_controller->is_navigating() || view_controller->is_freelook_enabled()) {
+			_update_camera_transform();
+		}
+		return;
+	}
+
+	// Ortho views: MMB pan, wheel zoom.
 	Ref<InputEventMouseButton> mb = p_event;
 	if (mb.is_valid()) {
 		if (mb->get_button_index() == MouseButton::MIDDLE) {
 			panning = mb->is_pressed();
 			last_mouse = mb->get_position();
 			accept_event();
-		} else if (mb->get_button_index() == MouseButton::RIGHT) {
-			orbiting = mb->is_pressed() && view_type == VIEW_PERSPECTIVE;
-			last_mouse = mb->get_position();
-			accept_event();
-		} else if (mb->get_button_index() == MouseButton::WHEEL_UP && mb->is_pressed()) {
-			distance = MAX(0.5, distance * 0.9);
-			_update_camera_transform();
-			accept_event();
-		} else if (mb->get_button_index() == MouseButton::WHEEL_DOWN && mb->is_pressed()) {
-			distance = MIN(2000.0, distance * 1.1);
-			_update_camera_transform();
+		} else if ((mb->get_button_index() == MouseButton::WHEEL_UP || mb->get_button_index() == MouseButton::WHEEL_DOWN) && mb->is_pressed()) {
+			// Zoom centered on the mouse: keep the world point under the cursor
+			// fixed on screen while the ortho size changes.
+			Vector3 before;
+			if (intersect_ortho_plane(mb->get_position(), before)) {
+				real_t old_distance = distance;
+				distance = (mb->get_button_index() == MouseButton::WHEEL_UP) ? MAX(0.5, distance * 0.9) : MIN(2000.0, distance * 1.1);
+				_update_camera_transform();
+				Vector3 after;
+				if (intersect_ortho_plane(mb->get_position(), after)) {
+					pivot += before - after;
+				}
+				_update_camera_transform();
+			} else {
+				distance = (mb->get_button_index() == MouseButton::WHEEL_UP) ? MAX(0.5, distance * 0.9) : MIN(2000.0, distance * 1.1);
+				_update_camera_transform();
+			}
 			accept_event();
 		}
 	}
@@ -330,13 +417,19 @@ void LevelEditorViewport::gui_input(const Ref<InputEvent> &p_event) {
 		last_mouse = mm->get_position();
 
 		if (panning) {
+			// Pan 1:1 with the mouse: convert pixels to world units using the
+			// ortho projection (size = world height of the viewport). The camera
+			// up-axis points in world -Z in the top view, so dragging up must
+			// move the view "down" in world space to track the cursor - match
+			// the perspective viewport by using the screen-aligned direction.
 			Basis b = camera->get_global_transform().basis;
-			real_t scale = distance * 0.0015;
-			pivot += (-b[0] * rel.x + b[1] * rel.y) * scale;
-			_update_camera_transform();
-		} else if (orbiting) {
-			yaw -= rel.x * 0.01;
-			pitch = CLAMP(pitch - rel.y * 0.01, -Math::PI * 0.49, Math::PI * 0.49);
+			real_t world_per_pixel = distance / MAX(1.0, get_size().y);
+			// Content should track the cursor. Some ortho views have camera
+			// axes that read as inverted versus the freelook viewport's pan
+			// (top: up is world -Z; side: right is world -Z), so flip those.
+			Vector3 right = (view_type == VIEW_SIDE) ? -b[0] : b[0];
+			Vector3 up = (view_type == VIEW_TOP) ? -b[1] : b[1];
+			pivot += (-right * rel.x + up * rel.y) * world_per_pixel;
 			_update_camera_transform();
 		}
 	}
@@ -906,37 +999,70 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 	}
 }
 
+void LevelEditorScreen::_compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) const {
+	r_mins = drag_start.min(drag_current);
+	r_maxs = drag_start.max(drag_current);
+
+	LevelEditorViewport::ViewType vt = drag_viewport->get_view_type();
+	real_t thickness = grid_size;
+
+	// Reuse the last brush's Y height if there is one, so walls of uniform
+	// height are quick to lay out (edits to the previous block carry over).
+	const LevelBrush *ref_brush = selected_brush;
+	Vector<LevelBrush *> map_brushes;
+	if (!ref_brush && current_map) {
+		map_brushes = current_map->get_brushes();
+		if (!map_brushes.is_empty()) {
+			ref_brush = map_brushes[map_brushes.size() - 1];
+		}
+	}
+	real_t ref_height = -1.0;
+	if (ref_brush) {
+		real_t min_y = (real_t)Math::INF, max_y = -(real_t)Math::INF;
+		for (int i = 0; i < ref_brush->get_vertex_count(); i++) {
+			Vector3 w = ref_brush->get_global_transform().xform(ref_brush->get_vertex(i));
+			min_y = MIN(min_y, w.y);
+			max_y = MAX(max_y, w.y);
+		}
+		if (max_y - min_y > CMP_EPSILON) {
+			ref_height = max_y - min_y;
+		}
+	}
+
+	switch (vt) {
+		case LevelEditorViewport::VIEW_TOP:
+		case LevelEditorViewport::VIEW_PERSPECTIVE:
+			// Drag plane is the ground; block rises in Y.
+			if (ref_height > 0.0) {
+				thickness = ref_height;
+			}
+			r_mins.y = _snap(drag_start.y);
+			r_maxs.y = r_mins.y + thickness;
+			break;
+		case LevelEditorViewport::VIEW_FRONT:
+			r_mins.z = _snap(drag_start.z);
+			r_maxs.z = r_mins.z + thickness;
+			break;
+		case LevelEditorViewport::VIEW_SIDE:
+			r_mins.x = _snap(drag_start.x);
+			r_maxs.x = r_mins.x + thickness;
+			break;
+	}
+
+	for (int i = 0; i < 3; i++) {
+		if (r_maxs[i] - r_mins[i] < CMP_EPSILON) {
+			r_maxs[i] = r_mins[i] + thickness;
+		}
+	}
+}
+
 void LevelEditorScreen::_commit_drag() {
 	if (!drag_active) {
 		return;
 	}
 
-	Vector3 mins = drag_start.min(drag_current);
-	Vector3 maxs = drag_start.max(drag_current);
-
-	LevelEditorViewport::ViewType vt = drag_viewport->get_view_type();
-	real_t thickness = grid_size;
-	switch (vt) {
-		case LevelEditorViewport::VIEW_TOP:
-		case LevelEditorViewport::VIEW_PERSPECTIVE:
-			mins.y = _snap(drag_start.y);
-			maxs.y = mins.y + thickness;
-			break;
-		case LevelEditorViewport::VIEW_FRONT:
-			mins.z = _snap(drag_start.z);
-			maxs.z = mins.z + thickness;
-			break;
-		case LevelEditorViewport::VIEW_SIDE:
-			mins.x = _snap(drag_start.x);
-			maxs.x = mins.x + thickness;
-			break;
-	}
-
-	for (int i = 0; i < 3; i++) {
-		if (maxs[i] - mins[i] < CMP_EPSILON) {
-			maxs[i] = mins[i] + thickness;
-		}
-	}
+	Vector3 mins, maxs;
+	_compute_drag_aabb(mins, maxs);
 
 	LevelMap *map = _get_or_create_map();
 	ERR_FAIL_NULL(map);
@@ -1602,25 +1728,8 @@ void LevelEditorScreen::_draw_drag_feedback(LevelEditorViewport *p_vp, Control *
 		return;
 	}
 
-	Vector3 mins = drag_start.min(drag_current);
-	Vector3 maxs = drag_start.max(drag_current);
-	LevelEditorViewport::ViewType vt = drag_viewport->get_view_type();
-	real_t thickness = grid_size;
-	switch (vt) {
-		case LevelEditorViewport::VIEW_TOP:
-		case LevelEditorViewport::VIEW_PERSPECTIVE:
-			mins.y = drag_start.y;
-			maxs.y = mins.y + thickness;
-			break;
-		case LevelEditorViewport::VIEW_FRONT:
-			mins.z = drag_start.z;
-			maxs.z = mins.z + thickness;
-			break;
-		case LevelEditorViewport::VIEW_SIDE:
-			mins.x = drag_start.x;
-			maxs.x = mins.x + thickness;
-			break;
-	}
+	Vector3 mins, maxs;
+	_compute_drag_aabb(mins, maxs);
 
 	LevelBrush *preview = memnew(LevelBrush);
 	preview->setup_box(AABB(mins, maxs - mins));
