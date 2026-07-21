@@ -55,6 +55,7 @@
 LevelEditorViewport::LevelEditorViewport() {
 	set_stretch(true);
 	set_focus_mode(FOCUS_ALL);
+	set_clip_contents(true);
 
 	subviewport = memnew(SubViewport);
 	subviewport->set_disable_input(true);
@@ -628,6 +629,9 @@ void LevelEditorScreen::_set_mode(Mode p_mode) {
 		selected_edges.clear();
 		selected_vertices.clear();
 	}
+	if (mode != MODE_BLOCK && ghost_active) {
+		_ghost_cancel();
+	}
 	_update_overlays();
 }
 
@@ -654,6 +658,8 @@ real_t LevelEditorScreen::_snap(real_t p_v) const {
 
 void LevelEditorScreen::_clear_selection() {
 	selected_brush = nullptr;
+	select_handle_hover = GHOST_NONE;
+	select_handle_drag = GHOST_NONE;
 	selected_faces.clear();
 	selected_edges.clear();
 	selected_vertices.clear();
@@ -828,6 +834,37 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 	Ref<InputEventMouseButton> mb = p_event;
 	Ref<InputEventMouseMotion> mm = p_event;
 
+	// --- Select-mode box handles take priority over the move gizmo ---
+	if (mode == MODE_SELECT && selected_brush) {
+		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
+			if (mb->is_pressed()) {
+				int h = _pick_select_handle(vp, mb->get_position());
+				if (h != GHOST_NONE) {
+					select_handle_drag = h;
+					select_drag_viewport = vp;
+					select_drag_original_aabb = _get_brush_local_aabb(selected_brush);
+					return;
+				}
+			} else {
+				if (select_handle_drag != GHOST_NONE) {
+					_select_handle_end_drag();
+					return;
+				}
+			}
+		} else if (mm.is_valid()) {
+			if (select_handle_drag != GHOST_NONE && select_drag_viewport == vp) {
+				_select_handle_drag_to(vp, mm->get_position());
+				return;
+			} else {
+				int prev = select_handle_hover;
+				select_handle_hover = _pick_select_handle(vp, mm->get_position());
+				if (prev != select_handle_hover) {
+					_update_overlays();
+				}
+			}
+		}
+	}
+
 	// --- Gizmo interaction takes priority (Select and element modes) ---
 	if (mode != MODE_BLOCK && _has_selection()) {
 		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
@@ -859,6 +896,75 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 	}
 
 	if (mode == MODE_BLOCK) {
+		// --- Stage 2: ghost box with resize handles ---
+		if (ghost_active) {
+			if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
+				if (mb->is_pressed()) {
+					int h = _pick_ghost_handle(vp, mb->get_position());
+					if (h != GHOST_NONE) {
+						ghost_handle_drag = h;
+						ghost_drag_viewport = vp;
+					} else if (_ghost_hit_test(vp, mb->get_position())) {
+						// Clicked inside the ghost: drag the whole box.
+						ghost_moving = true;
+						ghost_drag_viewport = vp;
+						Vector3 hit;
+						if (_ghost_ray_to_edit_plane(vp, mb->get_position(), hit)) {
+							ghost_move_offset = hit - ghost_aabb.position;
+						} else {
+							ghost_move_offset = Vector3();
+						}
+					}
+				} else {
+					ghost_handle_drag = GHOST_NONE;
+					ghost_moving = false;
+					ghost_drag_viewport = nullptr;
+				}
+				return;
+			}
+			if (mm.is_valid()) {
+				if (ghost_moving && ghost_drag_viewport == vp) {
+					Vector3 hit;
+					if (_ghost_ray_to_edit_plane(vp, mm->get_position(), hit)) {
+						Vector3 new_pos = _snap(hit - ghost_move_offset);
+						ghost_aabb.position = new_pos;
+						_update_overlays();
+					}
+				} else if (ghost_handle_drag != GHOST_NONE && ghost_drag_viewport == vp) {
+					_ghost_handle_drag_to(vp, mm->get_position());
+				} else {
+					int prev = ghost_handle_hover;
+					ghost_handle_hover = _pick_ghost_handle(vp, mm->get_position());
+					if (prev != ghost_handle_hover) {
+						_update_overlays();
+					}
+				}
+				return;
+			}
+			Ref<InputEventKey> k = p_event;
+			if (k.is_valid() && k->is_pressed()) {
+				if (k->get_keycode() == Key::ENTER || k->get_keycode() == Key::KP_ENTER) {
+					_ghost_commit();
+					return;
+				}
+				if (k->get_keycode() == Key::ESCAPE) {
+					_ghost_cancel();
+					return;
+				}
+			}
+			return;
+		}
+
+		// --- Stage 1: initial drag ---
+		// Esc cancels an in-progress drag.
+		Ref<InputEventKey> k = p_event;
+		if (k.is_valid() && k->is_pressed() && k->get_keycode() == Key::ESCAPE && dragging) {
+			dragging = false;
+			drag_active = false;
+			drag_viewport = nullptr;
+			_update_overlays();
+			return;
+		}
 		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
 			if (mb->is_pressed()) {
 				Vector3 hit;
@@ -881,10 +987,17 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 			} else {
 				if (dragging && drag_viewport == vp) {
 					if (drag_active) {
-						_commit_drag();
+						// Enter ghost state instead of committing immediately.
+						Vector3 mins, maxs;
+						_compute_drag_aabb(mins, maxs);
+						ghost_aabb = AABB(mins, maxs - mins);
+						ghost_active = true;
+						ghost_handle_hover = GHOST_NONE;
+						ghost_handle_drag = GHOST_NONE;
 					}
 					dragging = false;
 					drag_viewport = nullptr;
+					_update_overlays();
 				}
 			}
 		} else if (mm.is_valid() && dragging && drag_viewport == vp) {
@@ -999,6 +1112,566 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 	}
 }
 
+// ---- Ghost block (stage 2) -------------------------------------------------
+
+int LevelEditorScreen::_pick_ghost_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
+	Vector3 c = ghost_aabb.get_center();
+	Vector3 hs = ghost_aabb.size * 0.5;
+
+	const real_t face_tol = 10.0;
+	const real_t corner_tol = 8.0;
+
+	// Corners first (smaller targets, higher priority).
+	for (int i = 0; i < 8; i++) {
+		Vector3 corner = c + Vector3((i & 1) ? hs.x : -hs.x, (i & 2) ? hs.y : -hs.y, (i & 4) ? hs.z : -hs.z);
+		Vector2 sp;
+		if (p_vp->project(corner, sp) && sp.distance_to(p_screen) < corner_tol) {
+			return GHOST_CORNER_0 + i;
+		}
+	}
+
+	// Face handles: center of each face.
+	static const Vector3 face_dirs[6] = {
+		Vector3(-1, 0, 0),
+		Vector3(1, 0, 0),
+		Vector3(0, -1, 0),
+		Vector3(0, 1, 0),
+		Vector3(0, 0, -1),
+		Vector3(0, 0, 1),
+	};
+	int best = GHOST_NONE;
+	real_t best_d = face_tol;
+	for (int i = 0; i < 6; i++) {
+		Vector3 fc = c + face_dirs[i] * Vector3(hs.x, hs.y, hs.z);
+		Vector2 sp;
+		if (p_vp->project(fc, sp)) {
+			real_t d = sp.distance_to(p_screen);
+			if (d < best_d) {
+				best_d = d;
+				best = GHOST_FACE_XN + i;
+			}
+		}
+	}
+	return best;
+}
+
+bool LevelEditorScreen::_ghost_hit_test(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
+	// Screen-space point-in-polygon test against the ghost's projected faces.
+	Vector3 c = ghost_aabb.get_center();
+	Vector3 hs = ghost_aabb.size * 0.5;
+	Vector3 corners[8];
+	for (int i = 0; i < 8; i++) {
+		corners[i] = c + Vector3((i & 1) ? hs.x : -hs.x, (i & 2) ? hs.y : -hs.y, (i & 4) ? hs.z : -hs.z);
+	}
+	static const int face_idx[6][4] = {
+		{ 4, 5, 7, 6 }, { 1, 0, 2, 3 }, // +Z, -Z
+		{ 5, 1, 3, 7 }, { 0, 4, 6, 2 }, // +X, -X
+		{ 7, 6, 2, 3 }, { 0, 1, 5, 4 }, // +Y, -Y
+	};
+	for (auto &f : face_idx) {
+		Vector2 quad[4];
+		bool ok = true;
+		for (int i = 0; i < 4; i++) {
+			if (!p_vp->project(corners[f[i]], quad[i])) {
+				ok = false;
+				break;
+			}
+		}
+		if (!ok) {
+			continue;
+		}
+		// Ray-casting point-in-quad test.
+		int crossings = 0;
+		for (int i = 0; i < 4; i++) {
+			Vector2 a = quad[i];
+			Vector2 b = quad[(i + 1) % 4];
+			if ((a.y > p_screen.y) != (b.y > p_screen.y)) {
+				real_t x = a.x + (p_screen.y - a.y) * (b.x - a.x) / (b.y - a.y);
+				if (p_screen.x < x) {
+					crossings++;
+				}
+			}
+		}
+		if (crossings % 2 == 1) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool LevelEditorScreen::_ghost_ray_to_edit_plane(LevelEditorViewport *p_vp, const Vector2 &p_screen, Vector3 &r_hit) const {
+	Vector3 ro, rd;
+	p_vp->get_ray(p_screen, ro, rd);
+	Vector3 c = ghost_aabb.get_center();
+	if (p_vp->get_view_type() == LevelEditorViewport::VIEW_PERSPECTIVE) {
+		Plane ground(Vector3(0, 1, 0), c.y);
+		return ground.intersects_ray(ro, rd, &r_hit);
+	}
+	return p_vp->intersect_ortho_plane(p_screen, r_hit);
+}
+
+void LevelEditorScreen::_ghost_handle_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse) {
+	// Drag the handle along its axis (face) or freely (corner), snapped.
+	Vector3 ro, rd;
+	p_vp->get_ray(p_mouse, ro, rd);
+
+	Vector3 c = ghost_aabb.get_center();
+	Vector3 mins = ghost_aabb.position;
+	Vector3 maxs = ghost_aabb.position + ghost_aabb.size;
+
+	int h = ghost_handle_drag;
+	if (h >= GHOST_CORNER_0) {
+		// Corner: move in the view plane closest to the camera (pick the plane
+		// whose normal best faces the camera, like the gizmo plane handles).
+		int ci = h - GHOST_CORNER_0;
+		Vector3 corner = c + Vector3((ci & 1) ? ghost_aabb.size.x * 0.5 : -ghost_aabb.size.x * 0.5, (ci & 2) ? ghost_aabb.size.y * 0.5 : -ghost_aabb.size.y * 0.5, (ci & 4) ? ghost_aabb.size.z * 0.5 : -ghost_aabb.size.z * 0.5);
+
+		// Use the viewport's natural edit plane for ortho views; ground for
+		// perspective.
+		Vector3 hit;
+		bool ok = false;
+		if (p_vp->get_view_type() == LevelEditorViewport::VIEW_PERSPECTIVE) {
+			Plane ground(Vector3(0, 1, 0), corner.y);
+			ok = ground.intersects_ray(ro, rd, &hit);
+		} else {
+			Plane pl;
+			switch (p_vp->get_view_type()) {
+				case LevelEditorViewport::VIEW_TOP:
+					pl = Plane(Vector3(0, 1, 0), corner.y);
+					break;
+				case LevelEditorViewport::VIEW_FRONT:
+					pl = Plane(Vector3(0, 0, 1), corner.z);
+					break;
+				case LevelEditorViewport::VIEW_SIDE:
+					pl = Plane(Vector3(1, 0, 0), corner.x);
+					break;
+				default:
+					break;
+			}
+			ok = pl.intersects_ray(ro, rd, &hit);
+		}
+		if (!ok) {
+			return;
+		}
+		hit = _snap(hit);
+		if (ci & 1) {
+			maxs.x = MAX(hit.x, mins.x + CMP_EPSILON);
+		} else {
+			mins.x = MIN(hit.x, maxs.x - CMP_EPSILON);
+		}
+		if (ci & 2) {
+			maxs.y = MAX(hit.y, mins.y + CMP_EPSILON);
+		} else {
+			mins.y = MIN(hit.y, maxs.y - CMP_EPSILON);
+		}
+		if (ci & 4) {
+			maxs.z = MAX(hit.z, mins.z + CMP_EPSILON);
+		} else {
+			mins.z = MIN(hit.z, maxs.z - CMP_EPSILON);
+		}
+	} else {
+		// Face handle: slide that face along its own axis. Intersect the
+		// mouse ray with the viewport's edit plane (ortho rays are parallel,
+		// so a face-aligned plane would never be hit), then take only the
+		// handle axis component.
+		int axis = (h - GHOST_FACE_XN) / 2; // 0=x, 1=y, 2=z
+		bool is_max = ((h - GHOST_FACE_XN) % 2) == 1;
+
+		Vector3 hit;
+		bool ok = false;
+		if (p_vp->get_view_type() == LevelEditorViewport::VIEW_PERSPECTIVE) {
+			Plane ground(Vector3(0, 1, 0), c.y);
+			ok = ground.intersects_ray(ro, rd, &hit);
+		} else {
+			Plane pl;
+			switch (p_vp->get_view_type()) {
+				case LevelEditorViewport::VIEW_TOP:
+					pl = Plane(Vector3(0, 1, 0), c.y);
+					break;
+				case LevelEditorViewport::VIEW_FRONT:
+					pl = Plane(Vector3(0, 0, 1), c.z);
+					break;
+				case LevelEditorViewport::VIEW_SIDE:
+					pl = Plane(Vector3(1, 0, 0), c.x);
+					break;
+				default:
+					break;
+			}
+			ok = pl.intersects_ray(ro, rd, &hit);
+		}
+		if (!ok) {
+			return;
+		}
+		real_t v = _snap(hit[axis]);
+		if (is_max) {
+			maxs[axis] = MAX(v, mins[axis] + CMP_EPSILON);
+		} else {
+			mins[axis] = MIN(v, maxs[axis] - CMP_EPSILON);
+		}
+	}
+
+	ghost_aabb = AABB(mins, maxs - mins);
+	_update_overlays();
+}
+
+void LevelEditorScreen::_ghost_commit() {
+	ghost_active = false;
+	ghost_handle_hover = GHOST_NONE;
+	ghost_handle_drag = GHOST_NONE;
+	ghost_moving = false;
+
+	LevelMap *map = _get_or_create_map();
+	ERR_FAIL_NULL(map);
+
+	Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
+	ERR_FAIL_NULL(root);
+
+	Transform3D map_inv = map->get_global_transform().affine_inverse();
+
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->set_name("Brush");
+	brush->setup_box(map_inv.xform(ghost_aabb));
+	if (current_material.is_valid()) {
+		for (int f = 0; f < brush->get_face_count(); f++) {
+			brush->set_face_material(f, current_material);
+		}
+	}
+
+	EditorUndoRedoManager::get_singleton()->create_action(TTR("Add Level Brush"));
+	EditorUndoRedoManager::get_singleton()->add_do_method(map, "add_child", brush);
+	EditorUndoRedoManager::get_singleton()->add_do_method(brush, "set_owner", root);
+	EditorUndoRedoManager::get_singleton()->add_do_method(map, "refresh");
+	EditorUndoRedoManager::get_singleton()->add_undo_method(map, "remove_child", brush);
+	EditorUndoRedoManager::get_singleton()->add_undo_method(map, "refresh");
+	EditorUndoRedoManager::get_singleton()->commit_action();
+
+	selected_brush = brush;
+	EditorInterface::get_singleton()->edit_node(brush);
+	_refresh_map();
+}
+
+void LevelEditorScreen::_ghost_cancel() {
+	ghost_active = false;
+	ghost_handle_hover = GHOST_NONE;
+	ghost_handle_drag = GHOST_NONE;
+	ghost_moving = false;
+	_update_overlays();
+}
+
+void LevelEditorScreen::_draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas) {
+	if (!ghost_active) {
+		return;
+	}
+
+	Vector3 c = ghost_aabb.get_center();
+	Vector3 hs = ghost_aabb.size * 0.5;
+
+	// Box edges.
+	Vector3 corners[8];
+	for (int i = 0; i < 8; i++) {
+		corners[i] = c + Vector3((i & 1) ? hs.x : -hs.x, (i & 2) ? hs.y : -hs.y, (i & 4) ? hs.z : -hs.z);
+	}
+	static const int edge_idx[12][2] = {
+		{ 0, 1 },
+		{ 1, 3 },
+		{ 3, 2 },
+		{ 2, 0 },
+		{ 4, 5 },
+		{ 5, 7 },
+		{ 7, 6 },
+		{ 6, 4 },
+		{ 0, 4 },
+		{ 1, 5 },
+		{ 2, 6 },
+		{ 3, 7 },
+	};
+	Color col(0.2, 0.9, 0.4, 0.9);
+	for (auto &e : edge_idx) {
+		Vector2 a, b;
+		if (p_vp->project(corners[e[0]], a) && p_vp->project(corners[e[1]], b)) {
+			p_canvas->draw_line(a, b, col, 2.0);
+		}
+	}
+
+	// Face handles: squares at face centers.
+	static const Vector3 face_dirs[6] = {
+		Vector3(-1, 0, 0),
+		Vector3(1, 0, 0),
+		Vector3(0, -1, 0),
+		Vector3(0, 1, 0),
+		Vector3(0, 0, -1),
+		Vector3(0, 0, 1),
+	};
+	for (int i = 0; i < 6; i++) {
+		Vector3 fc = c + face_dirs[i] * Vector3(hs.x, hs.y, hs.z);
+		Vector2 sp;
+		if (p_vp->project(fc, sp)) {
+			bool hot = (ghost_handle_hover == GHOST_FACE_XN + i || ghost_handle_drag == GHOST_FACE_XN + i);
+			Color hc = hot ? Color(1, 1, 1, 0.95) : Color(0.2, 0.9, 0.4, 0.7);
+			p_canvas->draw_rect(Rect2(sp - Vector2(4, 4), Size2(8, 8)), hc);
+		}
+	}
+
+	// Corner handles.
+	for (int i = 0; i < 8; i++) {
+		Vector2 sp;
+		if (p_vp->project(corners[i], sp)) {
+			bool hot = (ghost_handle_hover == GHOST_CORNER_0 + i || ghost_handle_drag == GHOST_CORNER_0 + i);
+			Color hc = hot ? Color(1, 1, 1, 0.95) : Color(0.2, 0.9, 0.4, 0.7);
+			p_canvas->draw_rect(Rect2(sp - Vector2(3, 3), Size2(6, 6)), hc);
+		}
+	}
+}
+
+// ---- Select-mode box handles ------------------------------------------------
+
+AABB LevelEditorScreen::_get_brush_local_aabb(LevelBrush *p_brush) const {
+	AABB bb;
+	for (int i = 0; i < p_brush->get_vertex_count(); i++) {
+		if (i == 0) {
+			bb.position = p_brush->get_vertex(0);
+		} else {
+			bb.expand_to(p_brush->get_vertex(i));
+		}
+	}
+	return bb;
+}
+
+void LevelEditorScreen::_apply_brush_aabb(LevelBrush *p_brush, const AABB &p_aabb) {
+	// Scale current vertices from the current AABB into the target AABB.
+	AABB cur = _get_brush_local_aabb(p_brush);
+	for (int i = 0; i < p_brush->get_vertex_count(); i++) {
+		Vector3 v = p_brush->get_vertex(i);
+		for (int axis = 0; axis < 3; axis++) {
+			real_t cur_size = cur.size[axis];
+			real_t t = (cur_size > CMP_EPSILON) ? (v[axis] - cur.position[axis]) / cur_size : 0.0;
+			v[axis] = p_aabb.position[axis] + t * p_aabb.size[axis];
+		}
+		p_brush->set_vertex(i, v);
+	}
+}
+
+int LevelEditorScreen::_pick_select_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
+	if (!selected_brush) {
+		return GHOST_NONE;
+	}
+	AABB bb = _get_brush_local_aabb(selected_brush);
+	Transform3D gt = selected_brush->get_global_transform();
+	Vector3 c = bb.get_center();
+	Vector3 hs = bb.size * 0.5;
+
+	const real_t face_tol = 10.0;
+	const real_t corner_tol = 8.0;
+
+	for (int i = 0; i < 8; i++) {
+		Vector3 corner = gt.xform(c + Vector3((i & 1) ? hs.x : -hs.x, (i & 2) ? hs.y : -hs.y, (i & 4) ? hs.z : -hs.z));
+		Vector2 sp;
+		if (p_vp->project(corner, sp) && sp.distance_to(p_screen) < corner_tol) {
+			return GHOST_CORNER_0 + i;
+		}
+	}
+
+	static const Vector3 face_dirs[6] = {
+		Vector3(-1, 0, 0), Vector3(1, 0, 0),
+		Vector3(0, -1, 0), Vector3(0, 1, 0),
+		Vector3(0, 0, -1), Vector3(0, 0, 1),
+	};
+	int best = GHOST_NONE;
+	real_t best_d = face_tol;
+	for (int i = 0; i < 6; i++) {
+		Vector3 fc = gt.xform(c + face_dirs[i] * Vector3(hs.x, hs.y, hs.z));
+		Vector2 sp;
+		if (p_vp->project(fc, sp)) {
+			real_t d = sp.distance_to(p_screen);
+			if (d < best_d) {
+				best_d = d;
+				best = GHOST_FACE_XN + i;
+			}
+		}
+	}
+	return best;
+}
+
+void LevelEditorScreen::_select_handle_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse) {
+	if (!selected_brush) {
+		return;
+	}
+
+	// Restore original geometry, then apply the resize from scratch (absolute).
+	_apply_brush_aabb(selected_brush, select_drag_original_aabb);
+
+	Vector3 ro, rd;
+	p_vp->get_ray(p_mouse, ro, rd);
+
+	Transform3D gt = selected_brush->get_global_transform();
+	Transform3D inv = gt.affine_inverse();
+
+	AABB bb = select_drag_original_aabb;
+	Vector3 mins = bb.position;
+	Vector3 maxs = bb.position + bb.size;
+
+	int h = select_handle_drag;
+
+	// Intersect with the viewport edit plane in world space, then convert to
+	// brush-local.
+	Vector3 hit;
+	bool ok = false;
+	Vector3 wc = gt.xform(bb.get_center());
+	if (p_vp->get_view_type() == LevelEditorViewport::VIEW_PERSPECTIVE) {
+		Plane ground(Vector3(0, 1, 0), wc.y);
+		ok = ground.intersects_ray(ro, rd, &hit);
+	} else {
+		Plane pl;
+		switch (p_vp->get_view_type()) {
+			case LevelEditorViewport::VIEW_TOP:
+				pl = Plane(Vector3(0, 1, 0), wc.y);
+				break;
+			case LevelEditorViewport::VIEW_FRONT:
+				pl = Plane(Vector3(0, 0, 1), wc.z);
+				break;
+			case LevelEditorViewport::VIEW_SIDE:
+				pl = Plane(Vector3(1, 0, 0), wc.x);
+				break;
+			default:
+				break;
+		}
+		ok = pl.intersects_ray(ro, rd, &hit);
+	}
+	if (!ok) {
+		return;
+	}
+
+	Vector3 local_hit = _snap(inv.xform(hit));
+
+	if (h >= GHOST_CORNER_0) {
+		int ci = h - GHOST_CORNER_0;
+		if (ci & 1) {
+			maxs.x = MAX(local_hit.x, mins.x + grid_size);
+		} else {
+			mins.x = MIN(local_hit.x, maxs.x - grid_size);
+		}
+		if (ci & 2) {
+			maxs.y = MAX(local_hit.y, mins.y + grid_size);
+		} else {
+			mins.y = MIN(local_hit.y, maxs.y - grid_size);
+		}
+		if (ci & 4) {
+			maxs.z = MAX(local_hit.z, mins.z + grid_size);
+		} else {
+			mins.z = MIN(local_hit.z, maxs.z - grid_size);
+		}
+	} else {
+		int axis = (h - GHOST_FACE_XN) / 2;
+		bool is_max = ((h - GHOST_FACE_XN) % 2) == 1;
+		if (is_max) {
+			maxs[axis] = MAX(local_hit[axis], mins[axis] + grid_size);
+		} else {
+			mins[axis] = MIN(local_hit[axis], maxs[axis] - grid_size);
+		}
+	}
+
+	_apply_brush_aabb(selected_brush, AABB(mins, maxs - mins));
+	_refresh_map();
+	_update_overlays();
+}
+
+void LevelEditorScreen::_select_handle_end_drag() {
+	if (select_handle_drag == GHOST_NONE || !selected_brush) {
+		select_handle_drag = GHOST_NONE;
+		return;
+	}
+	select_handle_drag = GHOST_NONE;
+
+	// Commit as undo: original AABB vs current geometry.
+	LevelBrush *target = selected_brush;
+	LevelMap *map = current_map;
+
+	// Snapshot "before" by applying the original AABB to a temp copy.
+	LevelBrush *before = target->duplicate_brush();
+	_apply_brush_aabb(before, select_drag_original_aabb);
+	PackedVector3Array old_verts = before->get_vertices_data();
+	memdelete(before);
+
+	PackedVector3Array new_verts = target->get_vertices_data();
+	if (new_verts == old_verts) {
+		return;
+	}
+
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Resize Brush"));
+	undo_redo->add_do_property(target, "vertices", new_verts);
+	undo_redo->add_do_method(map, "refresh");
+	undo_redo->add_undo_property(target, "vertices", old_verts);
+	undo_redo->add_undo_method(map, "refresh");
+	undo_redo->commit_action(false);
+}
+
+void LevelEditorScreen::_draw_select_handles(LevelEditorViewport *p_vp, Control *p_canvas) {
+	if (mode != MODE_SELECT || !selected_brush || select_handle_drag == GHOST_NONE) {
+		// Only draw handles while hovering or dragging; hover handles are
+		// drawn via the normal overlay when a brush is selected.
+	}
+	if (mode != MODE_SELECT || !selected_brush) {
+		return;
+	}
+
+	AABB bb;
+	if (select_handle_drag != GHOST_NONE) {
+		bb = _get_brush_local_aabb(selected_brush);
+	} else {
+		bb = _get_brush_local_aabb(selected_brush);
+	}
+
+	Transform3D gt = selected_brush->get_global_transform();
+	Vector3 c = bb.get_center();
+	Vector3 hs = bb.size * 0.5;
+
+	Color box_col(1.0, 0.6, 0.1, 0.9);
+
+	// Bounding box edges.
+	Vector3 corners[8];
+	for (int i = 0; i < 8; i++) {
+		corners[i] = c + Vector3((i & 1) ? hs.x : -hs.x, (i & 2) ? hs.y : -hs.y, (i & 4) ? hs.z : -hs.z);
+	}
+	static const int edge_idx[12][2] = {
+		{ 0, 1 }, { 1, 3 }, { 3, 2 }, { 2, 0 },
+		{ 4, 5 }, { 5, 7 }, { 7, 6 }, { 6, 4 },
+		{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 },
+	};
+	for (auto &e : edge_idx) {
+		Vector2 a, b;
+		if (p_vp->project(gt.xform(corners[e[0]]), a) && p_vp->project(gt.xform(corners[e[1]]), b)) {
+			p_canvas->draw_line(a, b, box_col, 1.5);
+		}
+	}
+
+	// Face handles.
+	static const Vector3 face_dirs[6] = {
+		Vector3(-1, 0, 0), Vector3(1, 0, 0),
+		Vector3(0, -1, 0), Vector3(0, 1, 0),
+		Vector3(0, 0, -1), Vector3(0, 0, 1),
+	};
+	for (int i = 0; i < 6; i++) {
+		Vector3 fc = gt.xform(c + face_dirs[i] * Vector3(hs.x, hs.y, hs.z));
+		Vector2 sp;
+		if (p_vp->project(fc, sp)) {
+			bool hot = (select_handle_hover == GHOST_FACE_XN + i || select_handle_drag == GHOST_FACE_XN + i);
+			Color hc = hot ? Color(1, 1, 1, 0.95) : Color(1.0, 0.6, 0.1, 0.8);
+			p_canvas->draw_rect(Rect2(sp - Vector2(4, 4), Size2(8, 8)), hc);
+		}
+	}
+
+	// Corner handles.
+	for (int i = 0; i < 8; i++) {
+		Vector2 sp;
+		if (p_vp->project(gt.xform(corners[i]), sp)) {
+			bool hot = (select_handle_hover == GHOST_CORNER_0 + i || select_handle_drag == GHOST_CORNER_0 + i);
+			Color hc = hot ? Color(1, 1, 1, 0.95) : Color(1.0, 0.6, 0.1, 0.8);
+			p_canvas->draw_rect(Rect2(sp - Vector2(3, 3), Size2(6, 6)), hc);
+		}
+	}
+}
+
 void LevelEditorScreen::_compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) const {
 	r_mins = drag_start.min(drag_current);
 	r_maxs = drag_start.max(drag_current);
@@ -1054,47 +1727,6 @@ void LevelEditorScreen::_compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) con
 			r_maxs[i] = r_mins[i] + thickness;
 		}
 	}
-}
-
-void LevelEditorScreen::_commit_drag() {
-	if (!drag_active) {
-		return;
-	}
-
-	Vector3 mins, maxs;
-	_compute_drag_aabb(mins, maxs);
-
-	LevelMap *map = _get_or_create_map();
-	ERR_FAIL_NULL(map);
-
-	Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
-	ERR_FAIL_NULL(root);
-
-	// Build the brush node in map-local space so it's positioned under the
-	// cursor even if the map itself is transformed.
-	Transform3D map_inv = map->get_global_transform().affine_inverse();
-	AABB world_aabb(mins, maxs - mins);
-
-	LevelBrush *brush = memnew(LevelBrush);
-	brush->set_name("Brush");
-	brush->setup_box(map_inv.xform(world_aabb));
-	if (current_material.is_valid()) {
-		for (int f = 0; f < brush->get_face_count(); f++) {
-			brush->set_face_material(f, current_material);
-		}
-	}
-
-	EditorUndoRedoManager::get_singleton()->create_action(TTR("Add Level Brush"));
-	EditorUndoRedoManager::get_singleton()->add_do_method(map, "add_child", brush);
-	EditorUndoRedoManager::get_singleton()->add_do_method(brush, "set_owner", root);
-	EditorUndoRedoManager::get_singleton()->add_do_method(map, "refresh");
-	EditorUndoRedoManager::get_singleton()->add_undo_method(map, "remove_child", brush);
-	EditorUndoRedoManager::get_singleton()->add_undo_method(map, "refresh");
-	EditorUndoRedoManager::get_singleton()->commit_action();
-
-	selected_brush = brush;
-	EditorInterface::get_singleton()->edit_node(brush);
-	_refresh_map();
 }
 
 void LevelEditorScreen::_extrude_pressed() {
@@ -1704,7 +2336,9 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 		}
 	}
 	_draw_drag_feedback(p_vp, p_canvas);
+	_draw_ghost(p_vp, p_canvas);
 	_draw_selection(p_vp, p_canvas);
+	_draw_select_handles(p_vp, p_canvas);
 	_draw_gizmo(p_vp, p_canvas);
 }
 
@@ -1724,7 +2358,7 @@ void LevelEditorScreen::_draw_brush_outline(LevelEditorViewport *p_vp, Control *
 }
 
 void LevelEditorScreen::_draw_drag_feedback(LevelEditorViewport *p_vp, Control *p_canvas) {
-	if (!dragging || !drag_active || !drag_viewport) {
+	if (!dragging || !drag_active || !drag_viewport || ghost_active) {
 		return;
 	}
 

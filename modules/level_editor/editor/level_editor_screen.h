@@ -161,12 +161,56 @@ private:
 
 	LevelMap *current_map = nullptr;
 
-	// Block-drag state.
+	// Block-drag state (stage 1: drawing the initial box).
 	bool dragging = false;
 	LevelEditorViewport *drag_viewport = nullptr;
 	Vector3 drag_start;
 	Vector3 drag_current;
 	bool drag_active = false;
+
+	// Ghost state (stage 2: box drawn, resize handles active until Enter/Esc).
+	bool ghost_active = false;
+	AABB ghost_aabb; // World space.
+
+	// Ghost handle being dragged (or hovered): 6 face handles + 8 corners.
+	enum GhostHandle {
+		GHOST_NONE = -1,
+		GHOST_FACE_XN = 0,
+		GHOST_FACE_XP = 1,
+		GHOST_FACE_YN = 2,
+		GHOST_FACE_YP = 3,
+		GHOST_FACE_ZN = 4,
+		GHOST_FACE_ZP = 5,
+		GHOST_CORNER_0 = 6, // 6..13: corner index = 6 + bitmask(x|y|z)
+	};
+	int ghost_handle_hover = GHOST_NONE;
+	int ghost_handle_drag = GHOST_NONE;
+	LevelEditorViewport *ghost_drag_viewport = nullptr;
+	bool ghost_moving = false; // Dragging the whole ghost box.
+	Vector3 ghost_move_offset; // Grab point minus ghost AABB position.
+
+	bool _ghost_hit_test(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
+	bool _ghost_ray_to_edit_plane(LevelEditorViewport *p_vp, const Vector2 &p_screen, Vector3 &r_hit) const;
+
+	int _pick_ghost_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
+	void _ghost_handle_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
+	void _ghost_commit();
+	void _ghost_cancel();
+	void _draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas);
+
+	// Select-mode box handles: resize the selected brush's local AABB.
+	// Shares the GhostHandle enum (0..5 faces, 6..13 corners).
+	int select_handle_hover = GHOST_NONE;
+	int select_handle_drag = GHOST_NONE;
+	LevelEditorViewport *select_drag_viewport = nullptr;
+	AABB select_drag_original_aabb; // Brush-local AABB at drag start.
+
+	AABB _get_brush_local_aabb(LevelBrush *p_brush) const;
+	void _apply_brush_aabb(LevelBrush *p_brush, const AABB &p_aabb);
+	int _pick_select_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
+	void _select_handle_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
+	void _select_handle_end_drag();
+	void _draw_select_handles(LevelEditorViewport *p_vp, Control *p_canvas);
 
 	// Selection state (all indices refer to the selected brush's topology).
 	LevelBrush *selected_brush = nullptr;
@@ -242,7 +286,6 @@ private:
 	void _refresh_map();
 
 	void _compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) const;
-	void _commit_drag();
 
 	// Draw helpers used by the viewport overlay.
 	friend class LevelEditorViewport;
