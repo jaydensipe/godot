@@ -265,7 +265,10 @@ void LevelEditorViewport::queue_overlay_redraw() {
 
 void LevelEditorViewport::focus_on(const AABB &p_aabb) {
 	if (view_type == VIEW_PERSPECTIVE && view_controller.is_valid()) {
-		view_controller->cursor.pos = p_aabb.get_center();
+		Vector3 center = p_aabb.get_center();
+		view_controller->cursor.pos_x = center.x;
+		view_controller->cursor.pos_y = center.y;
+		view_controller->cursor.pos_z = center.z;
 		view_controller->cursor.distance = MAX(p_aabb.get_longest_axis_size() * 2.0, 4.0);
 	} else {
 		pivot = p_aabb.get_center();
@@ -620,13 +623,23 @@ LevelEditorScreen::LevelEditorScreen() {
 	tools_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_tools_menu_selected));
 	toolbar->add_child(tools_menu);
 
-	// Quad viewports.
-	rows_split = memnew(VSplitContainer);
+	// Quad viewports: main vertical split with two horizontal splits inside,
+	// all with nested dragger intersections enabled - grabbing the center
+	// intersection drags both axes at once (like the 3D editor's quad view).
+	rows_split = memnew(SplitContainer);
+	rows_split->set_vertical(true);
 	rows_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	rows_split->set_drag_nested_intersections(true);
 	add_child(rows_split);
 
-	top_split = memnew(HSplitContainer);
-	bottom_split = memnew(HSplitContainer);
+	top_split = memnew(SplitContainer);
+	top_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	top_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	top_split->set_drag_nested_intersections(true);
+	bottom_split = memnew(SplitContainer);
+	bottom_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	bottom_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	bottom_split->set_drag_nested_intersections(true);
 	rows_split->add_child(top_split);
 	rows_split->add_child(bottom_split);
 

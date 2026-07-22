@@ -146,9 +146,9 @@ private:
 	EditorPlugin *plugin = nullptr;
 
 	LevelEditorViewport *viewports[4] = {};
-	HSplitContainer *top_split = nullptr;
-	HSplitContainer *bottom_split = nullptr;
-	VSplitContainer *rows_split = nullptr;
+	SplitContainer *top_split = nullptr;
+	SplitContainer *bottom_split = nullptr;
+	SplitContainer *rows_split = nullptr;
 
 	HBoxContainer *toolbar = nullptr;
 	Button *mode_buttons[MODE_MAX] = {};
