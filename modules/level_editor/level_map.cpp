@@ -167,7 +167,9 @@ Node3D *LevelMap::bake() const {
 		return nullptr;
 	}
 
-	const Transform3D map_inv = get_global_transform().affine_inverse();
+	// Fall back to the local transform when detached from the tree (tests,
+	// offline tools) instead of spamming get_global_transform errors.
+	const Transform3D map_inv = is_inside_tree() ? get_global_transform().affine_inverse() : get_transform().affine_inverse();
 
 	// One surface per unique material.
 	LocalVector<Ref<Material>> materials;
@@ -199,7 +201,7 @@ Node3D *LevelMap::bake() const {
 
 		for (LevelBrush *brush : brushes) {
 			// Brush-local -> map-local transform.
-			const Transform3D brush_to_map = map_inv * brush->get_global_transform();
+			const Transform3D brush_to_map = map_inv * (brush->is_inside_tree() ? brush->get_global_transform() : brush->get_transform());
 			const Basis normal_basis = brush_to_map.basis.inverse().transposed();
 
 			for (int f = 0; f < brush->get_face_count(); f++) {
@@ -234,7 +236,7 @@ Node3D *LevelMap::bake() const {
 
 	// Collision + occluder geometry (map-local).
 	for (LevelBrush *brush : brushes) {
-		const Transform3D brush_to_map = map_inv * brush->get_global_transform();
+		const Transform3D brush_to_map = map_inv * (brush->is_inside_tree() ? brush->get_global_transform() : brush->get_transform());
 		Vector<Vector3> faces;
 		brush->get_collision_faces(faces);
 		for (const Vector3 &p : faces) {

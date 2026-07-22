@@ -117,11 +117,12 @@ public:
 
 	void get_ray(const Vector2 &p_screen, Vector3 &r_origin, Vector3 &r_dir) const;
 	bool intersect_ortho_plane(const Vector2 &p_screen, Vector3 &r_hit) const;
+	// Ray -> this viewport's natural edit plane (through p_point). Works for
+	// all view types (perspective uses the horizontal plane at p_point.y).
+	bool ray_to_view_plane(const Vector2 &p_screen, const Vector3 &p_point, Vector3 &r_hit) const;
 
 	void queue_overlay_redraw();
 	bool project(const Vector3 &p_world, Vector2 &r_screen) const;
-
-	void focus_on(const AABB &p_aabb);
 
 	LevelEditorViewport();
 };
@@ -199,6 +200,7 @@ private:
 	bool _ghost_hit_test(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
 	bool _ghost_ray_to_edit_plane(LevelEditorViewport *p_vp, const Vector2 &p_screen, Vector3 &r_hit) const;
 
+	int _pick_box_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen, const AABB &p_aabb, const Transform3D &p_xform) const;
 	int _pick_ghost_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
 	void _ghost_handle_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _ghost_commit();
@@ -301,7 +303,6 @@ private:
 	Vector3 gizmo_drag_plane_point;
 	PackedVector3Array gizmo_drag_original_verts; // Brush vertices at drag start.
 	Vector3 gizmo_drag_original_position; // Brush node position at drag start (Select mode).
-	real_t gizmo_drag_original_rotation = 0.0; // Y rotation at drag start (Rotate mode).
 	bool gizmo_drag_uniform_scale = false; // Scale drag started off-gizmo (mouse-X uniform).
 
 	Vector3 _get_gizmo_origin() const; // World-space pivot of current selection.
@@ -345,6 +346,10 @@ private:
 	void _update_hover(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _clear_selection();
 	void _delete_selection();
+
+	// Undo helper: records the brush's current vertices/faces/materials as the
+	// "do" state against previously-snapshotted data, in one action.
+	void _commit_brush_undo(const String &p_action, LevelBrush *p_brush, const PackedVector3Array &p_old_verts, const Array &p_old_faces, const Array &p_old_mats, bool p_execute = false);
 	void _update_overlays();
 	void _refresh_map();
 

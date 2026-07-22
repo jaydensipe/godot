@@ -206,23 +206,7 @@ void LevelEditorScreen::_join_edges() {
 	}
 	selected_edges.clear();
 
-	PackedVector3Array new_verts = target->get_vertices_data();
-	Array new_faces = target->get_faces_data();
-	Array new_mats = target->get_face_materials_data();
-
-	LevelMap *map = current_map;
-	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	undo_redo->create_action(TTR("Bridge Edges"));
-	undo_redo->add_do_property(target, "vertices", new_verts);
-	undo_redo->add_do_property(target, "faces", new_faces);
-	undo_redo->add_do_property(target, "face_materials", new_mats);
-	undo_redo->add_do_method(map, "refresh");
-	undo_redo->add_undo_property(target, "vertices", old_verts);
-	undo_redo->add_undo_property(target, "faces", old_faces);
-	undo_redo->add_undo_property(target, "face_materials", old_mats);
-	undo_redo->add_undo_method(map, "refresh");
-	undo_redo->commit_action(false);
-
+	_commit_brush_undo(TTR("Bridge Edges"), target, old_verts, old_faces, old_mats);
 	_refresh_map();
 }
 
