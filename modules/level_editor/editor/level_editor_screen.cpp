@@ -471,8 +471,9 @@ LevelEditorScreen::LevelEditorScreen() {
 
 	toolbar = memnew(HBoxContainer);
 	toolbar_margin->add_child(toolbar);
+	static const char *mode_names[MODE_MAX] = { "Select", "Rotate", "Scale", "Block", "Clip", "Vertex", "Edge", "Face" };
 
-	// Tool modes in one button-group panel (Select, Block, Clip)...
+	// Tool modes in one button-group panel (Select, Rotate, Scale, Block, Clip)...
 	PanelContainer *tool_panel = memnew(PanelContainer);
 	tool_panel->set_theme_type_variation("PanelContainerButtonGroup");
 	toolbar->add_child(tool_panel);
@@ -510,7 +511,11 @@ LevelEditorScreen::LevelEditorScreen() {
 
 	// Icons are (re)assigned in NOTIFICATION_THEME_CHANGED. Text labels are
 	// fallbacks for buttons without icons.
-	mode_buttons[MODE_SELECT]->set_tooltip_text(TTRC("Select"));
+	mode_buttons[MODE_SELECT]->set_tooltip_text(TTRC("Select / Move"));
+	mode_buttons[MODE_ROTATE]->set_tooltip_text(TTRC("Rotate"));
+	mode_buttons[MODE_ROTATE]->set_text(mode_names[MODE_ROTATE]);
+	mode_buttons[MODE_SCALE]->set_tooltip_text(TTRC("Scale"));
+	mode_buttons[MODE_SCALE]->set_text(mode_names[MODE_SCALE]);
 	mode_buttons[MODE_BLOCK]->set_tooltip_text(TTRC("Block"));
 	mode_buttons[MODE_CLIP]->set_tooltip_text(TTRC("Clip"));
 	mode_buttons[MODE_VERTEX]->set_tooltip_text(TTRC("Vertex"));
@@ -747,6 +752,10 @@ void LevelEditorScreen::_clear_selection() {
 	selected_brush = nullptr;
 	select_handle_hover = GHOST_NONE;
 	select_handle_drag = GHOST_NONE;
+	select_moving = false;
+	select_move_viewport = nullptr;
+	rotate_hover_axis = -1;
+	rotate_drag_axis = -1;
 	selected_faces.clear();
 	selected_edges.clear();
 	selected_vertices.clear();
@@ -989,15 +998,78 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 		}
 	}
 
+	// --- Rotate gizmo interaction (Rotate mode) ---
+	if (mode == MODE_ROTATE && selected_brush) {
+		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
+			if (mb->is_pressed()) {
+				int axis = _pick_rotate_ring(vp, mb->get_position());
+				if (axis < 0 && vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE) {
+					// Ortho views: click anywhere to rotate around the view axis.
+					switch (vp->get_view_type()) {
+						case LevelEditorViewport::VIEW_TOP:
+							axis = 1;
+							break;
+						case LevelEditorViewport::VIEW_FRONT:
+							axis = 2;
+							break;
+						case LevelEditorViewport::VIEW_SIDE:
+							axis = 0;
+							break;
+						default:
+							break;
+					}
+				}
+				if (axis >= 0) {
+					rotate_drag_axis = axis;
+					rotate_drag_viewport = vp;
+					rotate_drag_start_angle = _rotate_screen_angle(vp, mb->get_position(), axis);
+					gizmo_drag_original_verts = selected_brush->get_vertices_data();
+					return;
+				}
+			} else {
+				if (rotate_drag_axis >= 0) {
+					_rotate_end_drag();
+					return;
+				}
+			}
+		} else if (mm.is_valid()) {
+			if (rotate_drag_axis >= 0 && rotate_drag_viewport == vp) {
+				real_t cur = _rotate_screen_angle(vp, mm->get_position(), rotate_drag_axis);
+				real_t delta = cur - rotate_drag_start_angle;
+				// Snap to 15 degrees.
+				delta = Math::snapped(delta, Math::deg_to_rad(15.0));
+				_apply_gizmo_rotate(rotate_drag_axis, delta);
+				_update_overlays();
+				return;
+			} else {
+				int prev = rotate_hover_axis;
+				rotate_hover_axis = _pick_rotate_ring(vp, mm->get_position());
+				if (prev != rotate_hover_axis) {
+					_update_overlays();
+				}
+			}
+		}
+	}
+
+
+
 	// --- Gizmo interaction takes priority (Select and element modes) ---
-	if (mode != MODE_BLOCK && mode != MODE_CLIP && _has_selection()) {
+	if (mode != MODE_BLOCK && mode != MODE_CLIP && mode != MODE_ROTATE && _has_selection()) {
 		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
 			if (mb->is_pressed()) {
 				int part = _pick_gizmo(p_camera, mb->get_position());
 				if (part != GIZMO_NONE) {
+					gizmo_drag_uniform_scale = false;
 					gizmo_drag_part = (GizmoPart)part;
 					_gizmo_begin_drag(vp, mb->get_position());
 					return; // Consumed by gizmo.
+				} else if (mode == MODE_SCALE) {
+					// Off-gizmo click in Scale mode: drag anywhere to scale
+					// uniformly via mouse X.
+					gizmo_drag_uniform_scale = true;
+					gizmo_drag_part = GIZMO_NONE;
+					_gizmo_begin_drag(vp, mb->get_position());
+					return;
 				}
 			} else {
 				if (gizmo_dragging) {
@@ -1261,17 +1333,66 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 	if (gizmo_dragging) {
 		return;
 	}
+
+	// Whole-brush drag in Select mode.
+	if (select_moving) {
+		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT && !mb->is_pressed()) {
+			// Release: commit undo.
+			Vector3 new_pos = selected_brush ? selected_brush->get_position() : select_move_original_position;
+			if (selected_brush && !new_pos.is_equal_approx(select_move_original_position)) {
+				LevelBrush *target = selected_brush;
+				Vector3 old_pos = select_move_original_position;
+				EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+				undo_redo->create_action(TTR("Move Brush"));
+				undo_redo->add_do_property(target, "position", new_pos);
+				undo_redo->add_undo_property(target, "position", old_pos);
+				undo_redo->commit_action(false);
+			}
+			select_moving = false;
+			select_move_viewport = nullptr;
+			return;
+		}
+		if (mm.is_valid() && select_move_viewport == vp && selected_brush) {
+			Vector3 grab;
+			if (_select_ray_to_edit_plane(vp, mm->get_position(), grab)) {
+				Vector3 new_world = _snap(grab - select_move_offset);
+				Node3D *parent = Object::cast_to<Node3D>(selected_brush->get_parent());
+				if (parent) {
+					selected_brush->set_position(parent->get_global_transform().affine_inverse().xform(new_world));
+				} else {
+					selected_brush->set_position(new_world);
+				}
+				_refresh_map();
+				_update_overlays();
+			}
+			return;
+		}
+	}
 	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT && mb->is_pressed()) {
 		bool add = mb->is_shift_pressed();
 		switch (mode) {
 			case MODE_SELECT: {
-				// Click a brush to select the whole node (gizmo moves it).
+				// Click a brush to select it; re-clicking the already-selected
+				// brush starts a whole-brush drag (like the ghost move).
 				Vector3 hit;
 				LevelBrush *brush = nullptr;
 				int f;
 				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
-					selected_brush = brush;
-					EditorInterface::get_singleton()->edit_node(brush);
+					if (brush == selected_brush) {
+						// Begin drag on the edit plane at the grab depth.
+						select_moving = true;
+						select_move_viewport = vp;
+						select_move_original_position = selected_brush->get_position();
+						Vector3 grab;
+						if (_select_ray_to_edit_plane(vp, mb->get_position(), grab)) {
+							select_move_offset = grab - selected_brush->get_global_position();
+						} else {
+							select_move_offset = Vector3();
+						}
+					} else {
+						selected_brush = brush;
+						EditorInterface::get_singleton()->edit_node(brush);
+					}
 				} else if (!add) {
 					_clear_selection();
 				}
@@ -1347,6 +1468,32 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 	} else if (mm.is_valid()) {
 		_update_hover(vp, mm->get_position());
 	}
+}
+
+bool LevelEditorScreen::_select_ray_to_edit_plane(LevelEditorViewport *p_vp, const Vector2 &p_screen, Vector3 &r_hit) const {
+	Vector3 ro, rd;
+	p_vp->get_ray(p_screen, ro, rd);
+	// Plane at the brush's current depth for the view type.
+	Vector3 pos = selected_brush ? selected_brush->get_global_position() : Vector3();
+	if (p_vp->get_view_type() == LevelEditorViewport::VIEW_PERSPECTIVE) {
+		Plane ground(Vector3(0, 1, 0), pos.y);
+		return ground.intersects_ray(ro, rd, &r_hit);
+	}
+	Plane pl;
+	switch (p_vp->get_view_type()) {
+		case LevelEditorViewport::VIEW_TOP:
+			pl = Plane(Vector3(0, 1, 0), pos.y);
+			break;
+		case LevelEditorViewport::VIEW_FRONT:
+			pl = Plane(Vector3(0, 0, 1), pos.z);
+			break;
+		case LevelEditorViewport::VIEW_SIDE:
+			pl = Plane(Vector3(1, 0, 0), pos.x);
+			break;
+		default:
+			break;
+	}
+	return pl.intersects_ray(ro, rd, &r_hit);
 }
 
 // ---- Ghost block (stage 2) -------------------------------------------------
@@ -1647,7 +1794,7 @@ void LevelEditorScreen::_draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas
 		Vector2 sp;
 		if (p_vp->project(fc, sp)) {
 			bool hot = (ghost_handle_hover == GHOST_FACE_XN + i || ghost_handle_drag == GHOST_FACE_XN + i);
-			Color hc = hot ? Color(1, 1, 1, 0.95) : Color(0.2, 0.9, 0.4, 0.7);
+			Color hc = hot ? Color(0.6, 1.0, 0.75, 0.95) : Color(0.2, 0.9, 0.4, 0.7);
 			real_t hs_px = 4.0 * EDSCALE;
 			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hc);
 		}
@@ -1658,7 +1805,7 @@ void LevelEditorScreen::_draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas
 		Vector2 sp;
 		if (p_vp->project(corners[i], sp)) {
 			bool hot = (ghost_handle_hover == GHOST_CORNER_0 + i || ghost_handle_drag == GHOST_CORNER_0 + i);
-			Color hc = hot ? Color(1, 1, 1, 0.95) : Color(0.2, 0.9, 0.4, 0.7);
+			Color hc = hot ? Color(0.6, 1.0, 0.75, 0.95) : Color(0.2, 0.9, 0.4, 0.7);
 			real_t hs_px = 3.0 * EDSCALE;
 			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hc);
 		}
@@ -1872,7 +2019,8 @@ void LevelEditorScreen::_draw_clip(LevelEditorViewport *p_vp, Control *p_canvas)
 		Vector2 sp;
 		if (p_vp->project(clip_points[i], sp)) {
 			bool hot = (clip_drag_point == i);
-			p_canvas->draw_rect(Rect2(sp - Vector2(4, 4), Size2(8, 8)), hot ? Color(1, 1, 1, 1) : pt_col);
+			real_t hs_px = 4.0 * EDSCALE;
+			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hot ? Color(0.6, 1.0, 1.0, 1.0) : pt_col);
 		}
 	}
 
@@ -2205,8 +2353,9 @@ void LevelEditorScreen::_draw_select_handles(LevelEditorViewport *p_vp, Control 
 		Vector2 sp;
 		if (p_vp->project(fc, sp)) {
 			bool hot = (select_handle_hover == GHOST_FACE_XN + i || select_handle_drag == GHOST_FACE_XN + i);
-			Color hc = hot ? Color(1, 1, 1, 0.95) : Color(1.0, 0.6, 0.1, 0.8);
-			p_canvas->draw_rect(Rect2(sp - Vector2(4, 4), Size2(8, 8)), hc);
+			Color hc = hot ? Color(1.0, 0.8, 0.5, 0.95) : Color(1.0, 0.6, 0.1, 0.8);
+			real_t hs_px = 4.0 * EDSCALE;
+			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hc);
 		}
 	}
 
@@ -2215,8 +2364,9 @@ void LevelEditorScreen::_draw_select_handles(LevelEditorViewport *p_vp, Control 
 		Vector2 sp;
 		if (p_vp->project(gt.xform(corners[i]), sp)) {
 			bool hot = (select_handle_hover == GHOST_CORNER_0 + i || select_handle_drag == GHOST_CORNER_0 + i);
-			Color hc = hot ? Color(1, 1, 1, 0.95) : Color(1.0, 0.6, 0.1, 0.8);
-			p_canvas->draw_rect(Rect2(sp - Vector2(3, 3), Size2(6, 6)), hc);
+			Color hc = hot ? Color(1.0, 0.8, 0.5, 0.95) : Color(1.0, 0.6, 0.1, 0.8);
+			real_t hs_px = 3.0 * EDSCALE;
+			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hc);
 		}
 	}
 }
@@ -2475,6 +2625,8 @@ bool LevelEditorScreen::_has_selection() const {
 	}
 	switch (mode) {
 		case MODE_SELECT:
+		case MODE_ROTATE:
+		case MODE_SCALE:
 			return true; // Whole brush is the selection.
 		case MODE_FACE:
 			return !selected_faces.is_empty();
@@ -2493,7 +2645,7 @@ Vector3 LevelEditorScreen::_get_gizmo_origin() const {
 	}
 	Transform3D gt = selected_brush->get_global_transform();
 
-	if (mode == MODE_SELECT) {
+	if (mode == MODE_SELECT || mode == MODE_ROTATE || mode == MODE_SCALE) {
 		// Gizmo at the brush's geometry center, in world space.
 		return gt.xform(selected_brush->get_center());
 	}
@@ -2578,11 +2730,11 @@ int LevelEditorScreen::_pick_gizmo(Camera3D *p_camera, const Vector2 &p_screen) 
 	}
 	Vector2 so = p_camera->unproject_position(origin);
 
-	// Axis length in pixels (fixed screen size).
-	const real_t axis_len = 64.0;
-	const real_t axis_tol = 9.0;
-	const real_t plane_tol = 12.0;
-	const real_t center_tol = 7.0;
+	// Axis length in pixels (fixed screen size, scaled by editor scale).
+	const real_t axis_len = 64.0 * EDSCALE;
+	const real_t axis_tol = 9.0 * EDSCALE;
+	const real_t plane_tol = 12.0 * EDSCALE;
+	const real_t center_tol = 7.0 * EDSCALE;
 
 	// World-space scale so the axis projects to axis_len pixels.
 	// Approximate: project origin + unit axis and measure pixel length.
@@ -2746,8 +2898,302 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 		}
 	}
 
+
+
+	// Scale mode: axis drag distance -> scale factor along that axis.
+	if (mode == MODE_SCALE) {
+		if (gizmo_drag_uniform_scale) {
+			// Click-anywhere uniform drag (started off-gizmo): use mouse X.
+			real_t factor = 1.0 + (p_mouse.x - gizmo_drag_mouse_start.x) * 0.01;
+			_apply_gizmo_scale_uniform(factor);
+		} else {
+			_apply_gizmo_scale(delta);
+		}
+		_update_overlays();
+		return;
+	}
+
 	_apply_gizmo_delta(delta);
 	_update_overlays();
+}
+
+// ---- Rotate gizmo ------------------------------------------------------------
+
+// Radius in pixels of the rotate rings on screen (before EDSCALE).
+static const real_t ROTATE_RING_PX = 64.0 * EDSCALE;
+
+int LevelEditorScreen::_pick_rotate_ring(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
+	if (!selected_brush) {
+		return -1;
+	}
+	Vector3 origin = _get_gizmo_origin();
+	Vector2 center;
+	if (!p_vp->project(origin, center)) {
+		return -1;
+	}
+
+	// The ring plane normal axes; ring radius matches the drawn circle.
+	const real_t tol = 8.0 * EDSCALE;
+	int best_axis = -1;
+	real_t best_dist = tol;
+
+	// In ortho views, only the ring perpendicular to the view plane is usable.
+	int allowed_axis = -1;
+	switch (p_vp->get_view_type()) {
+		case LevelEditorViewport::VIEW_TOP:
+			allowed_axis = 1;
+			break;
+		case LevelEditorViewport::VIEW_FRONT:
+			allowed_axis = 2;
+			break;
+		case LevelEditorViewport::VIEW_SIDE:
+			allowed_axis = 0;
+			break;
+		default:
+			break;
+	}
+
+	Vector3 axes[3] = { Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(0, 0, 1) };
+	for (int axis = 0; axis < 3; axis++) {
+		if (allowed_axis >= 0 && axis != allowed_axis) {
+			continue; // Ring disabled in this ortho view.
+		}
+		// Sample the ring in 3D and project; measure min distance to the mouse.
+		const int SEGMENTS = 48;
+		real_t min_d = (real_t)Math::INF;
+		bool any_front = false;
+		for (int s = 0; s < SEGMENTS; s++) {
+			real_t a = (real_t)s / SEGMENTS * Math::TAU;
+			Vector3 p;
+			// Ring in the plane perpendicular to the axis.
+			int u = (axis + 1) % 3, v = (axis + 2) % 3;
+			p[u] = Math::cos(a);
+			p[v] = Math::sin(a);
+			Vector3 world = origin + p;
+			Vector2 sp;
+			if (!p_vp->project(world, sp)) {
+				continue;
+			}
+			any_front = true;
+			min_d = MIN(min_d, sp.distance_to(p_screen));
+		}
+		if (!any_front) {
+			continue;
+		}
+		// Normalize by ring screen size: we want distance from the RING LINE,
+		// not from the circle center. Approximate: check distance to the
+		// projected circle's radius.
+		if (min_d < best_dist) {
+			best_dist = min_d;
+			best_axis = axis;
+		}
+	}
+	return best_axis;
+}
+
+real_t LevelEditorScreen::_rotate_screen_angle(LevelEditorViewport *p_vp, const Vector2 &p_screen, int p_axis) const {
+	// Intersect the mouse ray with the plane perpendicular to the axis
+	// through the gizmo origin; return the angle around the axis from the
+	// view-right reference.
+	Vector3 origin = _get_gizmo_origin();
+	Vector3 ro, rd;
+	p_vp->get_ray(p_screen, ro, rd);
+	Vector3 normal;
+	normal[p_axis] = 1.0;
+	Plane pl(normal, normal.dot(origin));
+	Vector3 hit;
+	if (!pl.intersects_ray(ro, rd, &hit)) {
+		return 0.0;
+	}
+	Vector3 rel = hit - origin;
+	int u = (p_axis + 1) % 3, v = (p_axis + 2) % 3;
+	return Math::atan2(rel[v], rel[u]);
+}
+
+void LevelEditorScreen::_draw_rotate_gizmo(LevelEditorViewport *p_vp, Control *p_canvas) {
+	if (mode != MODE_ROTATE || !selected_brush) {
+		return;
+	}
+	Vector3 origin = _get_gizmo_origin();
+	Vector2 center;
+	if (!p_vp->project(origin, center)) {
+		return;
+	}
+
+	Camera3D *cam = p_vp->get_camera();
+	Color axis_col[3] = { Color(0.95, 0.3, 0.3), Color(0.4, 0.9, 0.4), Color(0.3, 0.6, 1.0) };
+
+	// World-space radius so the ring projects to ~ROTATE_RING_PX pixels.
+	// Estimate via one test point like the move gizmo does.
+	real_t world_radius = 1.0;
+	{
+		Vector3 test = origin + Vector3(1, 0, 0);
+		if (!cam->is_position_behind(test)) {
+			real_t px = cam->unproject_position(test).distance_to(center);
+			if (px > 0.001) {
+				world_radius = ROTATE_RING_PX / px;
+			}
+		}
+	}
+
+	// In ortho views, only the ring perpendicular to the view plane is usable.
+	int allowed_axis = -1;
+	switch (p_vp->get_view_type()) {
+		case LevelEditorViewport::VIEW_TOP:
+			allowed_axis = 1;
+			break;
+		case LevelEditorViewport::VIEW_FRONT:
+			allowed_axis = 2;
+			break;
+		case LevelEditorViewport::VIEW_SIDE:
+			allowed_axis = 0;
+			break;
+		default:
+			break;
+	}
+
+	const int SEGMENTS = 48;
+	for (int axis = 0; axis < 3; axis++) {
+		if (allowed_axis >= 0 && axis != allowed_axis) {
+			continue; // Ring disabled in this ortho view.
+		}
+		bool hot = (rotate_hover_axis == axis || rotate_drag_axis == axis);
+		Color col = hot ? axis_col[axis].lerp(Color(1, 1, 1), 0.5) : axis_col[axis];
+		real_t width = (hot ? 3.0 : 2.0) * EDSCALE;
+
+		int u = (axis + 1) % 3, v = (axis + 2) % 3;
+		Vector2 prev;
+		bool has_prev = false;
+		for (int s = 0; s <= SEGMENTS; s++) {
+			real_t a = (real_t)s / SEGMENTS * Math::TAU;
+			Vector3 p;
+			p[u] = Math::cos(a) * world_radius;
+			p[v] = Math::sin(a) * world_radius;
+			Vector2 sp;
+			if (p_vp->project(origin + p, sp)) {
+				if (has_prev) {
+					p_canvas->draw_line(prev, sp, col, width);
+				}
+				prev = sp;
+				has_prev = true;
+			} else {
+				has_prev = false;
+			}
+		}
+	}
+
+	// Center dot.
+	p_canvas->draw_circle(center, 3.0 * EDSCALE, Color(1, 1, 1, 0.9));
+}
+
+void LevelEditorScreen::_rotate_end_drag() {
+	if (rotate_drag_axis < 0 || !selected_brush) {
+		rotate_drag_axis = -1;
+		return;
+	}
+	rotate_drag_axis = -1;
+
+	// Commit as undo: vertices before vs after.
+	LevelBrush *target = selected_brush;
+	LevelMap *map = current_map;
+
+	PackedVector3Array new_verts = target->get_vertices_data();
+	if (new_verts == gizmo_drag_original_verts) {
+		return;
+	}
+
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Rotate Brush"));
+	undo_redo->add_do_property(target, "vertices", new_verts);
+	undo_redo->add_do_method(map, "refresh");
+	undo_redo->add_undo_property(target, "vertices", gizmo_drag_original_verts);
+	undo_redo->add_undo_method(map, "refresh");
+	undo_redo->commit_action(false);
+
+	gizmo_drag_original_verts.clear();
+}
+
+void LevelEditorScreen::_apply_gizmo_rotate(int p_axis, real_t p_angle) {
+	if (!selected_brush) {
+		return;
+	}
+	// Rotate original vertices around the brush center, absolute per drag.
+	selected_brush->set_vertices_data(gizmo_drag_original_verts);
+
+	Vector3 center = selected_brush->get_center();
+	Vector3 axis;
+	axis[p_axis] = 1.0;
+	Basis rot(axis, p_angle);
+
+	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
+		Vector3 v = selected_brush->get_vertex(i);
+		v = center + rot.xform(v - center);
+		selected_brush->set_vertex(i, v);
+	}
+	_refresh_map();
+}
+
+void LevelEditorScreen::_apply_gizmo_scale_uniform(real_t p_factor) {
+	if (!selected_brush) {
+		return;
+	}
+	selected_brush->set_vertices_data(gizmo_drag_original_verts);
+
+	AABB bb;
+	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
+		if (i == 0) {
+			bb.position = selected_brush->get_vertex(0);
+		} else {
+			bb.expand_to(selected_brush->get_vertex(i));
+		}
+	}
+	Vector3 center = bb.get_center();
+	real_t f = MAX(p_factor, 0.01);
+	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
+		Vector3 v = selected_brush->get_vertex(i);
+		selected_brush->set_vertex(i, center + (v - center) * f);
+	}
+	_refresh_map();
+}
+
+void LevelEditorScreen::_apply_gizmo_scale(const Vector3 &p_world_delta) {
+	if (!selected_brush) {
+		return;
+	}
+	// Restore, then scale original vertices from the brush-local AABB min.
+	selected_brush->set_vertices_data(gizmo_drag_original_verts);
+
+	// Per-axis scale factor: 1 unit of drag = +100%.
+	Transform3D inv = selected_brush->get_global_transform().affine_inverse();
+	Vector3 local_delta = inv.basis.xform(p_world_delta);
+
+	AABB bb;
+	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
+		if (i == 0) {
+			bb.position = selected_brush->get_vertex(0);
+		} else {
+			bb.expand_to(selected_brush->get_vertex(i));
+		}
+	}
+
+	Vector3 factors(1, 1, 1);
+	if (gizmo_drag_part == GIZMO_XY || gizmo_drag_part == GIZMO_XZ || gizmo_drag_part == GIZMO_YZ) {
+		// Center/plane drag: uniform scale by the largest dragged component.
+		real_t f = 1.0 + MAX(local_delta.x, MAX(local_delta.y, local_delta.z));
+		factors = Vector3(f, f, f);
+	} else if (gizmo_drag_part >= GIZMO_X && gizmo_drag_part <= GIZMO_Z) {
+		factors[gizmo_drag_part] = 1.0 + local_delta[gizmo_drag_part];
+	}
+	factors.x = MAX(factors.x, 0.01);
+	factors.y = MAX(factors.y, 0.01);
+	factors.z = MAX(factors.z, 0.01);
+
+	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
+		Vector3 v = selected_brush->get_vertex(i);
+		v = bb.position + (v - bb.position) * factors;
+		selected_brush->set_vertex(i, v);
+	}
+	_refresh_map();
 }
 
 void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
@@ -2786,6 +3232,7 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		return;
 	}
 	gizmo_dragging = false;
+	gizmo_drag_uniform_scale = false;
 
 	if (!selected_brush) {
 		return;
@@ -2820,7 +3267,7 @@ void LevelEditorScreen::_gizmo_end_drag() {
 	}
 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	undo_redo->create_action(TTR("Move Brush Element"));
+	undo_redo->create_action(mode == MODE_ROTATE ? TTR("Rotate Brush") : (mode == MODE_SCALE ? TTR("Scale Brush") : TTR("Move Brush Element")));
 	undo_redo->add_do_property(target, "vertices", new_data);
 	undo_redo->add_do_method(map, "refresh");
 	undo_redo->add_undo_property(target, "vertices", gizmo_drag_original_verts);
@@ -2832,8 +3279,8 @@ void LevelEditorScreen::_gizmo_end_drag() {
 }
 
 void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas) {
-	if (mode == MODE_BLOCK || mode == MODE_CLIP || !_has_selection()) {
-		return; // No gizmo in Block/Clip mode.
+	if (mode == MODE_BLOCK || mode == MODE_CLIP || mode == MODE_ROTATE || !_has_selection()) {
+		return; // No arrow gizmo in Block/Clip/Rotate mode.
 	}
 	Vector3 origin = _get_gizmo_origin();
 	Vector2 so;
@@ -2845,7 +3292,7 @@ void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas
 	Vector3 axes[3] = { Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(0, 0, 1) };
 	Color axis_col[3] = { Color(0.95, 0.3, 0.3), Color(0.4, 0.9, 0.4), Color(0.3, 0.6, 1.0) };
 
-	const real_t axis_len = 64.0;
+	const real_t axis_len = 64.0 * EDSCALE;
 	Vector2 axis_end[3];
 	for (int i = 0; i < 3; i++) {
 		Vector3 tip = origin + axes[i];
@@ -2882,17 +3329,20 @@ void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas
 	// Axis lines with arrowheads.
 	for (int i = 0; i < 3; i++) {
 		bool active = (gizmo_hover == (GizmoPart)i || gizmo_drag_part == (GizmoPart)i);
-		Color c = active ? Color(1, 1, 1) : axis_col[i];
-		p_canvas->draw_line(so, axis_end[i], c, active ? 3.0 : 2.0);
+		Color c = active ? axis_col[i].lerp(Color(1, 1, 1), 0.5) : axis_col[i];
+		p_canvas->draw_line(so, axis_end[i], c, (active ? 3.0 : 2.0) * EDSCALE);
 		// Arrowhead.
 		Vector2 dir = (axis_end[i] - so).normalized();
 		Vector2 perp(-dir.y, dir.x);
-		p_canvas->draw_line(axis_end[i], axis_end[i] - dir * 10 + perp * 4, c, 2.0);
-		p_canvas->draw_line(axis_end[i], axis_end[i] - dir * 10 - perp * 4, c, 2.0);
+		real_t arrow_len = 10.0 * EDSCALE;
+		real_t arrow_w = 4.0 * EDSCALE;
+		p_canvas->draw_line(axis_end[i], axis_end[i] - dir * arrow_len + perp * arrow_w, c, 2.0 * EDSCALE);
+		p_canvas->draw_line(axis_end[i], axis_end[i] - dir * arrow_len - perp * arrow_w, c, 2.0 * EDSCALE);
 	}
 
 	// Center square.
-	p_canvas->draw_rect(Rect2(so - Vector2(4, 4), Size2(8, 8)), Color(1, 1, 1, 0.9));
+	real_t cs = 4.0 * EDSCALE;
+	p_canvas->draw_rect(Rect2(so - Vector2(cs, cs), Size2(cs * 2, cs * 2)), Color(1, 1, 1, 0.9));
 }
 
 // ---- Drawing --------------------------------------------------------------
@@ -2922,6 +3372,7 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 	_draw_selection(p_vp, p_canvas);
 	_draw_select_handles(p_vp, p_canvas);
 	_draw_gizmo(p_vp, p_canvas);
+	_draw_rotate_gizmo(p_vp, p_canvas);
 	_draw_clip(p_vp, p_canvas);
 }
 

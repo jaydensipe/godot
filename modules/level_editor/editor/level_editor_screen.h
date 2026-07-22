@@ -130,6 +130,8 @@ class LevelEditorScreen : public VBoxContainer {
 public:
 	enum Mode {
 		MODE_SELECT,
+		MODE_ROTATE,
+		MODE_SCALE,
 		MODE_BLOCK,
 		MODE_CLIP,
 		MODE_VERTEX,
@@ -233,6 +235,25 @@ private:
 	LevelEditorViewport *select_drag_viewport = nullptr;
 	AABB select_drag_original_aabb; // Brush-local AABB at drag start.
 
+	// Select-mode whole-brush drag (click selected brush, move like ghost).
+	bool select_moving = false;
+	Vector3 select_move_offset; // Grab point minus brush world position.
+	LevelEditorViewport *select_move_viewport = nullptr;
+	Vector3 select_move_original_position;
+
+	bool _select_ray_to_edit_plane(LevelEditorViewport *p_vp, const Vector2 &p_screen, Vector3 &r_hit) const;
+
+	// Rotate gizmo: 3 axis rings around the selection pivot.
+	int rotate_hover_axis = -1; // 0/1/2 or -1
+	int rotate_drag_axis = -1;
+	real_t rotate_drag_start_angle = 0.0; // Angle of grab point around the axis.
+	LevelEditorViewport *rotate_drag_viewport = nullptr;
+
+	int _pick_rotate_ring(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
+	real_t _rotate_screen_angle(LevelEditorViewport *p_vp, const Vector2 &p_screen, int p_axis) const;
+	void _draw_rotate_gizmo(LevelEditorViewport *p_vp, Control *p_canvas);
+	void _rotate_end_drag();
+
 	AABB _get_brush_local_aabb(LevelBrush *p_brush) const;
 	void _apply_brush_aabb(LevelBrush *p_brush, const AABB &p_aabb);
 	int _pick_select_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
@@ -277,6 +298,8 @@ private:
 	Vector3 gizmo_drag_plane_point;
 	PackedVector3Array gizmo_drag_original_verts; // Brush vertices at drag start.
 	Vector3 gizmo_drag_original_position; // Brush node position at drag start (Select mode).
+	real_t gizmo_drag_original_rotation = 0.0; // Y rotation at drag start (Rotate mode).
+	bool gizmo_drag_uniform_scale = false; // Scale drag started off-gizmo (mouse-X uniform).
 
 	Vector3 _get_gizmo_origin() const; // World-space pivot of current selection.
 	bool _has_selection() const;
@@ -285,6 +308,9 @@ private:
 	void _gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _gizmo_end_drag();
 	void _apply_gizmo_delta(const Vector3 &p_world_delta);
+	void _apply_gizmo_rotate(int p_axis, real_t p_angle);
+	void _apply_gizmo_scale_uniform(real_t p_factor);
+	void _apply_gizmo_scale(const Vector3 &p_world_delta);
 	void _draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas);
 
 	LevelMap *_get_or_create_map();
