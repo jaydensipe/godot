@@ -129,6 +129,23 @@ public:
 	// (used when splitting, where the two halves share the seam).
 	void clip(const Plane &p_plane, bool p_add_cap = true);
 
+	// Delete faces by index (indices must be sorted descending or the
+	// caller uses delete_faces_sorted).
+	void delete_faces(const Vector<int> &p_faces);
+
+	// Join (weld) vertices: all listed vertices are moved to their average
+	// and merged into the lowest index. Degenerate faces are removed.
+	void weld_vertices(const Vector<int> &p_vertices);
+
+	// Bridge two edges with a new face. Returns the new face index, or -1 if
+	// the edges share a vertex (can't bridge).
+	int bridge_edges(const EdgeKey &p_edge_a, const EdgeKey &p_edge_b, const Ref<Material> &p_material);
+
+	// Collapse vertices: moves each to the average position of its edge
+	// neighbors and welds duplicates. Degenerate faces (< 3 unique verts)
+	// are removed.
+	void collapse_vertices(const Vector<int> &p_vertices);
+
 	// Split faces along the plane without clipping the solid: crossing faces
 	// become two faces sharing the cut edge. No caps, no seam - the brush
 	// stays whole, just with faces subdivided along the line.

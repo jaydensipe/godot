@@ -46,7 +46,9 @@
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
 #include "scene/gui/margin_container.h"
+#include "scene/gui/menu_button.h"
 #include "scene/gui/panel_container.h"
+#include "scene/gui/popup_menu.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/spin_box.h"
 #include "scene/resources/environment.h"
@@ -374,9 +376,28 @@ void LevelEditorViewport::_draw_grid() {
 	}
 }
 
+void LevelEditorViewport::shortcut_input(const Ref<InputEvent> &p_event) {
+	// Swallow keys we handle so editor-level shortcuts (e.g. scene-tree
+	// Delete) don't also fire while the Level screen is active.
+	Ref<InputEventKey> k = p_event;
+	if (k.is_valid() && k->is_pressed()) {
+		Key code = k->get_keycode();
+		if (code == Key::KEY_DELETE || code == Key::BRACKETLEFT || code == Key::BRACKETRIGHT ||
+				code == Key::ENTER || code == Key::KP_ENTER || code == Key::ESCAPE) {
+			accept_event();
+		}
+	}
+}
+
 void LevelEditorViewport::gui_input(const Ref<InputEvent> &p_event) {
 	if (!screen) {
 		return;
+	}
+	// Keep keyboard focus on the screen so editor-level shortcuts (like the
+	// scene tree's Delete) don't fire while working here.
+	Ref<InputEventMouseButton> focus_mb = p_event;
+	if (focus_mb.is_valid() && focus_mb->is_pressed() && !screen->has_focus()) {
+		screen->grab_focus();
 	}
 	screen->forward_input(camera, p_event);
 
@@ -390,11 +411,10 @@ void LevelEditorViewport::gui_input(const Ref<InputEvent> &p_event) {
 			}
 		}
 
-		bool was_navigating = view_controller->is_navigating();
 		view_controller->gui_input(p_event, get_global_rect());
-		if (was_navigating || view_controller->is_navigating() || view_controller->is_freelook_enabled()) {
-			_update_camera_transform();
-		}
+		// Always resync - wheel zoom and other non-"navigating" inputs still
+		// change the controller's cursor.
+		_update_camera_transform();
 		return;
 	}
 
@@ -461,6 +481,8 @@ LevelEditorScreen::LevelEditorScreen() {
 	set_name("Level");
 	set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	set_process(true);
+	set_process_input(true);
+	set_focus_mode(FOCUS_ALL);
 
 	MarginContainer *toolbar_margin = memnew(MarginContainer);
 	toolbar_margin->add_theme_constant_override("margin_top", 1 * EDSCALE);
@@ -588,6 +610,16 @@ LevelEditorScreen::LevelEditorScreen() {
 	bake_button->connect("pressed", callable_mp(this, &LevelEditorScreen::_bake_pressed));
 	toolbar->add_child(bake_button);
 
+	toolbar->add_child(memnew(VSeparator));
+
+	tools_menu = memnew(MenuButton);
+	tools_menu->set_text(TTRC("Tools"));
+	tools_menu->set_flat(false);
+	PopupMenu *tools_popup = tools_menu->get_popup();
+	tools_popup->add_item(TTRC("Bridge Edge"), 0);
+	tools_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_tools_menu_selected));
+	toolbar->add_child(tools_menu);
+
 	// Quad viewports.
 	rows_split = memnew(VSplitContainer);
 	rows_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
@@ -616,6 +648,113 @@ LevelEditorScreen::LevelEditorScreen() {
 	bottom_split->add_child(viewports[3]);
 }
 
+void LevelEditorScreen::input(const Ref<InputEvent> &p_event) {
+	// The _vp_input phase runs BEFORE gui/shortcut dispatch (and before the
+	// scene dock's no-context Delete shortcut), so swallow our keys here
+	// when the Level screen is visible.
+	if (!is_visible_in_tree()) {
+		return;
+	}
+	Ref<InputEventKey> k = p_event;
+	if (!k.is_valid() || !k->is_pressed() || k->is_echo()) {
+		return;
+	}
+	switch (k->get_keycode()) {
+		case Key::KEY_DELETE: {
+			_delete_selection();
+			get_viewport()->set_input_as_handled();
+		} break;
+		case Key::BRACKETLEFT:
+		case Key::BRACKETRIGHT: {
+			static const real_t steps[] = {
+				0.015625,
+				0.03125,
+				0.0625,
+				0.125,
+				0.25,
+				0.5,
+				1.0,
+				2.0,
+				4.0,
+				8.0,
+				16.0,
+				32.0,
+				64.0,
+			};
+			const int step_count = (int)(sizeof(steps) / sizeof(steps[0]));
+			int idx = 0;
+			for (int i = 0; i < step_count; i++) {
+				if (steps[i] <= grid_size) {
+					idx = i;
+				}
+			}
+			idx += (k->get_keycode() == Key::BRACKETRIGHT) ? 1 : -1;
+			idx = CLAMP(idx, 0, step_count - 1);
+			if (steps[idx] != grid_size) {
+				grid_size_spin->set_value(steps[idx]);
+			}
+			get_viewport()->set_input_as_handled();
+		} break;
+		case Key::ENTER:
+		case Key::KP_ENTER: {
+			bool handled = false;
+			if (ghost_active) {
+				_ghost_commit();
+				handled = true;
+			} else if (clip_active) {
+				_clip_apply();
+				handled = true;
+			}
+			if (handled) {
+				get_viewport()->set_input_as_handled();
+			}
+		} break;
+		case Key::ESCAPE: {
+			bool handled = false;
+			if (ghost_active) {
+				_ghost_cancel();
+				handled = true;
+			} else if (clip_active) {
+				_clip_cancel();
+				handled = true;
+			} else if (dragging) {
+				dragging = false;
+				drag_active = false;
+				drag_viewport = nullptr;
+				_update_overlays();
+				handled = true;
+			}
+			if (handled) {
+				get_viewport()->set_input_as_handled();
+			}
+		} break;
+		default:
+			break;
+	}
+}
+
+void LevelEditorScreen::shortcut_input(const Ref<InputEvent> &p_event) {
+	// Keys handled by the level editor are consumed here so no-context
+	// editor shortcuts (like the scene tree's Delete) never see them.
+	// Actual handling happens in input() (the earlier _vp_input phase).
+	Ref<InputEventKey> k = p_event;
+	if (!k.is_valid() || !k->is_pressed()) {
+		return;
+	}
+	Key code = k->get_keycode();
+	if (code == Key::KEY_DELETE || code == Key::BRACKETLEFT || code == Key::BRACKETRIGHT ||
+			code == Key::ENTER || code == Key::KP_ENTER || code == Key::ESCAPE) {
+		accept_event();
+	}
+}
+
+void LevelEditorScreen::_edit_brush_node(LevelBrush *p_brush) {
+	// Show the brush in the inspector, but keep keyboard focus on the level
+	// screen so editor shortcuts (e.g. scene-tree Delete) don't hijack keys.
+	EditorInterface::get_singleton()->edit_node(p_brush);
+	call_deferred("grab_focus");
+}
+
 void LevelEditorScreen::set_plugin(EditorPlugin *p_plugin) {
 	plugin = p_plugin;
 }
@@ -637,6 +776,7 @@ void LevelEditorScreen::make_visible(bool p_visible) {
 	if (p_visible) {
 		_resolve_map();
 		_update_overlays();
+		grab_focus();
 	}
 }
 
@@ -746,6 +886,145 @@ Vector3 LevelEditorScreen::_snap(const Vector3 &p_v) const {
 
 real_t LevelEditorScreen::_snap(real_t p_v) const {
 	return Math::snapped(p_v, grid_size);
+}
+
+void LevelEditorScreen::_delete_selection() {
+	if (!current_map || !selected_brush) {
+		return;
+	}
+
+	switch (mode) {
+		case MODE_SELECT: {
+			// Delete the whole brush node.
+			LevelBrush *target = selected_brush;
+			LevelMap *map = current_map;
+			_clear_selection();
+
+			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+			undo_redo->create_action(TTR("Delete Brush"));
+			undo_redo->add_do_method(map, "remove_child", target);
+			undo_redo->add_do_method(map, "refresh");
+			undo_redo->add_undo_method(map, "add_child", target);
+			undo_redo->add_undo_method(map, "refresh");
+			undo_redo->add_undo_reference(target);
+			undo_redo->commit_action();
+			_refresh_map();
+		} break;
+		case MODE_FACE: {
+			if (selected_faces.is_empty()) {
+				return;
+			}
+			LevelBrush *target = selected_brush;
+			PackedVector3Array old_verts = target->get_vertices_data();
+			Array old_faces = target->get_faces_data();
+			Array old_mats = target->get_face_materials_data();
+
+			Vector<int> faces;
+			for (int f : selected_faces) {
+				faces.push_back(f);
+			}
+			target->delete_faces(faces);
+			selected_faces.clear();
+
+			PackedVector3Array new_verts = target->get_vertices_data();
+			Array new_faces = target->get_faces_data();
+			Array new_mats = target->get_face_materials_data();
+
+			LevelMap *map = current_map;
+			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+			undo_redo->create_action(TTR("Delete Faces"));
+			undo_redo->add_do_property(target, "vertices", new_verts);
+			undo_redo->add_do_property(target, "faces", new_faces);
+			undo_redo->add_do_property(target, "face_materials", new_mats);
+			undo_redo->add_do_method(map, "refresh");
+			undo_redo->add_undo_property(target, "vertices", old_verts);
+			undo_redo->add_undo_property(target, "faces", old_faces);
+			undo_redo->add_undo_property(target, "face_materials", old_mats);
+			undo_redo->add_undo_method(map, "refresh");
+			undo_redo->commit_action(false);
+			_refresh_map();
+		} break;
+		case MODE_EDGE: {
+			if (selected_edges.is_empty()) {
+				return;
+			}
+			// Collapse the edges' vertices (merges each edge to a point).
+			LevelBrush *target = selected_brush;
+			PackedVector3Array old_verts = target->get_vertices_data();
+			Array old_faces = target->get_faces_data();
+			Array old_mats = target->get_face_materials_data();
+
+			Vector<int> verts;
+			HashSet<int> seen;
+			for (const LevelBrush::EdgeKey &e : selected_edges) {
+				if (!seen.has(e.a)) {
+					verts.push_back(e.a);
+					seen.insert(e.a);
+				}
+				if (!seen.has(e.b)) {
+					verts.push_back(e.b);
+					seen.insert(e.b);
+				}
+			}
+			target->collapse_vertices(verts);
+			selected_edges.clear();
+
+			PackedVector3Array new_verts = target->get_vertices_data();
+			Array new_faces = target->get_faces_data();
+			Array new_mats = target->get_face_materials_data();
+
+			LevelMap *map = current_map;
+			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+			undo_redo->create_action(TTR("Delete Edges"));
+			undo_redo->add_do_property(target, "vertices", new_verts);
+			undo_redo->add_do_property(target, "faces", new_faces);
+			undo_redo->add_do_property(target, "face_materials", new_mats);
+			undo_redo->add_do_method(map, "refresh");
+			undo_redo->add_undo_property(target, "vertices", old_verts);
+			undo_redo->add_undo_property(target, "faces", old_faces);
+			undo_redo->add_undo_property(target, "face_materials", old_mats);
+			undo_redo->add_undo_method(map, "refresh");
+			undo_redo->commit_action(false);
+			_refresh_map();
+		} break;
+		case MODE_VERTEX: {
+			if (selected_vertices.is_empty()) {
+				return;
+			}
+			LevelBrush *target = selected_brush;
+			PackedVector3Array old_verts = target->get_vertices_data();
+			Array old_faces = target->get_faces_data();
+			Array old_mats = target->get_face_materials_data();
+
+			Vector<int> verts;
+			for (int v : selected_vertices) {
+				verts.push_back(v);
+			}
+			target->collapse_vertices(verts);
+			selected_vertices.clear();
+
+			PackedVector3Array new_verts = target->get_vertices_data();
+			Array new_faces = target->get_faces_data();
+			Array new_mats = target->get_face_materials_data();
+
+			LevelMap *map = current_map;
+			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+			undo_redo->create_action(TTR("Delete Vertices"));
+			undo_redo->add_do_property(target, "vertices", new_verts);
+			undo_redo->add_do_property(target, "faces", new_faces);
+			undo_redo->add_do_property(target, "face_materials", new_mats);
+			undo_redo->add_do_method(map, "refresh");
+			undo_redo->add_undo_property(target, "vertices", old_verts);
+			undo_redo->add_undo_property(target, "faces", old_faces);
+			undo_redo->add_undo_property(target, "face_materials", old_mats);
+			undo_redo->add_undo_method(map, "refresh");
+			undo_redo->commit_action(false);
+			_refresh_map();
+		} break;
+		default:
+			break;
+	}
+	_update_overlays();
 }
 
 void LevelEditorScreen::_clear_selection() {
@@ -930,41 +1209,13 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 	Ref<InputEventMouseButton> mb = p_event;
 	Ref<InputEventMouseMotion> mm = p_event;
 
-	// [ / ] adjust the grid size in power-of-two steps (Hammer-style).
+	// Delete/brackets are handled by LevelEditorScreen::shortcut_input (so
+	// the scene dock can't hijack them); skip them here to avoid double-
+	// handling when this viewport has focus.
 	Ref<InputEventKey> key = p_event;
-	if (key.is_valid() && key->is_pressed() && !key->is_echo()) {
-		if (key->get_keycode() == Key::BRACKETLEFT || key->get_keycode() == Key::BRACKETRIGHT) {
-			static const real_t steps[] = {
-				0.015625,
-				0.03125,
-				0.0625,
-				0.125,
-				0.25,
-				0.5,
-				1.0,
-				2.0,
-				4.0,
-				8.0,
-				16.0,
-				32.0,
-				64.0,
-			};
-			const int step_count = (int)(sizeof(steps) / sizeof(steps[0]));
-
-			// Find the nearest ladder index to the current size.
-			int idx = 0;
-			for (int i = 0; i < step_count; i++) {
-				if (steps[i] <= grid_size) {
-					idx = i;
-				}
-			}
-			idx += (key->get_keycode() == Key::BRACKETRIGHT) ? 1 : -1;
-			idx = CLAMP(idx, 0, step_count - 1);
-			if (steps[idx] != grid_size) {
-				grid_size_spin->set_value(steps[idx]); // Routes through _grid_size_changed.
-			}
-			return;
-		}
+	if (key.is_valid() && key->is_pressed() &&
+			(key->get_keycode() == Key::KEY_DELETE || key->get_keycode() == Key::BRACKETLEFT || key->get_keycode() == Key::BRACKETRIGHT)) {
+		return;
 	}
 
 	// --- Select-mode box handles take priority over the move gizmo ---
@@ -1050,8 +1301,6 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 			}
 		}
 	}
-
-
 
 	// --- Gizmo interaction takes priority (Select and element modes) ---
 	if (mode != MODE_BLOCK && mode != MODE_CLIP && mode != MODE_ROTATE && _has_selection()) {
@@ -1391,7 +1640,7 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 						}
 					} else {
 						selected_brush = brush;
-						EditorInterface::get_singleton()->edit_node(brush);
+						_edit_brush_node(brush);
 					}
 				} else if (!add) {
 					_clear_selection();
@@ -1405,7 +1654,7 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 					if (brush != selected_brush) {
 						selected_brush = brush;
 						selected_faces.clear();
-						EditorInterface::get_singleton()->edit_node(brush);
+						_edit_brush_node(brush);
 					}
 					if (selected_faces.has(f) && add) {
 						selected_faces.erase(f);
@@ -1426,7 +1675,7 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 					if (brush != selected_brush) {
 						selected_brush = brush;
 						selected_edges.clear();
-						EditorInterface::get_singleton()->edit_node(brush);
+						_edit_brush_node(brush);
 					}
 					if (selected_edges.has(e) && add) {
 						selected_edges.erase(e);
@@ -1447,7 +1696,7 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 					if (brush != selected_brush) {
 						selected_brush = brush;
 						selected_vertices.clear();
-						EditorInterface::get_singleton()->edit_node(brush);
+						_edit_brush_node(brush);
 					}
 					if (selected_vertices.has(v) && add) {
 						selected_vertices.erase(v);
@@ -1724,16 +1973,17 @@ void LevelEditorScreen::_ghost_commit() {
 		}
 	}
 
-	EditorUndoRedoManager::get_singleton()->create_action(TTR("Add Level Brush"));
-	EditorUndoRedoManager::get_singleton()->add_do_method(map, "add_child", brush);
-	EditorUndoRedoManager::get_singleton()->add_do_method(brush, "set_owner", root);
-	EditorUndoRedoManager::get_singleton()->add_do_method(map, "refresh");
-	EditorUndoRedoManager::get_singleton()->add_undo_method(map, "remove_child", brush);
-	EditorUndoRedoManager::get_singleton()->add_undo_method(map, "refresh");
-	EditorUndoRedoManager::get_singleton()->commit_action();
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Add Level Brush"));
+	undo_redo->add_do_method(map, "add_child", brush);
+	undo_redo->add_do_method(brush, "set_owner", root);
+	undo_redo->add_do_method(map, "refresh");
+	undo_redo->add_undo_method(map, "remove_child", brush);
+	undo_redo->add_undo_method(map, "refresh");
+	undo_redo->commit_action();
 
 	selected_brush = brush;
-	EditorInterface::get_singleton()->edit_node(brush);
+	_edit_brush_node(brush);
 	_refresh_map();
 }
 
@@ -2428,176 +2678,6 @@ void LevelEditorScreen::_compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) con
 	}
 }
 
-void LevelEditorScreen::_extrude_pressed() {
-	extrude_button->release_focus();
-	if (!current_map || !selected_brush) {
-		return;
-	}
-
-	// Snapshot serialized topology so undo restores the whole brush in one go.
-	PackedVector3Array old_verts = selected_brush->get_vertices_data();
-	Array old_faces = selected_brush->get_faces_data();
-
-	LevelBrush *working = selected_brush->duplicate_brush();
-	bool did = false;
-	switch (mode) {
-		case MODE_FACE: {
-			if (selected_faces.is_empty()) {
-				break;
-			}
-			// Extrude each selected face into new geometry (cap + side walls).
-			// Process from highest index down so removals don't shift pending
-			// indices.
-			Vector<int> sorted;
-			for (int f : selected_faces) {
-				sorted.push_back(f);
-			}
-			sorted.sort();
-			for (int i = sorted.size() - 1; i >= 0; i--) {
-				working->extrude_face(sorted[i], extrude_amount);
-			}
-			did = true;
-		} break;
-		case MODE_EDGE: {
-			if (selected_edges.is_empty()) {
-				break;
-			}
-			// Move the edge's vertices along the average of their adjacent face
-			// normals (a directional "pull" rather than new geometry).
-			Vector<int> verts;
-			for (const LevelBrush::EdgeKey &e : selected_edges) {
-				verts.push_back(e.a);
-				verts.push_back(e.b);
-			}
-			working->move_vertices(verts, Vector3(0, extrude_amount, 0));
-			did = true;
-		} break;
-		case MODE_VERTEX: {
-			if (selected_vertices.is_empty()) {
-				break;
-			}
-			Vector<int> verts;
-			for (int v : selected_vertices) {
-				verts.push_back(v);
-			}
-			working->move_vertices(verts, Vector3(0, extrude_amount, 0));
-			did = true;
-		} break;
-		default:
-			break;
-	}
-
-	if (!did) {
-		memdelete(working);
-		return;
-	}
-
-	LevelBrush *target = selected_brush;
-	LevelMap *map = current_map;
-
-	PackedVector3Array new_verts = working->get_vertices_data();
-	Array new_faces = working->get_faces_data();
-
-	EditorUndoRedoManager::get_singleton()->create_action(TTR("Extrude Brush"));
-	EditorUndoRedoManager::get_singleton()->add_do_property(target, "vertices", new_verts);
-	EditorUndoRedoManager::get_singleton()->add_do_property(target, "faces", new_faces);
-	EditorUndoRedoManager::get_singleton()->add_do_method(map, "refresh");
-	EditorUndoRedoManager::get_singleton()->add_undo_property(target, "vertices", old_verts);
-	EditorUndoRedoManager::get_singleton()->add_undo_property(target, "faces", old_faces);
-	EditorUndoRedoManager::get_singleton()->add_undo_method(map, "refresh");
-	EditorUndoRedoManager::get_singleton()->commit_action();
-	memdelete(working);
-
-	_refresh_map();
-}
-
-void LevelEditorScreen::_apply_material_pressed() {
-	apply_material_button->release_focus();
-	if (!current_map || !selected_brush || current_material.is_null()) {
-		return;
-	}
-
-	LevelBrush *target = selected_brush;
-	LevelMap *map = current_map;
-
-	EditorUndoRedoManager::get_singleton()->create_action(TTR("Apply Brush Material"));
-
-	if (mode == MODE_FACE && !selected_faces.is_empty()) {
-		for (int f : selected_faces) {
-			EditorUndoRedoManager::get_singleton()->add_do_method(target, "set_face_material", f, current_material);
-			EditorUndoRedoManager::get_singleton()->add_undo_method(target, "set_face_material", f, target->get_face_material(f));
-		}
-	} else {
-		for (int f = 0; f < target->get_face_count(); f++) {
-			EditorUndoRedoManager::get_singleton()->add_do_method(target, "set_face_material", f, current_material);
-			EditorUndoRedoManager::get_singleton()->add_undo_method(target, "set_face_material", f, target->get_face_material(f));
-		}
-	}
-	EditorUndoRedoManager::get_singleton()->add_do_method(map, "refresh");
-	EditorUndoRedoManager::get_singleton()->add_undo_method(map, "refresh");
-	EditorUndoRedoManager::get_singleton()->commit_action();
-
-	_refresh_map();
-}
-
-void LevelEditorScreen::_flip_faces_pressed() {
-	flip_faces_button->release_focus();
-	if (!current_map || !selected_brush) {
-		return;
-	}
-
-	bool old_flipped = selected_brush->is_faces_flipped();
-	bool new_flipped = !old_flipped;
-
-	selected_brush->set_faces_flipped(new_flipped);
-
-	LevelBrush *target = selected_brush;
-	LevelMap *map = current_map;
-
-	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	undo_redo->create_action(TTR("Flip Brush Faces"));
-	undo_redo->add_do_property(target, "faces_flipped", new_flipped);
-	undo_redo->add_do_method(map, "refresh");
-	undo_redo->add_undo_property(target, "faces_flipped", old_flipped);
-	undo_redo->add_undo_method(map, "refresh");
-	undo_redo->commit_action(false);
-
-	_refresh_map();
-}
-
-void LevelEditorScreen::_bake_pressed() {
-	bake_button->release_focus();
-	if (!current_map) {
-		return;
-	}
-	Node3D *baked = current_map->bake();
-	ERR_FAIL_NULL(baked);
-
-	Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
-	ERR_FAIL_NULL(root);
-
-	EditorUndoRedoManager::get_singleton()->create_action(TTR("Bake Level"));
-	EditorUndoRedoManager::get_singleton()->add_do_method(root, "add_child", baked);
-	EditorUndoRedoManager::get_singleton()->add_do_method(baked, "set_owner", root);
-	// Also give the baked children an owner so they persist.
-	{
-		List<Node *> stack;
-		stack.push_back(baked);
-		while (!stack.is_empty()) {
-			Node *n = stack.front()->get();
-			stack.pop_front();
-			for (int i = 0; i < n->get_child_count(); i++) {
-				EditorUndoRedoManager::get_singleton()->add_do_method(n->get_child(i), "set_owner", root);
-				stack.push_back(n->get_child(i));
-			}
-		}
-	}
-	EditorUndoRedoManager::get_singleton()->add_undo_method(root, "remove_child", baked);
-	EditorUndoRedoManager::get_singleton()->commit_action();
-
-	EditorInterface::get_singleton()->edit_node(baked);
-}
-
 void LevelEditorScreen::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_THEME_CHANGED: {
@@ -2897,8 +2977,6 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 				break;
 		}
 	}
-
-
 
 	// Scale mode: axis drag distance -> scale factor along that axis.
 	if (mode == MODE_SCALE) {

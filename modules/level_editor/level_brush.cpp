@@ -299,6 +299,191 @@ void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 	}
 }
 
+void LevelBrush::delete_faces(const Vector<int> &p_faces) {
+	Vector<int> sorted = p_faces;
+	sorted.sort();
+	for (int i = sorted.size() - 1; i >= 0; i--) {
+		int f = sorted[i];
+		ERR_FAIL_INDEX(f, (int)faces.size());
+		faces.remove_at(f);
+		if (f < (int)face_materials.size()) {
+			face_materials.remove_at(f);
+		}
+	}
+}
+
+void LevelBrush::weld_vertices(const Vector<int> &p_vertices) {
+	if (p_vertices.size() < 2) {
+		return;
+	}
+	for (int v : p_vertices) {
+		ERR_FAIL_INDEX(v, (int)verts.size());
+	}
+
+	// Average position of all listed vertices.
+	Vector3 avg;
+	for (int v : p_vertices) {
+		avg += verts[v];
+	}
+	avg /= (real_t)p_vertices.size();
+
+	int keep = p_vertices[0];
+	verts[keep] = avg;
+
+	// Remap all other indices to the kept one in every face.
+	HashSet<int> merged;
+	for (int i = 1; i < p_vertices.size(); i++) {
+		merged.insert(p_vertices[i]);
+	}
+	for (uint32_t f = 0; f < faces.size(); f++) {
+		LocalVector<int> &loop = faces[f];
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			if (merged.has(loop[i])) {
+				loop[i] = keep;
+			}
+		}
+	}
+
+	// Remove consecutive duplicates and degenerate faces.
+	for (int f = (int)faces.size() - 1; f >= 0; f--) {
+		LocalVector<int> &loop = faces[f];
+		LocalVector<int> clean;
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			if (clean.is_empty() || clean[clean.size() - 1] != loop[i]) {
+				clean.push_back(loop[i]);
+			}
+		}
+		// Also check wrap-around dup (first == last).
+		if (clean.size() > 1 && clean[0] == clean[clean.size() - 1]) {
+			clean.remove_at(clean.size() - 1);
+		}
+		HashSet<int> unique;
+		for (int idx : clean) {
+			unique.insert(idx);
+		}
+		if (unique.size() < 3) {
+			faces.remove_at(f);
+			if (f < (int)face_materials.size()) {
+				face_materials.remove_at(f);
+			}
+		} else {
+			loop = clean;
+		}
+	}
+}
+
+int LevelBrush::bridge_edges(const EdgeKey &p_edge_a, const EdgeKey &p_edge_b, const Ref<Material> &p_material) {
+	// Need two distinct edges with 4 unique endpoints.
+	if (p_edge_a == p_edge_b) {
+		return -1;
+	}
+	if (p_edge_a.a == p_edge_b.a || p_edge_a.a == p_edge_b.b || p_edge_a.b == p_edge_b.a || p_edge_a.b == p_edge_b.b) {
+		return -1; // Shared vertex - can't form a clean quad.
+	}
+
+	int quad[4] = { p_edge_a.a, p_edge_a.b, p_edge_b.b, p_edge_b.a };
+
+	// Check winding against the brush: the new face's normal should point
+	// away from the brush centroid.
+	Vector3 centroid = get_center();
+	Vector3 quad_center;
+	for (int i = 0; i < 4; i++) {
+		quad_center += verts[quad[i]];
+	}
+	quad_center *= 0.25;
+
+	Vector3 e1 = verts[quad[1]] - verts[quad[0]];
+	Vector3 e2 = verts[quad[3]] - verts[quad[0]];
+	Vector3 n = e1.cross(e2);
+	if (n.dot(quad_center - centroid) < 0) {
+		// Flip winding to face outward.
+		SWAP(quad[1], quad[3]);
+	}
+
+	LocalVector<int> face;
+	for (int i = 0; i < 4; i++) {
+		face.push_back(quad[i]);
+	}
+	faces.push_back(LocalVector<int>(face));
+	face_materials.push_back(p_material);
+	return (int)faces.size() - 1;
+}
+
+void LevelBrush::collapse_vertices(const Vector<int> &p_vertices) {
+	if (p_vertices.is_empty()) {
+		return;
+	}
+
+	// Move each target vertex to the average of its edge-connected neighbors
+	// (excluding neighbors that are also being collapsed).
+	HashSet<int> targets;
+	for (int v : p_vertices) {
+		targets.insert(v);
+	}
+
+	for (int v : p_vertices) {
+		ERR_FAIL_INDEX(v, (int)verts.size());
+		Vector3 sum;
+		int count = 0;
+		for (uint32_t f = 0; f < faces.size(); f++) {
+			const LocalVector<int> &loop = faces[f];
+			for (uint32_t i = 0; i < loop.size(); i++) {
+				if (loop[i] == v) {
+					int prev = loop[(i + loop.size() - 1) % loop.size()];
+					int next = loop[(i + 1) % loop.size()];
+					if (!targets.has(prev)) {
+						sum += verts[prev];
+						count++;
+					}
+					if (!targets.has(next)) {
+						sum += verts[next];
+						count++;
+					}
+				}
+			}
+		}
+		if (count > 0) {
+			verts[v] = sum / (real_t)count;
+		}
+	}
+
+	// Weld duplicates: remap face indices of collapsed verts to their
+	// position-matching survivors.
+	const real_t eps = 0.0005;
+	for (uint32_t f = 0; f < faces.size(); f++) {
+		LocalVector<int> &loop = faces[f];
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			if (!targets.has(loop[i])) {
+				continue;
+			}
+			// Find a non-target vertex at the same position.
+			for (uint32_t vi = 0; vi < verts.size(); vi++) {
+				if (targets.has((int)vi) || (int)vi == loop[i]) {
+					continue;
+				}
+				if (verts[vi].distance_to(verts[loop[i]]) < eps * 4.0) {
+					loop[i] = (int)vi;
+					break;
+				}
+			}
+		}
+	}
+
+	// Remove degenerate faces (fewer than 3 unique vertices).
+	for (int f = (int)faces.size() - 1; f >= 0; f--) {
+		HashSet<int> unique;
+		for (int idx : faces[f]) {
+			unique.insert(idx);
+		}
+		if (unique.size() < 3) {
+			faces.remove_at(f);
+			if (f < (int)face_materials.size()) {
+				face_materials.remove_at(f);
+			}
+		}
+	}
+}
+
 void LevelBrush::split_faces(const Plane &p_plane) {
 	// Split each face polygon along the plane. Faces fully on one side are
 	// untouched; crossing faces become two faces sharing the cut edge. The

@@ -35,6 +35,7 @@
 #include "editor/plugins/editor_plugin.h"
 #include "scene/debugger/view_3d_controller.h"
 #include "scene/gui/box_container.h"
+#include "scene/gui/menu_button.h"
 #include "scene/gui/split_container.h"
 #include "scene/gui/subviewport_container.h"
 #include "scene/main/viewport.h"
@@ -104,6 +105,7 @@ private:
 protected:
 	void _notification(int p_what);
 	virtual void gui_input(const Ref<InputEvent> &p_event) override;
+	virtual void shortcut_input(const Ref<InputEvent> &p_event) override;
 
 public:
 	LevelEditorScreen *screen = nullptr;
@@ -157,6 +159,7 @@ private:
 	Button *flip_faces_button = nullptr;
 	Button *bake_button = nullptr;
 	EditorResourcePicker *material_picker = nullptr;
+	MenuButton *tools_menu = nullptr;
 
 	real_t grid_size = 1.0;
 	real_t extrude_amount = 1.0;
@@ -319,11 +322,14 @@ private:
 	void _mode_changed(int p_mode);
 	void _set_mode(Mode p_mode);
 	void _update_mode_icons();
+	void _edit_brush_node(LevelBrush *p_brush);
 
 	void _extrude_pressed();
 	void _apply_material_pressed();
 	void _flip_faces_pressed();
 	void _bake_pressed();
+	void _tools_menu_selected(int p_id);
+	void _join_edges();
 	void _material_changed(const Ref<Resource> &p_resource);
 	void _grid_size_changed(double p_value);
 	void _extrude_amount_changed(double p_value);
@@ -338,6 +344,7 @@ private:
 
 	void _update_hover(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _clear_selection();
+	void _delete_selection();
 	void _update_overlays();
 	void _refresh_map();
 
@@ -353,6 +360,8 @@ private:
 protected:
 	void _notification(int p_what);
 	static void _bind_methods();
+	virtual void shortcut_input(const Ref<InputEvent> &p_event) override;
+	virtual void input(const Ref<InputEvent> &p_event) override;
 
 public:
 	void set_plugin(EditorPlugin *p_plugin);
