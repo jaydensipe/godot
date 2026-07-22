@@ -131,10 +131,11 @@ public:
 	enum Mode {
 		MODE_SELECT,
 		MODE_BLOCK,
+		MODE_CLIP,
 		MODE_VERTEX,
 		MODE_EDGE,
 		MODE_FACE,
-		MODE_MAX,
+		MODE_MAX
 	};
 
 private:
@@ -198,6 +199,32 @@ private:
 	void _ghost_commit();
 	void _ghost_cancel();
 	void _draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas);
+	void _draw_dim_labels(LevelEditorViewport *p_vp, Control *p_canvas, const AABB &p_aabb);
+
+	// --- Clip tool state ---
+	enum ClipSide {
+		CLIP_KEEP_FRONT, // Keep the side the clip normal points to.
+		CLIP_KEEP_BACK,
+		CLIP_KEEP_BOTH,
+	};
+
+	LevelBrush *clip_brush = nullptr;
+	bool clip_active = false;
+	bool clip_drawing = false; // True while placing the 2nd point.
+	int clip_drag_point = -1; // 0/1 while dragging a clip point; -1 = none.
+	Vector3 clip_points[2]; // World space.
+	Vector3 clip_view_dir; // Camera forward when the line was drawn (world).
+	ClipSide clip_side = CLIP_KEEP_FRONT;
+	LevelEditorViewport *clip_viewport = nullptr;
+
+	void _clip_begin(LevelBrush *p_brush, const Vector3 &p_point, LevelEditorViewport *p_vp);
+	void _clip_update_second(const Vector3 &p_point);
+	int _pick_clip_point(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
+	Plane _clip_plane() const; // In clip_brush local space.
+	void _clip_apply();
+	void _clip_cancel();
+	void _clip_cycle_side();
+	void _draw_clip(LevelEditorViewport *p_vp, Control *p_canvas);
 
 	// Select-mode box handles: resize the selected brush's local AABB.
 	// Shares the GhostHandle enum (0..5 faces, 6..13 corners).
@@ -265,6 +292,7 @@ private:
 
 	void _mode_changed(int p_mode);
 	void _set_mode(Mode p_mode);
+	void _update_mode_icons();
 
 	void _extrude_pressed();
 	void _apply_material_pressed();

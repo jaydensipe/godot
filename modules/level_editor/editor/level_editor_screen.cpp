@@ -39,11 +39,14 @@
 #include "editor/inspector/editor_resource_picker.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
 #include "editor/settings/editor_settings.h"
+#include "editor/themes/editor_scale.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/world_environment.h"
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
+#include "scene/gui/margin_container.h"
+#include "scene/gui/panel_container.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/spin_box.h"
 #include "scene/resources/environment.h"
@@ -270,16 +273,20 @@ void LevelEditorViewport::focus_on(const AABB &p_aabb) {
 }
 
 void LevelEditorViewport::_notification(int p_what) {
-	if (p_what == NOTIFICATION_RESIZED) {
-		if (overlay) {
-			overlay->update();
-		}
-	} else if (p_what == NOTIFICATION_PROCESS) {
-		_process_freelook(get_process_delta_time());
-	} else if (p_what == NOTIFICATION_WM_WINDOW_FOCUS_OUT) {
-		if (view_controller.is_valid()) {
-			view_controller->set_freelook_enabled(false);
-		}
+	switch (p_what) {
+		case NOTIFICATION_RESIZED: {
+			if (overlay) {
+				overlay->update();
+			}
+		} break;
+		case NOTIFICATION_PROCESS: {
+			_process_freelook(get_process_delta_time());
+		} break;
+		case NOTIFICATION_WM_WINDOW_FOCUS_OUT: {
+			if (view_controller.is_valid()) {
+				view_controller->set_freelook_enabled(false);
+			}
+		} break;
 	}
 }
 
@@ -455,19 +462,60 @@ LevelEditorScreen::LevelEditorScreen() {
 	set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	set_process(true);
 
-	toolbar = memnew(HBoxContainer);
-	add_child(toolbar);
+	MarginContainer *toolbar_margin = memnew(MarginContainer);
+	toolbar_margin->add_theme_constant_override("margin_top", 1 * EDSCALE);
+	toolbar_margin->add_theme_constant_override("margin_bottom", 1 * EDSCALE);
+	toolbar_margin->set_custom_maximum_size(Size2(-1, 36 * EDSCALE));
+	toolbar_margin->set_theme_type_variation("MainToolBarMargin");
+	add_child(toolbar_margin);
 
-	static const char *mode_names[MODE_MAX] = { "Select", "Block", "Vertex", "Edge", "Face" };
-	for (int i = 0; i < MODE_MAX; i++) {
+	toolbar = memnew(HBoxContainer);
+	toolbar_margin->add_child(toolbar);
+
+	// Tool modes in one button-group panel (Select, Block, Clip)...
+	PanelContainer *tool_panel = memnew(PanelContainer);
+	tool_panel->set_theme_type_variation("PanelContainerButtonGroup");
+	toolbar->add_child(tool_panel);
+	HBoxContainer *tool_hbox = memnew(HBoxContainer);
+	tool_panel->add_child(tool_hbox);
+
+	for (int i = MODE_SELECT; i <= MODE_CLIP; i++) {
 		Button *b = memnew(Button);
-		b->set_text(mode_names[i]);
 		b->set_toggle_mode(true);
 		b->set_pressed(i == 0);
 		b->connect("pressed", callable_mp(this, &LevelEditorScreen::_mode_changed).bind(i));
-		toolbar->add_child(b);
+		b->set_theme_type_variation(SceneStringName(FlatButton));
+		tool_hbox->add_child(b);
 		mode_buttons[i] = b;
 	}
+
+	toolbar->add_child(memnew(VSeparator));
+
+	// ...and element modes in a second panel (Vertex, Edge, Face).
+	PanelContainer *element_panel = memnew(PanelContainer);
+	element_panel->set_theme_type_variation("PanelContainerButtonGroup");
+	toolbar->add_child(element_panel);
+	HBoxContainer *element_hbox = memnew(HBoxContainer);
+	element_panel->add_child(element_hbox);
+
+	for (int i = MODE_VERTEX; i <= MODE_FACE; i++) {
+		Button *b = memnew(Button);
+		b->set_toggle_mode(true);
+		b->set_pressed(false);
+		b->connect("pressed", callable_mp(this, &LevelEditorScreen::_mode_changed).bind(i));
+		b->set_theme_type_variation(SceneStringName(FlatButton));
+		element_hbox->add_child(b);
+		mode_buttons[i] = b;
+	}
+
+	// Icons are (re)assigned in NOTIFICATION_THEME_CHANGED. Text labels are
+	// fallbacks for buttons without icons.
+	mode_buttons[MODE_SELECT]->set_tooltip_text(TTRC("Select"));
+	mode_buttons[MODE_BLOCK]->set_tooltip_text(TTRC("Block"));
+	mode_buttons[MODE_CLIP]->set_tooltip_text(TTRC("Clip"));
+	mode_buttons[MODE_VERTEX]->set_tooltip_text(TTRC("Vertex"));
+	mode_buttons[MODE_EDGE]->set_tooltip_text(TTRC("Edge"));
+	mode_buttons[MODE_FACE]->set_tooltip_text(TTRC("Face"));
 
 	toolbar->add_child(memnew(VSeparator));
 
@@ -476,9 +524,9 @@ LevelEditorScreen::LevelEditorScreen() {
 	toolbar->add_child(grid_label);
 
 	grid_size_spin = memnew(SpinBox);
-	grid_size_spin->set_min(0.01);
-	grid_size_spin->set_max(1000);
-	grid_size_spin->set_step(0.25);
+	grid_size_spin->set_min(0.015625); // 1/64
+	grid_size_spin->set_max(64);
+	grid_size_spin->set_step(0.015625);
 	grid_size_spin->set_value(1.0);
 	grid_size_spin->set_custom_minimum_size(Size2(80, 0));
 	grid_size_spin->connect("value_changed", callable_mp(this, &LevelEditorScreen::_grid_size_changed));
@@ -627,8 +675,31 @@ LevelMap *LevelEditorScreen::_get_or_create_map() {
 	return current_map;
 }
 
+void LevelEditorScreen::_update_mode_icons() {
+	if (mode_buttons[MODE_SELECT]) {
+		mode_buttons[MODE_SELECT]->set_button_icon(get_editor_theme_icon(SNAME("ToolSelect")));
+		mode_buttons[MODE_BLOCK]->set_button_icon(get_editor_theme_icon(SNAME("Object")));
+		mode_buttons[MODE_CLIP]->set_button_icon(get_editor_theme_icon(SNAME("EditAddRemove")));
+		mode_buttons[MODE_VERTEX]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignCenterLeft")));
+		mode_buttons[MODE_EDGE]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignRightWide")));
+		mode_buttons[MODE_FACE]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignFullRect")));
+	}
+}
+
 void LevelEditorScreen::_mode_changed(int p_mode) {
-	_set_mode((Mode)p_mode);
+	// Clicking the Clip button again while a clip is active cycles
+	// keep-left / keep-right / keep-both (like Hammer's clip tool).
+	if ((Mode)p_mode == MODE_CLIP && mode == MODE_CLIP && clip_active) {
+		_clip_cycle_side();
+		mode_buttons[MODE_CLIP]->set_pressed(true);
+	} else {
+		_set_mode((Mode)p_mode);
+	}
+	// Don't leave keyboard focus on the toolbar buttons, so Enter/Esc/etc.
+	// go to the viewports instead of re-triggering the button.
+	for (int i = 0; i < MODE_MAX; i++) {
+		mode_buttons[i]->release_focus();
+	}
 }
 
 void LevelEditorScreen::_set_mode(Mode p_mode) {
@@ -645,11 +716,14 @@ void LevelEditorScreen::_set_mode(Mode p_mode) {
 	if (mode != MODE_BLOCK && ghost_active) {
 		_ghost_cancel();
 	}
+	if (mode != MODE_CLIP && clip_active) {
+		_clip_cancel();
+	}
 	_update_overlays();
 }
 
 void LevelEditorScreen::_grid_size_changed(double p_value) {
-	grid_size = MAX(0.01, (real_t)p_value);
+	grid_size = MAX(0.015625, (real_t)p_value);
 	_update_overlays();
 }
 
@@ -847,6 +921,43 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 	Ref<InputEventMouseButton> mb = p_event;
 	Ref<InputEventMouseMotion> mm = p_event;
 
+	// [ / ] adjust the grid size in power-of-two steps (Hammer-style).
+	Ref<InputEventKey> key = p_event;
+	if (key.is_valid() && key->is_pressed() && !key->is_echo()) {
+		if (key->get_keycode() == Key::BRACKETLEFT || key->get_keycode() == Key::BRACKETRIGHT) {
+			static const real_t steps[] = {
+				0.015625,
+				0.03125,
+				0.0625,
+				0.125,
+				0.25,
+				0.5,
+				1.0,
+				2.0,
+				4.0,
+				8.0,
+				16.0,
+				32.0,
+				64.0,
+			};
+			const int step_count = (int)(sizeof(steps) / sizeof(steps[0]));
+
+			// Find the nearest ladder index to the current size.
+			int idx = 0;
+			for (int i = 0; i < step_count; i++) {
+				if (steps[i] <= grid_size) {
+					idx = i;
+				}
+			}
+			idx += (key->get_keycode() == Key::BRACKETRIGHT) ? 1 : -1;
+			idx = CLAMP(idx, 0, step_count - 1);
+			if (steps[idx] != grid_size) {
+				grid_size_spin->set_value(steps[idx]); // Routes through _grid_size_changed.
+			}
+			return;
+		}
+	}
+
 	// --- Select-mode box handles take priority over the move gizmo ---
 	if (mode == MODE_SELECT && selected_brush) {
 		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
@@ -879,7 +990,7 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 	}
 
 	// --- Gizmo interaction takes priority (Select and element modes) ---
-	if (mode != MODE_BLOCK && _has_selection()) {
+	if (mode != MODE_BLOCK && mode != MODE_CLIP && _has_selection()) {
 		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
 			if (mb->is_pressed()) {
 				int part = _pick_gizmo(p_camera, mb->get_position());
@@ -1033,6 +1144,119 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 		return;
 	}
 
+	// --- Clip mode ---
+	if (mode == MODE_CLIP) {
+		// Keys: Enter applies, Esc cancels. (Side cycling is on the Clip
+		// toolbar button - Tab is eaten by GUI focus navigation.)
+		Ref<InputEventKey> k = p_event;
+		if (k.is_valid() && k->is_pressed() && clip_active) {
+			if (k->get_keycode() == Key::ENTER || k->get_keycode() == Key::KP_ENTER) {
+				_clip_apply();
+				return;
+			}
+			if (k->get_keycode() == Key::ESCAPE) {
+				_clip_cancel();
+				return;
+			}
+		}
+
+		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
+			if (mb->is_pressed()) {
+				if (clip_active && !clip_drawing) {
+					// Grab a clip point to adjust.
+					int pi = _pick_clip_point(vp, mb->get_position());
+					if (pi >= 0) {
+						clip_drag_point = pi;
+						clip_viewport = vp;
+						return;
+					}
+				}
+				// Otherwise start a new clip on the clicked brush.
+				Vector3 hit;
+				LevelBrush *brush = nullptr;
+				int f;
+				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
+					_clip_begin(brush, hit, vp);
+				} else if (vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE && current_map) {
+					// Ortho views: click anywhere - use the selected brush (or the
+					// most recent one) and place the point on the edit plane.
+					LevelBrush *target = selected_brush;
+					if (!target) {
+						Vector<LevelBrush *> brushes = current_map->get_brushes();
+						if (!brushes.is_empty()) {
+							target = brushes[brushes.size() - 1];
+						}
+					}
+					if (target) {
+						// Place the point on the edit plane at the brush's depth.
+						Vector3 center = target->get_global_transform().xform(target->get_center());
+						Vector3 ro, rd;
+						vp->get_ray(mb->get_position(), ro, rd);
+						Plane pl;
+						switch (vp->get_view_type()) {
+							case LevelEditorViewport::VIEW_TOP:
+								pl = Plane(Vector3(0, 1, 0), center.y);
+								break;
+							case LevelEditorViewport::VIEW_FRONT:
+								pl = Plane(Vector3(0, 0, 1), center.z);
+								break;
+							case LevelEditorViewport::VIEW_SIDE:
+								pl = Plane(Vector3(1, 0, 0), center.x);
+								break;
+							default:
+								break;
+						}
+						if (pl.intersects_ray(ro, rd, &hit)) {
+							_clip_begin(target, hit, vp);
+						}
+					}
+				}
+			} else {
+				if (clip_drawing && clip_viewport == vp) {
+					clip_drawing = false;
+					clip_drag_point = -1;
+				} else if (clip_drag_point >= 0 && clip_viewport == vp) {
+					clip_drag_point = -1;
+				}
+			}
+			return;
+		}
+		if (mm.is_valid()) {
+			if ((clip_drawing || clip_drag_point >= 0) && clip_viewport == vp) {
+				// Move the active point on the edit plane THROUGH THE FIRST clip
+				// point, so both points stay coplanar (same Y in top view, etc).
+				Vector3 hit;
+				bool ok = false;
+				Vector3 ro, rd;
+				vp->get_ray(mm->get_position(), ro, rd);
+				Plane pl;
+				switch (vp->get_view_type()) {
+					case LevelEditorViewport::VIEW_PERSPECTIVE:
+					case LevelEditorViewport::VIEW_TOP:
+						pl = Plane(Vector3(0, 1, 0), clip_points[0].y);
+						break;
+					case LevelEditorViewport::VIEW_FRONT:
+						pl = Plane(Vector3(0, 0, 1), clip_points[0].z);
+						break;
+					case LevelEditorViewport::VIEW_SIDE:
+						pl = Plane(Vector3(1, 0, 0), clip_points[0].x);
+						break;
+				}
+				ok = pl.intersects_ray(ro, rd, &hit);
+				if (ok) {
+					if (clip_drawing) {
+						_clip_update_second(hit);
+					} else if (clip_drag_point >= 0) {
+						clip_points[clip_drag_point] = _snap(hit);
+						_update_overlays();
+					}
+				}
+			}
+			return;
+		}
+		return;
+	}
+
 	// Select + element modes (skip while the gizmo is active).
 	if (gizmo_dragging) {
 		return;
@@ -1131,8 +1355,8 @@ int LevelEditorScreen::_pick_ghost_handle(LevelEditorViewport *p_vp, const Vecto
 	Vector3 c = ghost_aabb.get_center();
 	Vector3 hs = ghost_aabb.size * 0.5;
 
-	const real_t face_tol = 10.0;
-	const real_t corner_tol = 8.0;
+	const real_t face_tol = 10.0 * EDSCALE;
+	const real_t corner_tol = 8.0 * EDSCALE;
 
 	// Corners first (smaller targets, higher priority).
 	for (int i = 0; i < 8; i++) {
@@ -1177,9 +1401,12 @@ bool LevelEditorScreen::_ghost_hit_test(LevelEditorViewport *p_vp, const Vector2
 		corners[i] = c + Vector3((i & 1) ? hs.x : -hs.x, (i & 2) ? hs.y : -hs.y, (i & 4) ? hs.z : -hs.z);
 	}
 	static const int face_idx[6][4] = {
-		{ 4, 5, 7, 6 }, { 1, 0, 2, 3 }, // +Z, -Z
-		{ 5, 1, 3, 7 }, { 0, 4, 6, 2 }, // +X, -X
-		{ 7, 6, 2, 3 }, { 0, 1, 5, 4 }, // +Y, -Y
+		{ 4, 5, 7, 6 },
+		{ 1, 0, 2, 3 }, // +Z, -Z
+		{ 5, 1, 3, 7 },
+		{ 0, 4, 6, 2 }, // +X, -X
+		{ 7, 6, 2, 3 },
+		{ 0, 1, 5, 4 }, // +Y, -Y
 	};
 	for (auto &f : face_idx) {
 		Vector2 quad[4];
@@ -1421,7 +1648,8 @@ void LevelEditorScreen::_draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas
 		if (p_vp->project(fc, sp)) {
 			bool hot = (ghost_handle_hover == GHOST_FACE_XN + i || ghost_handle_drag == GHOST_FACE_XN + i);
 			Color hc = hot ? Color(1, 1, 1, 0.95) : Color(0.2, 0.9, 0.4, 0.7);
-			p_canvas->draw_rect(Rect2(sp - Vector2(4, 4), Size2(8, 8)), hc);
+			real_t hs_px = 4.0 * EDSCALE;
+			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hc);
 		}
 	}
 
@@ -1431,9 +1659,302 @@ void LevelEditorScreen::_draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas
 		if (p_vp->project(corners[i], sp)) {
 			bool hot = (ghost_handle_hover == GHOST_CORNER_0 + i || ghost_handle_drag == GHOST_CORNER_0 + i);
 			Color hc = hot ? Color(1, 1, 1, 0.95) : Color(0.2, 0.9, 0.4, 0.7);
-			p_canvas->draw_rect(Rect2(sp - Vector2(3, 3), Size2(6, 6)), hc);
+			real_t hs_px = 3.0 * EDSCALE;
+			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hc);
 		}
 	}
+
+	_draw_dim_labels(p_vp, p_canvas, ghost_aabb);
+}
+
+void LevelEditorScreen::_draw_dim_labels(LevelEditorViewport *p_vp, Control *p_canvas, const AABB &p_aabb) {
+	Vector3 c = p_aabb.get_center();
+	Vector3 hs = p_aabb.size * 0.5;
+
+	Vector3 corners[8];
+	for (int i = 0; i < 8; i++) {
+		corners[i] = c + Vector3((i & 1) ? hs.x : -hs.x, (i & 2) ? hs.y : -hs.y, (i & 4) ? hs.z : -hs.z);
+	}
+
+	Ref<Font> font = get_theme_font(SNAME("font"), SNAME("Label"));
+	const int font_size = get_theme_font_size(SNAME("font_size"), SNAME("Label"));
+	Color text_col(1, 1, 1, 0.9);
+
+	struct DimLabel {
+		int edge_a, edge_b;
+		int axis;
+	};
+	static const DimLabel dim_labels[3] = {
+		{ 2, 3, 0 }, // X edge along the top -> width
+		{ 6, 7, 2 }, // Z edge along the top -> depth
+		{ 0, 2, 1 }, // Y edge -> height
+	};
+	for (const DimLabel &dl : dim_labels) {
+		// Ortho views show only the two axes visible in that view; the
+		// perspective view shows all three.
+		switch (p_vp->get_view_type()) {
+			case LevelEditorViewport::VIEW_TOP: // X and Z
+				if (dl.axis == 1) {
+					continue;
+				}
+				break;
+			case LevelEditorViewport::VIEW_FRONT: // X and Y
+				if (dl.axis == 2) {
+					continue;
+				}
+				break;
+			case LevelEditorViewport::VIEW_SIDE: // Z and Y
+				if (dl.axis == 0) {
+					continue;
+				}
+				break;
+			default:
+				break;
+		}
+		Vector3 mid = (corners[dl.edge_a] + corners[dl.edge_b]) * 0.5;
+		Vector2 sp;
+		if (!p_vp->project(mid, sp)) {
+			continue;
+		}
+		String text = String::num(p_aabb.size[dl.axis], 2);
+		Vector2 text_size = font->get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size);
+		p_canvas->draw_string(font, sp - text_size * 0.5 + Vector2(0, text_size.y * 0.35), text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, text_col);
+	}
+}
+
+// ---- Clip tool ---------------------------------------------------------------
+
+void LevelEditorScreen::_clip_begin(LevelBrush *p_brush, const Vector3 &p_point, LevelEditorViewport *p_vp) {
+	_clip_cancel();
+	clip_brush = p_brush;
+	clip_active = true;
+	clip_drawing = true;
+	clip_drag_point = 1;
+	clip_viewport = p_vp;
+	clip_side = CLIP_KEEP_FRONT;
+	clip_points[0] = _snap(p_point);
+	clip_points[1] = clip_points[0];
+	clip_view_dir = -p_vp->get_camera()->get_global_transform().basis[2];
+	_update_overlays();
+}
+
+void LevelEditorScreen::_clip_update_second(const Vector3 &p_point) {
+	clip_points[1] = _snap(p_point);
+	_update_overlays();
+}
+
+int LevelEditorScreen::_pick_clip_point(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
+	for (int i = 0; i < 2; i++) {
+		Vector2 sp;
+		if (p_vp->project(clip_points[i], sp) && sp.distance_to(p_screen) < 10.0) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+Plane LevelEditorScreen::_clip_plane() const {
+	// Plane through both clip points, containing the view direction. The
+	// normal points to the LEFT of the line as drawn on screen (verified:
+	// along x view_dir), so "keep left/right" matches Hammer's clip tool.
+	Vector3 along = clip_points[1] - clip_points[0];
+	if (along.length() < CMP_EPSILON) {
+		return Plane();
+	}
+	Vector3 n = along.cross(clip_view_dir);
+	if (n.length_squared() < CMP_EPSILON) {
+		// Line parallel to view dir - degenerate.
+		return Plane();
+	}
+	n.normalize();
+
+	// World plane -> brush-local plane.
+	Plane world_plane(n, n.dot(clip_points[0]));
+	Transform3D gt = clip_brush->get_global_transform();
+	Transform3D inv = gt.affine_inverse();
+	Vector3 local_n = inv.basis.xform(world_plane.normal).normalized();
+	Vector3 local_point = inv.xform(clip_points[0]);
+	return Plane(local_n, local_n.dot(local_point));
+}
+
+void LevelEditorScreen::_clip_apply() {
+	if (!clip_active || !clip_brush) {
+		return;
+	}
+	Plane plane = _clip_plane();
+	if (plane.normal.is_zero_approx()) {
+		_clip_cancel();
+		return;
+	}
+	if (clip_side == CLIP_KEEP_BACK) {
+		plane = -plane;
+	}
+
+	LevelMap *map = current_map;
+	Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
+
+	if (clip_side == CLIP_KEEP_BOTH) {
+		// Keep-both: subdivide faces along the line in-place - no caps, no
+		// seam, no new brush node. The brush stays one solid.
+		LevelBrush *target = clip_brush;
+		PackedVector3Array old_verts = target->get_vertices_data();
+		Array old_faces = target->get_faces_data();
+
+		target->split_faces(plane);
+
+		PackedVector3Array new_verts = target->get_vertices_data();
+		Array new_faces = target->get_faces_data();
+
+		EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+		undo_redo->create_action(TTR("Split Brush Faces"));
+		undo_redo->add_do_property(target, "vertices", new_verts);
+		undo_redo->add_do_property(target, "faces", new_faces);
+		undo_redo->add_do_method(map, "refresh");
+		undo_redo->add_undo_property(target, "vertices", old_verts);
+		undo_redo->add_undo_property(target, "faces", old_faces);
+		undo_redo->add_undo_method(map, "refresh");
+		undo_redo->commit_action(false);
+	} else {
+		LevelBrush *target = clip_brush;
+		PackedVector3Array old_verts = target->get_vertices_data();
+		Array old_faces = target->get_faces_data();
+
+		target->clip(plane);
+
+		PackedVector3Array new_verts = target->get_vertices_data();
+		Array new_faces = target->get_faces_data();
+
+		EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+		undo_redo->create_action(TTR("Clip Brush"));
+		undo_redo->add_do_property(target, "vertices", new_verts);
+		undo_redo->add_do_property(target, "faces", new_faces);
+		undo_redo->add_do_method(map, "refresh");
+		undo_redo->add_undo_property(target, "vertices", old_verts);
+		undo_redo->add_undo_property(target, "faces", old_faces);
+		undo_redo->add_undo_method(map, "refresh");
+		undo_redo->commit_action(false);
+	}
+
+	clip_active = false;
+	clip_brush = nullptr;
+	_refresh_map();
+}
+
+void LevelEditorScreen::_clip_cancel() {
+	clip_active = false;
+	clip_drawing = false;
+	clip_drag_point = -1;
+	clip_brush = nullptr;
+	clip_viewport = nullptr;
+	_update_overlays();
+}
+
+void LevelEditorScreen::_clip_cycle_side() {
+	clip_side = (ClipSide)(((int)clip_side + 1) % 3);
+	_update_overlays();
+}
+
+void LevelEditorScreen::_draw_clip(LevelEditorViewport *p_vp, Control *p_canvas) {
+	if (mode != MODE_CLIP || !clip_active || !clip_brush) {
+		return;
+	}
+
+	// Clip points + line.
+	Color pt_col(0.2, 0.9, 1.0, 1.0);
+	Color line_col(0.2, 0.9, 1.0, 0.9);
+	Vector2 s0, s1;
+	bool has0 = p_vp->project(clip_points[0], s0);
+	bool has1 = p_vp->project(clip_points[1], s1);
+	if (has0 && has1) {
+		p_canvas->draw_line(s0, s1, line_col, 2.0);
+	}
+	for (int i = 0; i < 2; i++) {
+		Vector2 sp;
+		if (p_vp->project(clip_points[i], sp)) {
+			bool hot = (clip_drag_point == i);
+			p_canvas->draw_rect(Rect2(sp - Vector2(4, 4), Size2(8, 8)), hot ? Color(1, 1, 1, 1) : pt_col);
+		}
+	}
+
+	// Preview the cut by coloring each brush EDGE: the segment on the kept
+	// side of the plane is green, the discarded side red - so the cut reads
+	// exactly where the line passes through the brush.
+	Plane plane = _clip_plane();
+	if (plane.normal.is_zero_approx()) {
+		return;
+	}
+	Transform3D gt = clip_brush->get_global_transform();
+
+	Color kept_col(0.2, 0.9, 0.4, 0.95);
+	Color cut_col(0.95, 0.25, 0.2, 0.95);
+
+	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = clip_brush->get_edges();
+	for (const LevelBrush::EdgeKey &e : edges) {
+		Vector3 a_local = clip_brush->get_vertex(e.a);
+		Vector3 b_local = clip_brush->get_vertex(e.b);
+		real_t da = plane.distance_to(a_local);
+		real_t db = plane.distance_to(b_local);
+
+		// Split the edge at the plane if it crosses.
+		Vector3 mid_local;
+		bool crosses = (da > 0.0) != (db > 0.0);
+		if (crosses) {
+			real_t t = da / (da - db);
+			mid_local = a_local + (b_local - a_local) * t;
+		}
+
+		// For keep-both, show the two halves in green/blue instead of green/red.
+		Color col_a, col_b;
+		switch (clip_side) {
+			case CLIP_KEEP_FRONT:
+				col_a = (da >= 0.0) ? kept_col : cut_col;
+				col_b = (db >= 0.0) ? kept_col : cut_col;
+				break;
+			case CLIP_KEEP_BACK:
+				col_a = (da < 0.0) ? kept_col : cut_col;
+				col_b = (db < 0.0) ? kept_col : cut_col;
+				break;
+			case CLIP_KEEP_BOTH:
+			default:
+				col_a = (da >= 0.0) ? kept_col : Color(0.4, 0.6, 1.0, 0.95);
+				col_b = (db >= 0.0) ? kept_col : Color(0.4, 0.6, 1.0, 0.95);
+				break;
+		}
+
+		auto draw_seg = [&](const Vector3 &p1, const Vector3 &p2, const Color &c) {
+			Vector2 s1, s2;
+			if (p_vp->project(gt.xform(p1), s1) && p_vp->project(gt.xform(p2), s2)) {
+				p_canvas->draw_line(s1, s2, c, 2.5);
+			}
+		};
+
+		if (crosses) {
+			draw_seg(a_local, mid_local, col_a);
+			draw_seg(mid_local, b_local, col_b);
+			// Mark the cut point.
+			Vector2 sm;
+			if (p_vp->project(gt.xform(mid_local), sm)) {
+				p_canvas->draw_rect(Rect2(sm - Vector2(3, 3), Size2(6, 6)), Color(1, 1, 1, 0.9));
+			}
+		} else {
+			draw_seg(a_local, b_local, col_a);
+		}
+	}
+
+	// Mode hint text in the corner.
+	String side_text;
+	switch (clip_side) {
+		case CLIP_KEEP_FRONT:
+			side_text = TTR("Clip: keep LEFT of line (click Clip to cycle, Enter to apply, Esc to cancel)");
+			break;
+		case CLIP_KEEP_BACK:
+			side_text = TTR("Clip: keep RIGHT of line (click Clip to cycle, Enter to apply, Esc to cancel)");
+			break;
+		case CLIP_KEEP_BOTH:
+			side_text = TTR("Clip: split faces along line (click Clip to cycle, Enter to apply, Esc to cancel)");
+			break;
+	}
+	p_canvas->draw_string(get_theme_font(SNAME("font"), SNAME("Label")), Vector2(8, 18), side_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(1, 1, 1, 0.8));
 }
 
 // ---- Select-mode box handles ------------------------------------------------
@@ -1485,9 +2006,12 @@ int LevelEditorScreen::_pick_select_handle(LevelEditorViewport *p_vp, const Vect
 	}
 
 	static const Vector3 face_dirs[6] = {
-		Vector3(-1, 0, 0), Vector3(1, 0, 0),
-		Vector3(0, -1, 0), Vector3(0, 1, 0),
-		Vector3(0, 0, -1), Vector3(0, 0, 1),
+		Vector3(-1, 0, 0),
+		Vector3(1, 0, 0),
+		Vector3(0, -1, 0),
+		Vector3(0, 1, 0),
+		Vector3(0, 0, -1),
+		Vector3(0, 0, 1),
 	};
 	int best = GHOST_NONE;
 	real_t best_d = face_tol;
@@ -1647,9 +2171,18 @@ void LevelEditorScreen::_draw_select_handles(LevelEditorViewport *p_vp, Control 
 		corners[i] = c + Vector3((i & 1) ? hs.x : -hs.x, (i & 2) ? hs.y : -hs.y, (i & 4) ? hs.z : -hs.z);
 	}
 	static const int edge_idx[12][2] = {
-		{ 0, 1 }, { 1, 3 }, { 3, 2 }, { 2, 0 },
-		{ 4, 5 }, { 5, 7 }, { 7, 6 }, { 6, 4 },
-		{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 },
+		{ 0, 1 },
+		{ 1, 3 },
+		{ 3, 2 },
+		{ 2, 0 },
+		{ 4, 5 },
+		{ 5, 7 },
+		{ 7, 6 },
+		{ 6, 4 },
+		{ 0, 4 },
+		{ 1, 5 },
+		{ 2, 6 },
+		{ 3, 7 },
 	};
 	for (auto &e : edge_idx) {
 		Vector2 a, b;
@@ -1660,9 +2193,12 @@ void LevelEditorScreen::_draw_select_handles(LevelEditorViewport *p_vp, Control 
 
 	// Face handles.
 	static const Vector3 face_dirs[6] = {
-		Vector3(-1, 0, 0), Vector3(1, 0, 0),
-		Vector3(0, -1, 0), Vector3(0, 1, 0),
-		Vector3(0, 0, -1), Vector3(0, 0, 1),
+		Vector3(-1, 0, 0),
+		Vector3(1, 0, 0),
+		Vector3(0, -1, 0),
+		Vector3(0, 1, 0),
+		Vector3(0, 0, -1),
+		Vector3(0, 0, 1),
 	};
 	for (int i = 0; i < 6; i++) {
 		Vector3 fc = gt.xform(c + face_dirs[i] * Vector3(hs.x, hs.y, hs.z));
@@ -1743,6 +2279,7 @@ void LevelEditorScreen::_compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) con
 }
 
 void LevelEditorScreen::_extrude_pressed() {
+	extrude_button->release_focus();
 	if (!current_map || !selected_brush) {
 		return;
 	}
@@ -1825,6 +2362,7 @@ void LevelEditorScreen::_extrude_pressed() {
 }
 
 void LevelEditorScreen::_apply_material_pressed() {
+	apply_material_button->release_focus();
 	if (!current_map || !selected_brush || current_material.is_null()) {
 		return;
 	}
@@ -1853,6 +2391,7 @@ void LevelEditorScreen::_apply_material_pressed() {
 }
 
 void LevelEditorScreen::_flip_faces_pressed() {
+	flip_faces_button->release_focus();
 	if (!current_map || !selected_brush) {
 		return;
 	}
@@ -1877,6 +2416,7 @@ void LevelEditorScreen::_flip_faces_pressed() {
 }
 
 void LevelEditorScreen::_bake_pressed() {
+	bake_button->release_focus();
 	if (!current_map) {
 		return;
 	}
@@ -1909,16 +2449,21 @@ void LevelEditorScreen::_bake_pressed() {
 }
 
 void LevelEditorScreen::_notification(int p_what) {
-	if (p_what == NOTIFICATION_PROCESS) {
-		// Drop dangling selection if the brush was deleted externally.
-		if (selected_brush && !selected_brush->is_inside_tree()) {
-			_clear_selection();
-			_update_overlays();
-		}
-		if (current_map && !current_map->is_inside_tree()) {
-			current_map = nullptr;
-			_clear_selection();
-		}
+	switch (p_what) {
+		case NOTIFICATION_THEME_CHANGED: {
+			_update_mode_icons();
+		} break;
+		case NOTIFICATION_PROCESS: {
+			// Drop dangling selection if the brush was deleted externally.
+			if (selected_brush && !selected_brush->is_inside_tree()) {
+				_clear_selection();
+				_update_overlays();
+			}
+			if (current_map && !current_map->is_inside_tree()) {
+				current_map = nullptr;
+				_clear_selection();
+			}
+		} break;
 	}
 }
 
@@ -2287,8 +2832,8 @@ void LevelEditorScreen::_gizmo_end_drag() {
 }
 
 void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas) {
-	if (mode == MODE_BLOCK || !_has_selection()) {
-		return; // No gizmo in Block mode (draw-only tool).
+	if (mode == MODE_BLOCK || mode == MODE_CLIP || !_has_selection()) {
+		return; // No gizmo in Block/Clip mode.
 	}
 	Vector3 origin = _get_gizmo_origin();
 	Vector2 so;
@@ -2377,6 +2922,7 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 	_draw_selection(p_vp, p_canvas);
 	_draw_select_handles(p_vp, p_canvas);
 	_draw_gizmo(p_vp, p_canvas);
+	_draw_clip(p_vp, p_canvas);
 }
 
 void LevelEditorScreen::_draw_brush_outline(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, bool p_selected) {
@@ -2414,6 +2960,9 @@ void LevelEditorScreen::_draw_drag_feedback(LevelEditorViewport *p_vp, Control *
 		}
 	}
 	memdelete(preview);
+
+	// Show the in-progress box's dimensions too.
+	_draw_dim_labels(p_vp, p_canvas, AABB(mins, maxs - mins));
 
 	if (p_vp == drag_viewport) {
 		Vector2 s0, s1;

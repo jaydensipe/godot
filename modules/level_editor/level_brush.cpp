@@ -215,6 +215,189 @@ void LevelBrush::setup_box(const AABB &p_aabb) {
 	_update_face_count_storage();
 }
 
+void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
+	// Solid clip: keep only the front side, capping the cut.
+	const real_t eps = 0.0005;
+
+	LocalVector<LocalVector<int>> new_faces;
+	LocalVector<Ref<Material>> new_mats;
+	Vector<int> cap_verts;
+
+	auto weld = [&](const Vector3 &p) -> int {
+		for (int idx : cap_verts) {
+			if (verts[idx].distance_to(p) < eps * 4.0) {
+				return idx;
+			}
+		}
+		verts.push_back(p);
+		int idx = (int)verts.size() - 1;
+		cap_verts.push_back(idx);
+		return idx;
+	};
+
+	for (uint32_t f = 0; f < faces.size(); f++) {
+		const LocalVector<int> &loop = faces[f];
+		LocalVector<int> out;
+		const uint32_t n = loop.size();
+		for (uint32_t i = 0; i < n; i++) {
+			int ia = loop[i];
+			int ib = loop[(i + 1) % n];
+			const Vector3 &a = verts[ia];
+			const Vector3 &b = verts[ib];
+			real_t da = p_plane.distance_to(a);
+			real_t db = p_plane.distance_to(b);
+			bool in_a = da >= -eps;
+			bool in_b = db >= -eps;
+
+			if (in_a) {
+				out.push_back(ia);
+			}
+			if (in_a != in_b) {
+				real_t t = da / (da - db);
+				Vector3 hit = a + (b - a) * t;
+				out.push_back(weld(hit));
+			}
+		}
+		if (out.size() >= 3) {
+			new_faces.push_back(LocalVector<int>(out));
+			new_mats.push_back(f < face_materials.size() ? face_materials[f] : Ref<Material>());
+		}
+	}
+
+	faces = new_faces;
+	face_materials = new_mats;
+
+	if (p_add_cap && cap_verts.size() >= 3) {
+		Vector3 center;
+		for (int idx : cap_verts) {
+			center += verts[idx];
+		}
+		center /= (real_t)cap_verts.size();
+
+		Vector3 n = -p_plane.normal;
+		Vector3 axis_u = (verts[cap_verts[0]] - center).normalized();
+		Vector3 axis_v = n.cross(axis_u).normalized();
+
+		struct Item {
+			real_t angle;
+			int idx;
+			bool operator<(const Item &o) const { return angle < o.angle; }
+		};
+		Vector<Item> items;
+		for (int idx : cap_verts) {
+			Vector3 d = verts[idx] - center;
+			items.push_back({ Math::atan2(d.dot(axis_v), d.dot(axis_u)), idx });
+		}
+		items.sort();
+
+		LocalVector<int> cap;
+		for (const Item &it : items) {
+			cap.push_back(it.idx);
+		}
+		faces.push_back(LocalVector<int>(cap));
+		face_materials.push_back(Ref<Material>());
+	}
+}
+
+void LevelBrush::split_faces(const Plane &p_plane) {
+	// Split each face polygon along the plane. Faces fully on one side are
+	// untouched; crossing faces become two faces sharing the cut edge. The
+	// solid is not clipped and no caps are created - both halves remain part
+	// of this brush.
+	const real_t eps = 0.0005;
+
+	LocalVector<LocalVector<int>> new_faces;
+	LocalVector<Ref<Material>> new_mats;
+
+	for (uint32_t f = 0; f < faces.size(); f++) {
+		const LocalVector<int> &loop = faces[f];
+		const uint32_t n = loop.size();
+		if (n < 3) {
+			continue;
+		}
+
+		// Classify vertices.
+		LocalVector<real_t> dist;
+		dist.resize(n);
+		int front = 0, back = 0;
+		for (uint32_t i = 0; i < n; i++) {
+			dist[i] = p_plane.distance_to(verts[loop[i]]);
+			if (dist[i] > eps) {
+				front++;
+			} else if (dist[i] < -eps) {
+				back++;
+			}
+		}
+
+		Ref<Material> mat = f < face_materials.size() ? face_materials[f] : Ref<Material>();
+
+		if (front == 0 || back == 0) {
+			// Entirely on one side (or on the plane): keep as-is.
+			new_faces.push_back(LocalVector<int>(loop));
+			new_mats.push_back(mat);
+			continue;
+		}
+
+		// Split into front and back polygons (Sutherland-Hodgman both ways).
+		auto clip_side = [&](bool keep_front) -> LocalVector<int> {
+			LocalVector<int> out;
+			for (uint32_t i = 0; i < n; i++) {
+				uint32_t i2 = (i + 1) % n;
+				int ia = loop[i];
+				int ib = loop[i2];
+				// dist is indexed by loop position, not vertex index.
+				real_t da = keep_front ? dist[i] : -dist[i];
+				real_t db = keep_front ? dist[i2] : -dist[i2];
+				bool in_a = da >= -eps;
+				bool in_b = db >= -eps;
+				if (in_a) {
+					out.push_back(ia);
+				}
+				if (in_a != in_b) {
+					real_t t = da / (da - db);
+					Vector3 hit = verts[ia] + (verts[ib] - verts[ia]) * t;
+					// Weld against existing intersection verts on this edge-cross.
+					int found = -1;
+					for (uint32_t vi = 0; vi < verts.size(); vi++) {
+						if (verts[vi].distance_to(hit) < eps * 4.0) {
+							found = (int)vi;
+							break;
+						}
+					}
+					if (found == -1) {
+						verts.push_back(hit);
+						found = (int)verts.size() - 1;
+					}
+					out.push_back(found);
+				}
+			}
+			return out;
+		};
+
+		LocalVector<int> front_poly = clip_side(true);
+		LocalVector<int> back_poly = clip_side(false);
+
+		if (front_poly.size() >= 3) {
+			new_faces.push_back(LocalVector<int>(front_poly));
+			new_mats.push_back(mat);
+		}
+		if (back_poly.size() >= 3) {
+			new_faces.push_back(LocalVector<int>(back_poly));
+			new_mats.push_back(mat);
+		}
+	}
+
+	faces = new_faces;
+	face_materials = new_mats;
+}
+
+LevelBrush *LevelBrush::clip_split(const Plane &p_plane) {
+	LevelBrush *back = duplicate_brush();
+	back->clip(-p_plane);
+	clip(p_plane);
+	return back;
+}
+
 void LevelBrush::flip_faces() {
 	set_faces_flipped(!faces_flipped);
 }

@@ -124,6 +124,20 @@ public:
 	// normal, and stitches side quads. Returns the new cap face index (or -1).
 	int extrude_face(int p_face, real_t p_distance);
 
+	// Clip the brush with a plane (local space). Keeps the side the plane
+	// normal points to. Adds a cap face on the cut unless p_add_cap is false
+	// (used when splitting, where the two halves share the seam).
+	void clip(const Plane &p_plane, bool p_add_cap = true);
+
+	// Split faces along the plane without clipping the solid: crossing faces
+	// become two faces sharing the cut edge. No caps, no seam - the brush
+	// stays whole, just with faces subdivided along the line.
+	void split_faces(const Plane &p_plane);
+
+	// Clip keeping both sides: returns the back-side brush (caller owns it),
+	// this brush keeps the front side.
+	LevelBrush *clip_split(const Plane &p_plane);
+
 	// Bake helpers (local space; caller applies transforms).
 	void get_bake_surface_data(int p_face, Vector<Vector3> &r_vertices, Vector<Vector3> &r_normals, Vector<Vector2> &r_uvs) const;
 	void get_collision_faces(Vector<Vector3> &r_faces) const;
