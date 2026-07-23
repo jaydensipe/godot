@@ -30,6 +30,7 @@
 
 #include "level_brush.h"
 
+#include "core/config/engine.h"
 #include "core/object/class_db.h"
 #include "scene/resources/material.h"
 
@@ -61,6 +62,32 @@ void LevelBrush::_bind_methods() {
 void LevelBrush::_update_face_count_storage() {
 	if ((int)face_materials.size() != (int)faces.size()) {
 		face_materials.resize(faces.size());
+	}
+}
+
+void LevelBrush::_notify_map_changed() {
+	// Ask the parent map to rebuild its preview (e.g. after serialized data
+	// changes through undo/redo, which bypasses the editing code paths).
+	Node *parent = get_parent();
+	if (parent && parent->has_method("refresh")) {
+		parent->call_deferred("refresh");
+	}
+}
+
+void LevelBrush::_notification(int p_what) {
+	switch (p_what) {
+		case NOTIFICATION_ENTER_TREE: {
+			if (Engine::get_singleton()->is_editor_hint()) {
+				set_notify_local_transform(true);
+			}
+		} break;
+		case NOTIFICATION_LOCAL_TRANSFORM_CHANGED: {
+			// Moved (including undo/redo of the position property) - the parent
+			// map's baked preview must follow.
+			if (Engine::get_singleton()->is_editor_hint()) {
+				_notify_map_changed();
+			}
+		} break;
 	}
 }
 
@@ -592,11 +619,7 @@ void LevelBrush::set_faces_flipped(bool p_flipped) {
 		return;
 	}
 	faces_flipped = p_flipped;
-	// Ask the parent map to rebuild its preview.
-	Node *parent = get_parent();
-	if (parent && parent->has_method("refresh")) {
-		parent->call_deferred("refresh");
-	}
+	_notify_map_changed();
 }
 
 void LevelBrush::move_vertices(const Vector<int> &p_vertices, const Vector3 &p_delta) {
@@ -744,6 +767,7 @@ void LevelBrush::set_vertices_data(const PackedVector3Array &p_verts) {
 	for (int i = 0; i < p_verts.size(); i++) {
 		verts[i] = p_verts[i];
 	}
+	_notify_map_changed();
 }
 
 PackedVector3Array LevelBrush::get_vertices_data() const {
@@ -766,6 +790,7 @@ void LevelBrush::set_faces_data(const Array &p_faces) {
 		}
 	}
 	_update_face_count_storage();
+	_notify_map_changed();
 }
 
 Array LevelBrush::get_faces_data() const {
@@ -790,6 +815,7 @@ void LevelBrush::set_face_materials_data(const Array &p_materials) {
 		face_materials[i] = m;
 	}
 	_update_face_count_storage();
+	_notify_map_changed();
 }
 
 Array LevelBrush::get_face_materials_data() const {

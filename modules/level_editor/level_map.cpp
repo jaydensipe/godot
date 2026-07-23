@@ -278,6 +278,5 @@ LevelMap::LevelMap() {
 
 	if (Engine::get_singleton()->is_editor_hint()) {
 		set_process(true);
-		set_notify_transform(true);
 	}
 }

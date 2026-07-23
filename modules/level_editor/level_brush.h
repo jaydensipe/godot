@@ -81,6 +81,7 @@ private:
 	bool faces_flipped = false;
 
 	void _update_face_count_storage();
+	void _notify_map_changed();
 
 public:
 	int get_vertex_count() const { return (int)verts.size(); }
@@ -175,4 +176,5 @@ public:
 
 protected:
 	static void _bind_methods();
+	void _notification(int p_what);
 };

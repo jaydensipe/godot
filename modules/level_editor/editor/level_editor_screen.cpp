@@ -304,11 +304,63 @@ void LevelEditorViewport::_notification(int p_what) {
 }
 
 void LevelEditorViewport::_draw_grid() {
-	if (!overlay || view_type == VIEW_PERSPECTIVE) {
+	if (!overlay) {
 		return;
 	}
 	const real_t gs = (screen ? screen->get_grid_size() : 1.0);
 	if (gs <= 0) {
+		return;
+	}
+
+	Color minor(1, 1, 1, 0.06);
+	Color major(1, 1, 1, 0.15);
+	Color axis_col(0.55, 0.75, 1.0, 0.5);
+
+	if (view_type == VIEW_PERSPECTIVE) {
+		// Ground plane (Y = 0) grid over a fixed extent. Segments are clipped
+		// against the camera near plane first so they don't vanish when one
+		// end goes behind the camera (flying low over the grid).
+		const int extent = 64; // Grid lines span -extent..extent world units.
+		const real_t near_z = -(real_t)camera->get_near() - 0.01;
+
+		Transform3D cam_inv = camera->get_global_transform().affine_inverse();
+
+		int start = (int)Math::floor(-extent / gs);
+		int end = (int)Math::ceil(extent / gs);
+		for (int i = start; i <= end; i++) {
+			real_t a = i * gs;
+			bool is_axis = Math::is_zero_approx(a);
+			bool is_major = (i % 8) == 0;
+			Color col = is_axis ? axis_col : (is_major ? major : minor);
+			real_t width = is_axis ? 2.0 : 1.0;
+
+			for (int seg = 0; seg < 2; seg++) {
+				Vector3 p1 = (seg == 0) ? Vector3(a, 0, -extent) : Vector3(-extent, 0, a);
+				Vector3 p2 = (seg == 0) ? Vector3(a, 0, extent) : Vector3(extent, 0, a);
+
+				// Clip against the near plane in camera space (z <= near_z is visible).
+				Vector3 c1 = cam_inv.xform(p1);
+				Vector3 c2 = cam_inv.xform(p2);
+				bool b1 = c1.z > near_z;
+				bool b2 = c2.z > near_z;
+				if (b1 && b2) {
+					continue; // Fully behind the near plane.
+				}
+				if (b1 != b2) {
+					real_t t = (near_z - c1.z) / (c2.z - c1.z);
+					if (b1) {
+						c1 = c1.lerp(c2, t);
+					} else {
+						c2 = c1.lerp(c2, t);
+					}
+				}
+
+				Vector2 s1, s2;
+				if (project(camera->get_global_transform().xform(c1), s1) && project(camera->get_global_transform().xform(c2), s2)) {
+					overlay->draw_line(s1, s2, col, width);
+				}
+			}
+		}
 		return;
 	}
 
@@ -347,10 +399,6 @@ void LevelEditorViewport::_draw_grid() {
 		min_b = MIN(min_b, w[i][axis_b]);
 		max_b = MAX(max_b, w[i][axis_b]);
 	}
-
-	Color minor(1, 1, 1, 0.06);
-	Color major(1, 1, 1, 0.15);
-	Color axis_col(0.55, 0.75, 1.0, 0.5);
 
 	int start_a = (int)Math::floor(min_a / gs);
 	int end_a = (int)Math::ceil(max_a / gs);
@@ -426,6 +474,10 @@ void LevelEditorViewport::gui_input(const Ref<InputEvent> &p_event) {
 		// Always resync - wheel zoom and other non-"navigating" inputs still
 		// change the controller's cursor.
 		_update_camera_transform();
+		// Camera may have moved (orbit/pan/zoom) - redraw the grid overlay.
+		if (overlay) {
+			overlay->update();
+		}
 		return;
 	}
 
@@ -3320,7 +3372,7 @@ void LevelEditorScreen::_draw_drag_feedback(LevelEditorViewport *p_vp, Control *
 	// Show the in-progress box's dimensions too.
 	_draw_dim_labels(p_vp, p_canvas, AABB(mins, maxs - mins));
 
-	if (p_vp == drag_viewport) {
+	if (p_vp == drag_viewport && p_vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE) {
 		Vector2 s0, s1;
 		if (p_vp->project(drag_start, s0) && p_vp->project(drag_current, s1)) {
 			Rect2 r(s0, s1 - s0);
