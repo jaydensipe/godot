@@ -4,13 +4,14 @@
 
 ```
 modules/level_editor/
-  config.py                  # Module config (doc classes)
+  config.py                  # Module config (doc classes + get_icons_path)
   SCsub                      # Builds *.cpp; editor/*.cpp + editor/tools/*.cpp under env.editor_build
   register_types.{h,cpp}     # initialize_level_editor_module / uninitialize_...
                              #   SCENE level: GDREGISTER_CLASS(LevelBrush), (LevelMap)
                              #   EDITOR level: GDREGISTER_CLASS(LevelEditorPlugin) + EditorPlugins::add_by_type
   level_brush.{h,cpp}        # LevelBrush : Node3D - brush topology + geometry ops (runtime + editor)
   level_map.{h,cpp}          # LevelMap : Node3D - brush container, live preview, bake (runtime + editor)
+  icons/                     # Editor icons (LevelMap.svg = node icon, Subdivision.svg = plugin tab)
   doc_classes/
     LevelBrush.xml
     LevelMap.xml
@@ -20,6 +21,7 @@ modules/level_editor/
   .ai/                       # Project docs for AI/agent context handoff
   editor/
     level_editor_screen.{h,cpp}  # LevelEditorPlugin, LevelEditorScreen, LevelEditorViewport
+    level_constants.h        # LevelEditorColors namespace - ALL overlay drawing colors
     tools/
       level_editor_tools.cpp     # LevelEditorScreen tool-action members (extrude, material,
                                  # flip faces, tools menu, bridge, bake)
@@ -70,6 +72,12 @@ SubViewportContainer
 - Brushes = `LevelBrush` children (`get_brushes()` scans children).
 - Editor-only internal `_LevelPreview` MeshInstance3D rebuilt in `refresh()`
   from `bake()`.
+- **Preview refresh triggers**: `refresh()` is called explicitly after edits,
+  plus automatically from `LevelBrush` - `_notify_map_changed()` (deferred
+  `refresh` on parent) fires in `set_vertices_data`/`set_faces_data`/
+  `set_face_materials_data`/`set_faces_flipped` (covers undo/redo property
+  restores), and `NOTIFICATION_LOCAL_TRANSFORM_CHANGED` (covers undo of node
+  position; brush enables `set_notify_local_transform(true)` in editor).
 - `default_material` (StandardMaterial3D, albedo 0.7, CULL_BACK - needed so
   flipped/interior brushes render correctly).
 - `bake()` groups faces per unique material into an `ArrayMesh`
@@ -80,11 +88,24 @@ SubViewportContainer
 ## Editor state (LevelEditorScreen)
 
 - `Mode` enum order: SELECT, ROTATE, SCALE, BLOCK, CLIP, VERTEX, EDGE, FACE.
-  Toolbar indices iterate `mode_buttons[MODE_MAX]`; mode buttons live in two
-  button-group panels (SELECT..CLIP, then VERTEX..FACE).
-- Selection: `LevelBrush *selected_brush` + per-mode `selected_faces`
-  (HashSet<int>), `selected_edges` (HashSet<EdgeKey>), `selected_vertices`
-  (HashSet<int>) - all indices into the selected brush.
+  Toolbar indices iterate `mode_buttons[MODE_MAX]`; mode buttons live in three
+  button-group panels (SELECT..SCALE, BLOCK..CLIP, then VERTEX..FACE).
+- **No-map gate**: if the edited scene has no `LevelMap`, the quad viewports
+  are hidden and a warning panel ("Create LevelMap" button) shows instead.
+  `_update_map_ui()` resolves/adopts a map found in the scene (never
+  auto-creates); `LevelEditorPlugin::edited_scene_changed()` override
+  re-resolves on scene switch. The map is only created by the button
+  (`_get_or_create_map`).
+- Selection: `LevelBrush *selected_brush` (whole-brush modes) + per-brush
+  element sets: `HashMap<LevelBrush *, HashSet<...>> selected_faces /
+  selected_edges / selected_vertices` - element modes select across brushes.
+  Selection clears on EVERY mode switch (`_set_mode`).
+- Element picking scans ALL brushes in the map (`_pick_vertex`/`_pick_edge`/
+  `_pick_face`). Hover shows the hovered brush (light-blue outline) + its
+  pickable elements: green vertices (vertex mode only), green hovered edge,
+  green hovered face fill; selected elements draw in orange
+  (`LevelEditorColors::SELECTED_ELEMENT`). Brushes with any selection keep the
+  highlight after the cursor leaves.
 - Editor selection sync: plugin listens to `EditorSelection::selection_changed`
   and adopts a selected `LevelBrush` (`set_selected_brush_from_editor`).
 - Block flow: stage 1 drag → stage 2 "ghost" (AABB + 6 face handles + 8
@@ -101,14 +122,19 @@ SubViewportContainer
   closest-point-on-axis drag), rotate gizmo (3 rings, ortho views restrict to
   the view axis + click-anywhere), scale (axis handles + off-gizmo uniform
   mouse-X), select-mode AABB handles (resize via `_apply_brush_aabb`).
-  All drags snapshot `gizmo_drag_original_verts` and apply absolute deltas;
-  undo = property pair, `commit_action(false)`.
+  Element-mode drags snapshot `gizmo_drag_brush_verts` (per-brush map) and
+  apply absolute deltas to each brush's selected vertices; whole-brush modes
+  use `gizmo_drag_original_verts`. Undo = property pair across all dragged
+  brushes in ONE action, `commit_action(false)`.
 - Keys (handled in `LevelEditorScreen::input()`, `_vp_input` phase, swallowed
   via `set_input_as_handled`): Delete (per-mode delete/collapse), `[`/`]`
   grid ladder (hardcoded steps 1/64..64), Enter/Esc (ghost/clip commit/cancel,
   drag cancel). `shortcut_input` on screen+viewport also accepts them as a
   fallback. Brackets in `forward_input` are intentionally skipped to avoid
   double-handling.
+- **All overlay colors** live in `editor/level_constants.h`
+  (`LevelEditorColors` namespace) - never hardcode `Color(...)` literals in
+  drawing code.
 
 ## Viewport details
 
@@ -127,6 +153,10 @@ SubViewportContainer
   Zoom is cursor-centered (before/after `intersect_ortho_plane` pivot fixup).
   Ortho edit planes for tools pass through the relevant point (clip point /
   brush center), not the origin.
+- Perspective grid: ground-plane (Y=0) grid spans ±64 units, snapped to grid
+  size; segments are clipped against the camera near plane before projection
+  (otherwise whole lines vanish when flying low). Ortho grid: infinite,
+  derived from the view frustum corners on the edit plane.
 - `gui_input` forwarding: `LevelEditorViewport::gui_input` calls
   `screen->forward_input(camera, event)` FIRST, then handles navigation.
   `forward_input` maps camera → viewport and implements ALL tool logic

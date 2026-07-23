@@ -39,6 +39,9 @@ splits: ghost block, clip tool, gizmos (same treatment as tools/).
   click-anywhere at brush depth).
 - **Rotate/Scale modes don't change selection by design** (selection is
   Select-mode only).
+- **Element selection is per-brush** (`HashMap<LevelBrush *, HashSet>`) -
+  multi-brush gizmo drags work, but Bridge Edges requires both edges on the
+  same brush (geometry constraint).
 
 ## Discussed but not built yet
 
@@ -61,6 +64,16 @@ splits: ghost block, clip tool, gizmos (same treatment as tools/).
 
 ## Recently completed (for context)
 
+- No-map gate: warning panel + Create LevelMap button; viewports hidden until
+  a map exists (`edited_scene_changed` override, `_update_map_ui`).
+- Cross-brush element selection (per-brush sets, hover highlight, persistent
+  highlight on selected brushes, selection clears on tool switch).
+- Perspective-view ground grid with near-plane segment clipping.
+- Overlay colors centralized in `editor/level_constants.h`.
+- Preview auto-refresh on undo/redo (brush-side `_notify_map_changed` from
+  serialized setters + local-transform notification).
+- Module icons via `config.py get_icons_path()` (`LevelMap.svg` node icon,
+  `Subdivision.svg` tab icon).
 - Tools menu (dropdown) with Bridge Edge; tool actions split into
   `editor/tools/level_editor_tools.cpp`.
 - Rotate (ring gizmo) and Scale tools; Select-mode AABB handles and

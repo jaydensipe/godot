@@ -1,0 +1,90 @@
+/**************************************************************************/
+/*  level_constants.h                                                     */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#pragma once
+
+#include "core/math/color.h"
+
+// Shared drawing constants for the level editor overlay. All colors used by
+// the viewports live here so the visual language stays consistent.
+namespace LevelEditorColors {
+
+// Grid.
+inline const Color GRID_MINOR{ 1, 1, 1, 0.06f };
+inline const Color GRID_MAJOR{ 1, 1, 1, 0.15f };
+inline const Color GRID_AXIS{ 0.55f, 0.75f, 1.0f, 0.5f };
+
+// Brush outlines.
+inline const Color BRUSH_OUTLINE{ 0.9f, 0.9f, 0.9f, 0.35f };
+inline const Color BRUSH_OUTLINE_SELECTED{ 1.0f, 0.6f, 0.1f, 0.9f };
+inline const Color BRUSH_OUTLINE_HOVER{ 1.0f, 1.0f, 1.0f, 0.5f };
+
+// Element modes: hovered brush highlight + hover/selection colors.
+inline const Color HOVER_BRUSH_OUTLINE{ 0.55f, 0.8f, 1.0f, 0.8f };
+inline const Color HOVER_ELEMENT{ 0.2f, 1.0f, 0.3f, 1.0f };
+inline const Color HOVER_FACE_FILL{ 0.2f, 1.0f, 0.3f, 0.25f };
+inline const Color SELECTED_ELEMENT{ 1.0f, 0.6f, 0.1f, 0.95f };
+inline const Color SELECTED_FACE_FILL{ 1.0f, 0.45f, 0.1f, 0.22f };
+inline const Color VERTEX_OUTLINE{ 0.0f, 0.0f, 0.0f, 1.0f };
+
+// Ghost block + drag feedback (green).
+inline const Color GHOST{ 0.2f, 0.9f, 0.4f, 0.9f };
+inline const Color GHOST_HANDLE{ 0.2f, 0.9f, 0.4f, 0.7f };
+inline const Color GHOST_HANDLE_HOT{ 0.6f, 1.0f, 0.75f, 0.95f };
+inline const Color DRAG_RECT{ 0.2f, 0.9f, 0.4f, 0.6f };
+
+// Clip tool (cyan) + keep/cut indication.
+inline const Color CLIP{ 0.2f, 0.9f, 1.0f, 1.0f };
+inline const Color CLIP_LINE{ 0.2f, 0.9f, 1.0f, 0.9f };
+inline const Color CLIP_POINT_HOT{ 0.6f, 1.0f, 1.0f, 1.0f };
+inline const Color CLIP_KEPT{ 0.2f, 0.9f, 0.4f, 0.95f };
+inline const Color CLIP_CUT{ 0.95f, 0.25f, 0.2f, 0.95f };
+inline const Color CLIP_HALF{ 0.4f, 0.6f, 1.0f, 0.95f };
+inline const Color CLIP_MARKER{ 1.0f, 1.0f, 1.0f, 0.9f };
+
+// Select-mode resize handles (orange family).
+inline const Color SELECT_HANDLE{ 1.0f, 0.6f, 0.1f, 0.8f };
+inline const Color SELECT_HANDLE_HOT{ 1.0f, 0.8f, 0.5f, 0.95f };
+
+// Gizmos.
+inline const Color GIZMO_AXIS_X{ 0.95f, 0.3f, 0.3f };
+inline const Color GIZMO_AXIS_Y{ 0.4f, 0.9f, 0.4f };
+inline const Color GIZMO_AXIS_Z{ 0.3f, 0.6f, 1.0f };
+inline const Color GIZMO_CENTER{ 1.0f, 1.0f, 1.0f, 0.9f };
+
+// Text overlays.
+inline const Color TEXT{ 1.0f, 1.0f, 1.0f, 0.9f };
+inline const Color TEXT_DIM{ 1.0f, 1.0f, 1.0f, 0.8f };
+
+// Viewport environment.
+inline const Color VIEWPORT_BG{ 0.16f, 0.16f, 0.18f };
+inline const Color VIEWPORT_AMBIENT{ 0.45f, 0.45f, 0.45f };
+
+} // namespace LevelEditorColors

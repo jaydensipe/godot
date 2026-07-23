@@ -39,11 +39,13 @@
 #include "scene/gui/split_container.h"
 #include "scene/gui/subviewport_container.h"
 #include "scene/main/viewport.h"
+#include <cstdint>
 
 class Button;
 class Camera3D;
 class DirectionalLight3D;
 class EditorResourcePicker;
+class OptionButton;
 class SpinBox;
 class WorldEnvironment;
 
@@ -156,7 +158,7 @@ private:
 	Label *no_map_label = nullptr;
 	Button *create_map_button = nullptr;
 	Button *mode_buttons[MODE_MAX] = {};
-	SpinBox *grid_size_spin = nullptr;
+	OptionButton *grid_size_option = nullptr;
 	SpinBox *extrude_spin = nullptr;
 	Button *extrude_button = nullptr;
 	Button *apply_material_button = nullptr;
@@ -269,11 +271,12 @@ private:
 	void _select_handle_end_drag();
 	void _draw_select_handles(LevelEditorViewport *p_vp, Control *p_canvas);
 
-	// Selection state (all indices refer to the selected brush's topology).
+	// Selection state. Whole-brush: selected_brush. Element modes select
+	// across brushes: each set is keyed by the owning brush.
 	LevelBrush *selected_brush = nullptr;
-	HashSet<int> selected_faces;
-	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> selected_edges;
-	HashSet<int> selected_vertices;
+	HashMap<LevelBrush *, HashSet<int>> selected_faces;
+	HashMap<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> selected_edges;
+	HashMap<LevelBrush *, HashSet<int>> selected_vertices;
 
 	// Hover feedback.
 	LevelBrush *hover_brush = nullptr;
@@ -284,6 +287,9 @@ private:
 	bool has_hover_vertex = false;
 
 	Ref<Material> current_material;
+
+	// Per-brush snapshot at gizmo drag start (multi-brush element moves).
+	HashMap<LevelBrush *, PackedVector3Array> gizmo_drag_brush_verts;
 
 	// --- Manipulation gizmo ---
 	enum GizmoPart {
@@ -323,6 +329,12 @@ private:
 	LevelMap *_get_or_create_map();
 	void _resolve_map();
 
+	// Element-selection helpers (per-brush keyed sets).
+	void _clear_element_selection();
+	HashSet<int> &_face_set(LevelBrush *p_brush) { return selected_faces[p_brush]; }
+	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &_edge_set(LevelBrush *p_brush) { return selected_edges[p_brush]; }
+	HashSet<int> &_vertex_set(LevelBrush *p_brush) { return selected_vertices[p_brush]; }
+
 	void _mode_changed(int p_mode);
 	void _set_mode(Mode p_mode);
 	void _update_mode_icons();
@@ -335,8 +347,13 @@ private:
 	void _tools_menu_selected(int p_id);
 	void _join_edges();
 	void _material_changed(const Ref<Resource> &p_resource);
-	void _grid_size_changed(double p_value);
+	void _grid_size_selected(int p_index);
 	void _extrude_amount_changed(double p_value);
+
+	// Power-of-two grid ladder, shared by the dropdown and the [ ] keys.
+	static const real_t GRID_STEPS[];
+	static const int GRID_STEP_COUNT;
+	int _grid_step_index() const;
 
 	Vector3 _snap(const Vector3 &p_v) const;
 	real_t _snap(real_t p_v) const;
@@ -344,7 +361,7 @@ private:
 	bool _pick_face(Camera3D *p_camera, const Vector2 &p_screen, LevelBrush *&r_brush, int &r_face, Vector3 &r_hit) const;
 	bool _pick_vertex(Camera3D *p_camera, const Vector2 &p_screen, LevelBrush *&r_brush, int &r_vertex) const;
 	bool _pick_edge(Camera3D *p_camera, const Vector2 &p_screen, LevelBrush *&r_brush, LevelBrush::EdgeKey &r_edge) const;
-	Vector<int> _get_gizmo_vertex_indices() const; // Vertex indices the gizmo moves (per mode).
+	Vector<int> _get_gizmo_vertex_indices(LevelBrush *p_brush) const; // Vertex indices the gizmo moves (per mode).
 
 	void _update_hover(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _clear_selection();

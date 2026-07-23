@@ -17,7 +17,10 @@ scons platform=windows target=editor dev_build=yes accesskit=no d3d12=no angle=n
 
 - **Quad viewport layout** (perspective / top / front / side) with 2-way and
   4-way split dragging (nested `SplitContainer`s with
-  `set_drag_nested_intersections(true)`).
+  `set_drag_nested_intersections(true)`). A ground-plane grid also draws in
+  the perspective view (near-plane-clipped segments).
+- **LevelMap gate**: the tab shows a warning + "Create LevelMap" button
+  instead of the viewports until the scene has a `LevelMap` node.
 - Perspective viewport uses Godot's own `View3DController` (same class as the
   3D editor) with the user's editor navigation/freelook settings and the
   `spatial_editor/freelook_*` shortcuts: RMB-hold freelook + WASD/QE, wheel
@@ -27,10 +30,14 @@ scons platform=windows target=editor dev_build=yes accesskit=no d3d12=no angle=n
   `LocalVector<Vector3> verts` + n-gon face loops (`LocalVector<LocalVector<int>>`)
   + per-face materials, serialized as `vertices`, `faces`, `face_materials`
   properties (persists in scenes). Brushes are children of a `LevelMap` node
-  (one per scene, auto-created). Faces may be non-planar; fan-triangulated
+  (created via the Level tab button). Faces may be non-planar; fan-triangulated
   at bake/preview time.
+- **Cross-brush element selection**: vertex/edge/face modes pick from ANY
+  brush (per-brush `HashMap` selection sets), with hover highlighting
+  (light-blue brush outline, green elements) and orange selected elements.
+  Selection clears on tool switch.
 - **Tools**: Select / Rotate / Scale / Block / Clip / Vertex / Edge / Face
-  toolbar buttons (two `PanelContainerButtonGroup` panels). Ghost block
+  toolbar buttons (three `PanelContainerButtonGroup` panels). Ghost block
   drawing with resize handles, clip tool with keep-left/right/both, gizmo
   manipulation, per-face materials, extrude, flip faces (interiors), bridge
   edges, delete (brush/faces/collapse), grid ladder on `[`/`]`.
@@ -63,7 +70,12 @@ scons platform=windows target=editor dev_build=yes accesskit=no d3d12=no angle=n
   execute (e.g. `add_child` in a split). Gotcha hit once already.
 - **Brush previews**: `LevelMap` keeps an internal `_LevelPreview`
   `MeshInstance3D` rebuilt from `bake()` on `refresh()` (immediate, editor only).
-  Wasteful on big levels - known future optimization.
+  Wasteful on big levels - known future optimization. Refresh triggers:
+  explicit calls + brush-side `_notify_map_changed()` from the serialized
+  setters and `NOTIFICATION_LOCAL_TRANSFORM_CHANGED` (covers all undo/redo
+  paths - see GOTCHAS #22).
+- **Overlay colors centralized** in `editor/level_constants.h`
+  (`LevelEditorColors`) - the single source for every viewport overlay color.
 
 ## User preferences / workflow notes
 

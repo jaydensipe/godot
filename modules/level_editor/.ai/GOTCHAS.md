@@ -82,6 +82,31 @@ Bugs that cost real debugging time. Read before touching the module.
 15. **Preview refresh:** `LevelMap::refresh()` calls `_update_preview()`
     immediately (not deferred) so gizmo drags stay in sync.
 
+22. **Undo/redo restores bypass the editing code paths.** `EditorUndoRedoManager`
+    sets serialized properties / `position` directly - the overlay outline
+    (drawn live from brush data) updated, but the baked preview mesh stayed
+    stale. FIX: `LevelBrush` notifies the parent map itself -
+    `_notify_map_changed()` (deferred `refresh()`) from all serialized
+    setters, and `NOTIFICATION_LOCAL_TRANSFORM_CHANGED` for node-position
+    undo (brush has `set_notify_local_transform(true)` in editor; enabled in
+    `NOTIFICATION_ENTER_TREE`). Deferred, not immediate: setters fire during
+    scene load / before the brush is in the tree, and the 3 property restores
+    coalesce into one rebuild.
+
+23. **`EditorNode::scene_changed` signal connection failed** at runtime
+    ("nonexistent signal") even though it's declared in `_bind_methods`.
+    FIX: use the `EditorPlugin::edited_scene_changed()` virtual override
+    instead - called via `EditorData::notify_edited_scene_changed()`.
+
+24. **Grid lines vanish when flying low** in the perspective view: projecting
+    a segment with an endpoint behind the camera fails. FIX: clip segments
+    against the camera near plane in camera space before projecting.
+
+25. **Module editor icons**: add `get_icons_path()` to `config.py` and drop
+    SVGs in that folder - `editor/icons/SCsub` embeds them by filename into
+    `EditorIcons`. Name one after a registered class (e.g. `LevelMap.svg`)
+    and it becomes the scene-tree node icon automatically.
+
 ## Serialization
 
 16. **Runtime classes must not live under `editor/`.** `LevelBrush`/`LevelMap`
