@@ -30,8 +30,8 @@
 
 #include "level_editor_screen.h"
 
-#include "level_constants.h"
 #include "dock/level_editor_dock.h"
+#include "level_constants.h"
 #include "level_helpers.h"
 
 using namespace LevelHelpers;
@@ -48,6 +48,7 @@ using namespace LevelHelpers;
 #include "editor/themes/editor_scale.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/light_3d.h"
+#include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/world_environment.h"
 #include "scene/gui/button.h"
 #include "scene/gui/control.h"
@@ -60,6 +61,7 @@ using namespace LevelHelpers;
 #include "scene/gui/separator.h"
 #include "scene/gui/spin_box.h"
 #include "scene/resources/environment.h"
+#include "scene/resources/material.h"
 
 // ---------------------------------------------------------------------------
 // LevelEditorViewport
@@ -102,11 +104,36 @@ LevelEditorViewport::LevelEditorViewport() {
 	world_env->set_environment(env);
 	subviewport->add_child(world_env);
 
+	// 3D grid (perspective view): rendered as line geometry so brushes
+	// occlude it correctly via the depth buffer.
+	grid_mesh.instantiate();
+	grid_mesh_instance = memnew(MeshInstance3D);
+	grid_mesh_instance->set_mesh(grid_mesh);
+	grid_mesh_instance->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+	Ref<StandardMaterial3D> grid_mat;
+	grid_mat.instantiate();
+	grid_mat->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
+	grid_mat->set_flag(BaseMaterial3D::FLAG_USE_POINT_SIZE, false);
+	grid_mat->set_flag(BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);
+	grid_mat->set_flag(BaseMaterial3D::FLAG_SRGB_VERTEX_COLOR, false);
+	grid_mat->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+	grid_mesh_instance->set_material_override(grid_mat);
+	// All SubViewports share the scene's World3D, so visibility alone can't
+	// keep this out of the ortho panes - put it on a layer only the
+	// perspective camera renders (set in set_view_type).
+	grid_mesh_instance->set_layer_mask(1 << 19); // Layer 20 (of 20).
+	// Sit a hair below Y=0 so brushes resting on the ground plane don't
+	// z-fight the grid lines.
+	grid_mesh_instance->set_position(Vector3(0, -0.002, 0));
+	subviewport->add_child(grid_mesh_instance);
+
 	overlay = memnew(Overlay);
 	overlay->viewport = this;
 	overlay->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 	overlay->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
 	add_child(overlay);
+
+	set_display_mode(DISPLAY_UNSHADED);
 
 	view_controller.instantiate();
 	// Match the 3D editor's navigation settings.
@@ -156,6 +183,73 @@ void LevelEditorViewport::_overlay_draw() {
 	}
 }
 
+void LevelEditorViewport::set_grid_mesh_size(real_t p_grid_size) {
+	if (p_grid_size == grid_mesh_size) {
+		return;
+	}
+	grid_mesh_size = p_grid_size;
+	// The 3D grid mesh only belongs to the perspective view - ortho views use
+	// the infinite 2D overlay grid.
+	if (grid_mesh_instance) {
+		grid_mesh_instance->set_visible(view_type == VIEW_PERSPECTIVE && (!screen || screen->is_grid_3d_enabled()));
+	}
+	if (view_type == VIEW_PERSPECTIVE) {
+		_rebuild_grid_mesh(p_grid_size);
+	}
+}
+
+void LevelEditorViewport::set_grid_3d_visible(bool p_visible) {
+	if (grid_mesh_instance) {
+		grid_mesh_instance->set_visible(view_type == VIEW_PERSPECTIVE && p_visible);
+	}
+}
+
+void LevelEditorViewport::_rebuild_grid_mesh(real_t p_grid_size) {
+	if (!grid_mesh.is_valid() || p_grid_size <= 0) {
+		return;
+	}
+	grid_mesh->clear_surfaces();
+	grid_mesh->surface_begin(Mesh::PRIMITIVE_LINES);
+
+	// Camera-centered (ground-projected), fixed extent around it - the grid
+	// "follows" the camera like the 3D editor's.
+	const real_t extent = 128.0;
+	Vector3 cam_pos = camera ? camera->get_global_position() : Vector3();
+	grid_mesh_center = Vector3(Math::snapped(cam_pos.x, p_grid_size), 0, Math::snapped(cam_pos.z, p_grid_size));
+
+	int start = (int)Math::floor(-extent / p_grid_size);
+	int end = (int)Math::ceil(extent / p_grid_size);
+	for (int i = start; i <= end; i++) {
+		real_t a = i * p_grid_size;
+		bool is_major = (i % 8) == 0;
+
+		// Line parallel to Z at world x = center.x + a: axis-blue only when
+		// that x is exactly 0. Lines parallel to X get the same test on z.
+		Color col_x = Math::is_zero_approx(grid_mesh_center.x + a) ? LevelEditorColors::GRID_AXIS : (is_major ? LevelEditorColors::GRID_MAJOR : LevelEditorColors::GRID_MINOR);
+		Color col_z = Math::is_zero_approx(grid_mesh_center.z + a) ? LevelEditorColors::GRID_AXIS : (is_major ? LevelEditorColors::GRID_MAJOR : LevelEditorColors::GRID_MINOR);
+
+		grid_mesh->surface_set_color(col_x);
+		grid_mesh->surface_add_vertex(grid_mesh_center + Vector3(a, 0, -extent));
+		grid_mesh->surface_add_vertex(grid_mesh_center + Vector3(a, 0, extent));
+		grid_mesh->surface_set_color(col_z);
+		grid_mesh->surface_add_vertex(grid_mesh_center + Vector3(-extent, 0, a));
+		grid_mesh->surface_add_vertex(grid_mesh_center + Vector3(extent, 0, a));
+	}
+	grid_mesh->surface_end();
+}
+
+void LevelEditorViewport::_update_grid_tracking() {
+	if (view_type != VIEW_PERSPECTIVE || grid_mesh_size <= 0 || !camera) {
+		return;
+	}
+	// Rebuild when the camera has moved far enough that the fixed-extent grid
+	// would go stale (half the extent).
+	Vector3 cam_pos = camera->get_global_position();
+	if (Vector2(cam_pos.x - grid_mesh_center.x, cam_pos.z - grid_mesh_center.z).length() > 64.0) {
+		_rebuild_grid_mesh(grid_mesh_size);
+	}
+}
+
 void LevelEditorViewport::set_view_type(ViewType p_type) {
 	view_type = p_type;
 	pivot = Vector3();
@@ -180,6 +274,32 @@ void LevelEditorViewport::set_view_type(ViewType p_type) {
 			break;
 	}
 	_update_camera_transform();
+	// The 3D grid lives on render layer 20; only the perspective camera culls
+	// it in (the shared World3D makes plain visibility useless for this).
+	if (camera) {
+		camera->set_cull_mask(view_type == VIEW_PERSPECTIVE ? 0xFFFFF : 0x7FFFF);
+	}
+	if (grid_mesh_instance) {
+		grid_mesh_instance->set_visible(view_type == VIEW_PERSPECTIVE);
+		if (view_type == VIEW_PERSPECTIVE && grid_mesh_size > 0) {
+			_rebuild_grid_mesh(grid_mesh_size);
+		}
+	}
+}
+
+void LevelEditorViewport::set_display_mode(DisplayMode p_mode) {
+	display_mode = p_mode;
+	if (!subviewport) {
+		return;
+	}
+	static const Viewport::DebugDraw modes[DISPLAY_MAX] = {
+		Viewport::DEBUG_DRAW_DISABLED, // DISPLAY_NORMAL
+		Viewport::DEBUG_DRAW_WIREFRAME,
+		Viewport::DEBUG_DRAW_OVERDRAW,
+		Viewport::DEBUG_DRAW_LIGHTING,
+		Viewport::DEBUG_DRAW_UNSHADED,
+	};
+	subviewport->set_debug_draw(modes[p_mode]);
 }
 
 void LevelEditorViewport::_update_camera_transform() {
@@ -301,6 +421,7 @@ void LevelEditorViewport::_notification(int p_what) {
 		} break;
 		case NOTIFICATION_PROCESS: {
 			_process_freelook(get_process_delta_time());
+			_update_grid_tracking();
 		} break;
 		case NOTIFICATION_WM_WINDOW_FOCUS_OUT: {
 			if (view_controller.is_valid()) {
@@ -311,8 +432,8 @@ void LevelEditorViewport::_notification(int p_what) {
 }
 
 void LevelEditorViewport::_draw_grid() {
-	if (!overlay) {
-		return;
+	if (!overlay || view_type == VIEW_PERSPECTIVE || (screen && !screen->is_grid_2d_enabled())) {
+		return; // Perspective grid is a 3D mesh (depth-tested), not overlay.
 	}
 	const real_t gs = (screen ? screen->get_grid_size() : 1.0);
 	if (gs <= 0) {
@@ -322,54 +443,6 @@ void LevelEditorViewport::_draw_grid() {
 	Color minor = LevelEditorColors::GRID_MINOR;
 	Color major = LevelEditorColors::GRID_MAJOR;
 	Color axis_col = LevelEditorColors::GRID_AXIS;
-
-	if (view_type == VIEW_PERSPECTIVE) {
-		// Ground plane (Y = 0) grid over a fixed extent. Segments are clipped
-		// against the camera near plane first so they don't vanish when one
-		// end goes behind the camera (flying low over the grid).
-		const int extent = 64; // Grid lines span -extent..extent world units.
-		const real_t near_z = -(real_t)camera->get_near() - 0.01;
-
-		Transform3D cam_inv = camera->get_global_transform().affine_inverse();
-
-		int start = (int)Math::floor(-extent / gs);
-		int end = (int)Math::ceil(extent / gs);
-		for (int i = start; i <= end; i++) {
-			real_t a = i * gs;
-			bool is_axis = Math::is_zero_approx(a);
-			bool is_major = (i % 8) == 0;
-			Color col = is_axis ? axis_col : (is_major ? major : minor);
-			real_t width = is_axis ? 2.0 : 1.0;
-
-			for (int seg = 0; seg < 2; seg++) {
-				Vector3 p1 = (seg == 0) ? Vector3(a, 0, -extent) : Vector3(-extent, 0, a);
-				Vector3 p2 = (seg == 0) ? Vector3(a, 0, extent) : Vector3(extent, 0, a);
-
-				// Clip against the near plane in camera space (z <= near_z is visible).
-				Vector3 c1 = cam_inv.xform(p1);
-				Vector3 c2 = cam_inv.xform(p2);
-				bool b1 = c1.z > near_z;
-				bool b2 = c2.z > near_z;
-				if (b1 && b2) {
-					continue; // Fully behind the near plane.
-				}
-				if (b1 != b2) {
-					real_t t = (near_z - c1.z) / (c2.z - c1.z);
-					if (b1) {
-						c1 = c1.lerp(c2, t);
-					} else {
-						c2 = c1.lerp(c2, t);
-					}
-				}
-
-				Vector2 s1, s2;
-				if (project(camera->get_global_transform().xform(c1), s1) && project(camera->get_global_transform().xform(c2), s2)) {
-					overlay->draw_line(s1, s2, col, width);
-				}
-			}
-		}
-		return;
-	}
 
 	Size2 sz = overlay->get_size();
 
@@ -696,6 +769,39 @@ LevelEditorScreen::LevelEditorScreen() {
 	tools_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_tools_menu_selected));
 	toolbar->add_child(tools_menu);
 
+	toolbar->add_child(memnew(VSeparator));
+
+	// View menu: per-viewport render display mode. IDs encode the viewport:
+	// id = viewport * DISPLAY_MAX + mode.
+	view_menu = memnew(MenuButton);
+	view_menu->set_text(TTRC("View"));
+	view_menu->set_flat(false);
+	PopupMenu *view_popup = view_menu->get_popup();
+	static const char *vp_names[4] = { "Perspective", "Top", "Front", "Side" };
+	static const char *mode_names[LevelEditorViewport::DISPLAY_MAX] = { "Normal", "Wireframe", "Overdraw", "Lighting", "Unshaded" };
+	for (int vp = 0; vp < 4; vp++) {
+		PopupMenu *sub = memnew(PopupMenu);
+		view_submenus[vp] = sub;
+		sub->set_hide_on_checkable_item_selection(false);
+		for (int m = 0; m < LevelEditorViewport::DISPLAY_MAX; m++) {
+			sub->add_radio_check_item(TTRC(mode_names[m]), vp * LevelEditorViewport::DISPLAY_MAX + m);
+		}
+		sub->set_item_checked(LevelEditorViewport::DISPLAY_UNSHADED, true);
+		sub->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_view_display_selected));
+		view_popup->add_submenu_node_item(TTRC(vp_names[vp]), sub);
+	}
+	view_popup->add_separator();
+	// Grid toggles (global, not per-viewport). IDs past the display range.
+	// Restored from project metadata below.
+	grid_2d_enabled = EditorSettings::get_singleton()->get_project_metadata("level_editor", "grid_2d_enabled", true);
+	grid_3d_enabled = EditorSettings::get_singleton()->get_project_metadata("level_editor", "grid_3d_enabled", true);
+	view_popup->add_check_item(TTRC("Show 2D Grid"), 4 * LevelEditorViewport::DISPLAY_MAX);
+	view_popup->add_check_item(TTRC("Show 3D Grid"), 4 * LevelEditorViewport::DISPLAY_MAX + 1);
+	view_popup->set_item_checked(view_popup->get_item_index(4 * LevelEditorViewport::DISPLAY_MAX), grid_2d_enabled);
+	view_popup->set_item_checked(view_popup->get_item_index(4 * LevelEditorViewport::DISPLAY_MAX + 1), grid_3d_enabled);
+	view_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_view_grid_toggled));
+	toolbar->add_child(view_menu);
+
 	// Quad viewports: main vertical split with two horizontal splits inside,
 	// all with nested dragger intersections enabled - grabbing the center
 	// intersection drags both axes at once (like the 3D editor's quad view).
@@ -727,6 +833,31 @@ LevelEditorScreen::LevelEditorScreen() {
 	viewports[1]->set_view_type(LevelEditorViewport::VIEW_TOP);
 	viewports[2]->set_view_type(LevelEditorViewport::VIEW_FRONT);
 	viewports[3]->set_view_type(LevelEditorViewport::VIEW_SIDE);
+
+	// Ortho views default to overdraw (engine renders its BG black); perspective
+	// stays unshaded. Saved modes override below.
+	for (int vp = 1; vp < 4; vp++) {
+		viewports[vp]->set_display_mode(LevelEditorViewport::DISPLAY_OVERDRAW);
+		for (int i = 0; i < view_submenus[vp]->get_item_count(); i++) {
+			view_submenus[vp]->set_item_checked(i, (view_submenus[vp]->get_item_id(i) % LevelEditorViewport::DISPLAY_MAX) == LevelEditorViewport::DISPLAY_OVERDRAW);
+		}
+	}
+
+	// Restore per-viewport display modes saved for this project (default is
+	// Unshaded, set in the viewport constructor).
+	{
+		Array saved = EditorSettings::get_singleton()->get_project_metadata("level_editor", "viewport_display_modes", Array());
+		for (int vp = 0; vp < 4 && vp < saved.size(); vp++) {
+			int m = (int)saved[vp];
+			if (m < 0 || m >= LevelEditorViewport::DISPLAY_MAX) {
+				continue;
+			}
+			viewports[vp]->set_display_mode((LevelEditorViewport::DisplayMode)m);
+			for (int i = 0; i < view_submenus[vp]->get_item_count(); i++) {
+				view_submenus[vp]->set_item_checked(i, (view_submenus[vp]->get_item_id(i) % LevelEditorViewport::DISPLAY_MAX) == m);
+			}
+		}
+	}
 
 	// Shown instead of the quad viewports when the edited scene has no
 	// LevelMap yet.
@@ -1206,6 +1337,7 @@ void LevelEditorScreen::_clear_element_selection() {
 
 void LevelEditorScreen::_update_overlays() {
 	for (int i = 0; i < 4; i++) {
+		viewports[i]->set_grid_mesh_size(grid_size);
 		viewports[i]->queue_overlay_redraw();
 	}
 }

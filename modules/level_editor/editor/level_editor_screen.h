@@ -39,6 +39,7 @@
 #include "scene/gui/split_container.h"
 #include "scene/gui/subviewport_container.h"
 #include "scene/main/viewport.h"
+#include "scene/resources/immediate_mesh.h"
 
 class Button;
 class Camera3D;
@@ -96,8 +97,17 @@ private:
 	bool panning = false;
 	Vector2 last_mouse;
 
+	// Perspective-view 3D grid (depth-tested against brush geometry). Recenters
+	// on the camera as it moves (like the 3D editor's grid).
+	MeshInstance3D *grid_mesh_instance = nullptr;
+	Ref<ImmediateMesh> grid_mesh;
+	real_t grid_mesh_size = -1.0; // Grid size the mesh was built for (-1 = none).
+	Vector3 grid_mesh_center = Vector3(1e10, 1e10, 1e10); // Forces first build.
+
 	void _update_camera_transform();
 	void _draw_grid();
+	void _rebuild_grid_mesh(real_t p_grid_size);
+	void _update_grid_tracking();
 
 	void _process_freelook(double p_delta);
 
@@ -115,6 +125,23 @@ public:
 	void set_view_type(ViewType p_type);
 	ViewType get_view_type() const { return view_type; }
 
+	// Render display mode (maps to Viewport::DebugDraw). Per viewport.
+	enum DisplayMode {
+		DISPLAY_NORMAL,
+		DISPLAY_WIREFRAME,
+		DISPLAY_OVERDRAW,
+		DISPLAY_LIGHTING,
+		DISPLAY_UNSHADED,
+		DISPLAY_MAX
+	};
+
+private:
+	DisplayMode display_mode = DISPLAY_NORMAL;
+
+public:
+	void set_display_mode(DisplayMode p_mode);
+	DisplayMode get_display_mode() const { return display_mode; }
+
 	Camera3D *get_camera() const { return camera; }
 
 	void get_ray(const Vector2 &p_screen, Vector3 &r_origin, Vector3 &r_dir) const;
@@ -125,6 +152,9 @@ public:
 
 	void queue_overlay_redraw();
 	bool project(const Vector3 &p_world, Vector2 &r_screen) const;
+
+	void set_grid_mesh_size(real_t p_grid_size);
+	void set_grid_3d_visible(bool p_visible);
 
 	LevelEditorViewport();
 };
@@ -164,6 +194,11 @@ private:
 	Button *flip_faces_button = nullptr;
 	Button *bake_button = nullptr;
 	MenuButton *tools_menu = nullptr;
+	MenuButton *view_menu = nullptr;
+	PopupMenu *view_submenus[4] = {};
+
+	bool grid_2d_enabled = true;
+	bool grid_3d_enabled = true;
 
 	LevelEditorDock *dock = nullptr;
 
@@ -345,6 +380,8 @@ private:
 	void _flip_faces_pressed();
 	void _bake_pressed();
 	void _tools_menu_selected(int p_id);
+	void _view_display_selected(int p_id);
+	void _view_grid_toggled(int p_id);
 	void _join_edges();
 	void _grid_size_selected(int p_index);
 	void _extrude_amount_changed(double p_value);
@@ -391,6 +428,8 @@ public:
 	void set_plugin(EditorPlugin *p_plugin);
 	LevelMap *get_map() const { return current_map; }
 	real_t get_grid_size() const { return grid_size; }
+	bool is_grid_2d_enabled() const { return grid_2d_enabled; }
+	bool is_grid_3d_enabled() const { return grid_3d_enabled; }
 
 	// Dock hooks (LevelEditorDock forwards its UI events here).
 	void _material_changed(const Ref<Resource> &p_resource);

@@ -33,8 +33,10 @@
 
 #include "editor/editor_interface.h"
 #include "editor/editor_undo_redo_manager.h"
+#include "editor/settings/editor_settings.h"
 #include "scene/gui/button.h"
 #include "scene/gui/menu_button.h"
+#include "scene/gui/popup_menu.h"
 
 void LevelEditorScreen::_extrude_pressed() {
 	extrude_button->release_focus();
@@ -207,6 +209,52 @@ void LevelEditorScreen::_tools_menu_selected(int p_id) {
 			_join_edges();
 			break;
 	}
+}
+
+void LevelEditorScreen::_view_grid_toggled(int p_id) {
+	const int base = 4 * LevelEditorViewport::DISPLAY_MAX;
+	PopupMenu *popup = view_menu->get_popup();
+	int idx = popup->get_item_index(p_id);
+	bool checked = !popup->is_item_checked(idx);
+	popup->set_item_checked(idx, checked);
+
+	if (p_id == base) {
+		grid_2d_enabled = checked;
+		EditorSettings::get_singleton()->set_project_metadata("level_editor", "grid_2d_enabled", checked);
+	} else if (p_id == base + 1) {
+		grid_3d_enabled = checked;
+		EditorSettings::get_singleton()->set_project_metadata("level_editor", "grid_3d_enabled", checked);
+		for (int i = 0; i < 4; i++) {
+			viewports[i]->set_grid_3d_visible(checked);
+		}
+	}
+	view_menu->release_focus();
+	_update_overlays();
+}
+
+void LevelEditorScreen::_view_display_selected(int p_id) {
+	view_menu->release_focus();
+	const int vp = p_id / LevelEditorViewport::DISPLAY_MAX;
+	const int mode = p_id % LevelEditorViewport::DISPLAY_MAX;
+	ERR_FAIL_INDEX(vp, 4);
+
+	viewports[vp]->set_display_mode((LevelEditorViewport::DisplayMode)mode);
+
+	// Keep the radio state in sync within that viewport's submenu.
+	PopupMenu *sub = view_submenus[vp];
+	if (sub) {
+		for (int i = 0; i < sub->get_item_count(); i++) {
+			sub->set_item_checked(i, (sub->get_item_id(i) % LevelEditorViewport::DISPLAY_MAX) == mode);
+		}
+	}
+
+	// Persist all four modes for this project.
+	Array modes;
+	modes.resize(4);
+	for (int i = 0; i < 4; i++) {
+		modes[i] = (int)viewports[i]->get_display_mode();
+	}
+	EditorSettings::get_singleton()->set_project_metadata("level_editor", "viewport_display_modes", modes);
 }
 
 void LevelEditorScreen::_join_edges() {
