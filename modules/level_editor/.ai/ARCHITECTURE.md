@@ -22,6 +22,8 @@ modules/level_editor/
   editor/
     level_editor_screen.{h,cpp}  # LevelEditorPlugin, LevelEditorScreen, LevelEditorViewport
     level_constants.h        # LevelEditorColors namespace - ALL overlay drawing colors
+    level_helpers.h          # LevelHelpers namespace - aabb_corners/AABB_EDGE_IDX/
+                             #   AABB_FACE_DIRS/aabb_face_center box helpers
     tools/
       level_editor_tools.cpp     # LevelEditorScreen tool-action members (extrude, material,
                                  # flip faces, tools menu, bridge, bake)
@@ -168,10 +170,11 @@ SubViewportContainer
   (BG_COLOR + color ambient). Lights/env intentionally NOT shared with the
   3D editor (user chose separate).
 
-## Shared helpers (level_editor_screen.cpp)
+## Shared helpers
 
-- Anonymous namespace: `aabb_corners()`, `AABB_EDGE_IDX`, `AABB_FACE_DIRS`,
-  `aabb_face_center()` - all box drawing/picking uses these.
+- `level_helpers.h` (`LevelHelpers` namespace): `aabb_corners()`,
+  `AABB_EDGE_IDX`, `AABB_FACE_DIRS`, `aabb_face_center()` - all box
+  drawing/picking uses these.
 - `LevelEditorViewport::ray_to_view_plane(screen, point, hit)` - ray to the
   viewport's natural edit plane through a point (Y plane for perspective/top,
   Z for front, X for side). Use this for ALL edit-plane intersections.

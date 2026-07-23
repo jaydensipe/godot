@@ -39,7 +39,6 @@
 #include "scene/gui/split_container.h"
 #include "scene/gui/subviewport_container.h"
 #include "scene/main/viewport.h"
-#include <cstdint>
 
 class Button;
 class Camera3D;
@@ -350,9 +349,6 @@ private:
 	void _grid_size_selected(int p_index);
 	void _extrude_amount_changed(double p_value);
 
-	// Power-of-two grid ladder, shared by the dropdown and the [ ] keys.
-	static const real_t GRID_STEPS[];
-	static const int GRID_STEP_COUNT;
 	int _grid_step_index() const;
 
 	Vector3 _snap(const Vector3 &p_v) const;

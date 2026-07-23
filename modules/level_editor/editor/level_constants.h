@@ -32,6 +32,29 @@
 
 #include "core/math/color.h"
 
+// Shared grid ladder (power-of-two steps) used by the toolbar dropdown and
+// the [ ] keys.
+namespace LevelEditorGrid {
+
+inline constexpr real_t STEPS[] = {
+	0.125,
+	0.25,
+	0.5,
+	1,
+	2,
+	4,
+	8,
+	16,
+	32,
+	64,
+	128,
+	256,
+	512,
+};
+inline constexpr int STEP_COUNT = (int)(sizeof(STEPS) / sizeof(STEPS[0]));
+
+} // namespace LevelEditorGrid
+
 // Shared drawing constants for the level editor overlay. All colors used by
 // the viewports live here so the visual language stays consistent.
 namespace LevelEditorColors {

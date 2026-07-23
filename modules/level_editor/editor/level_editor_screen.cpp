@@ -31,6 +31,9 @@
 #include "level_editor_screen.h"
 
 #include "level_constants.h"
+#include "level_helpers.h"
+
+using namespace LevelHelpers;
 
 #include "core/object/callable_mp.h"
 #include "editor/editor_data.h"
@@ -539,51 +542,6 @@ void LevelEditorViewport::gui_input(const Ref<InputEvent> &p_event) {
 // LevelEditorScreen
 // ---------------------------------------------------------------------------
 
-// Shared box-drawing helpers (used by ghost, select handles, and dim labels).
-namespace {
-
-void aabb_corners(const AABB &p_aabb, Vector3 r_corners[8]) {
-	const Vector3 c = p_aabb.get_center();
-	const Vector3 hs = p_aabb.size * 0.5;
-	for (int i = 0; i < 8; i++) {
-		r_corners[i] = c + Vector3((i & 1) ? hs.x : -hs.x, (i & 2) ? hs.y : -hs.y, (i & 4) ? hs.z : -hs.z);
-	}
-}
-
-// The 12 edges of a box as index pairs into aabb_corners().
-const int AABB_EDGE_IDX[12][2] = {
-	{ 0, 1 },
-	{ 1, 3 },
-	{ 3, 2 },
-	{ 2, 0 },
-	{ 4, 5 },
-	{ 5, 7 },
-	{ 7, 6 },
-	{ 6, 4 },
-	{ 0, 4 },
-	{ 1, 5 },
-	{ 2, 6 },
-	{ 3, 7 },
-};
-
-// Outward direction per face handle index (0..5: -x, +x, -y, +y, -z, +z).
-const Vector3 AABB_FACE_DIRS[6] = {
-	Vector3(-1, 0, 0),
-	Vector3(1, 0, 0),
-	Vector3(0, -1, 0),
-	Vector3(0, 1, 0),
-	Vector3(0, 0, -1),
-	Vector3(0, 0, 1),
-};
-
-Vector3 aabb_face_center(const AABB &p_aabb, int p_face) {
-	const Vector3 c = p_aabb.get_center();
-	const Vector3 hs = p_aabb.size * 0.5;
-	return c + AABB_FACE_DIRS[p_face] * Vector3(hs.x, hs.y, hs.z);
-}
-
-} // namespace
-
 void LevelEditorScreen::_bind_methods() {
 }
 
@@ -626,6 +584,7 @@ LevelEditorScreen::LevelEditorScreen() {
 	PanelContainer *draw_panel = memnew(PanelContainer);
 	draw_panel->set_theme_type_variation("PanelContainerButtonGroup");
 	toolbar->add_child(draw_panel);
+
 	HBoxContainer *draw_hbox = memnew(HBoxContainer);
 	draw_panel->add_child(draw_hbox);
 
@@ -645,6 +604,7 @@ LevelEditorScreen::LevelEditorScreen() {
 	PanelContainer *element_panel = memnew(PanelContainer);
 	element_panel->set_theme_type_variation("PanelContainerButtonGroup");
 	toolbar->add_child(element_panel);
+
 	HBoxContainer *element_hbox = memnew(HBoxContainer);
 	element_panel->add_child(element_hbox);
 
@@ -680,9 +640,9 @@ LevelEditorScreen::LevelEditorScreen() {
 	grid_size_option = memnew(OptionButton);
 	grid_size_option->set_clip_text(true);
 	grid_size_option->set_custom_minimum_size(Size2(115, 0));
-	for (int i = 0; i < GRID_STEP_COUNT; i++) {
+	for (int i = 0; i < LevelEditorGrid::STEP_COUNT; i++) {
 		// Plain decimals: integers without a trailing .0, fractions as-is.
-		real_t step = GRID_STEPS[i];
+		real_t step = LevelEditorGrid::STEPS[i];
 		String label = (step >= 1.0) ? String::num_int64((int64_t)step) : String::num(step);
 		grid_size_option->add_item(label);
 	}
@@ -832,9 +792,9 @@ void LevelEditorScreen::input(const Ref<InputEvent> &p_event) {
 		case Key::BRACKETRIGHT: {
 			int idx = _grid_step_index();
 			idx += (k->get_keycode() == Key::BRACKETRIGHT) ? 1 : -1;
-			idx = CLAMP(idx, 0, GRID_STEP_COUNT - 1);
-			if (GRID_STEPS[idx] != grid_size) {
-				grid_size = GRID_STEPS[idx];
+			idx = CLAMP(idx, 0, LevelEditorGrid::STEP_COUNT - 1);
+			if (LevelEditorGrid::STEPS[idx] != grid_size) {
+				grid_size = LevelEditorGrid::STEPS[idx];
 				grid_size_option->select(idx);
 				_update_overlays();
 			}
@@ -1069,27 +1029,10 @@ void LevelEditorScreen::_set_mode(Mode p_mode) {
 	_update_overlays();
 }
 
-const real_t LevelEditorScreen::GRID_STEPS[] = {
-	0.125,
-	0.25,
-	0.5,
-	1,
-	2,
-	4,
-	8,
-	16,
-	32,
-	64,
-	128,
-	256,
-	512
-};
-const int LevelEditorScreen::GRID_STEP_COUNT = (int)(sizeof(GRID_STEPS) / sizeof(GRID_STEPS[0]));
-
 int LevelEditorScreen::_grid_step_index() const {
 	int idx = 0;
-	for (int i = 0; i < GRID_STEP_COUNT; i++) {
-		if (GRID_STEPS[i] <= grid_size) {
+	for (int i = 0; i < LevelEditorGrid::STEP_COUNT; i++) {
+		if (LevelEditorGrid::STEPS[i] <= grid_size) {
 			idx = i;
 		}
 	}
@@ -1097,8 +1040,8 @@ int LevelEditorScreen::_grid_step_index() const {
 }
 
 void LevelEditorScreen::_grid_size_selected(int p_index) {
-	grid_size = GRID_STEPS[CLAMP(p_index, 0, GRID_STEP_COUNT - 1)];
-	grid_size_option->select(CLAMP(p_index, 0, GRID_STEP_COUNT - 1));
+	grid_size = LevelEditorGrid::STEPS[CLAMP(p_index, 0, LevelEditorGrid::STEP_COUNT - 1)];
+	grid_size_option->select(CLAMP(p_index, 0, LevelEditorGrid::STEP_COUNT - 1));
 	_update_overlays();
 }
 
@@ -1116,6 +1059,19 @@ Vector3 LevelEditorScreen::_snap(const Vector3 &p_v) const {
 
 real_t LevelEditorScreen::_snap(real_t p_v) const {
 	return Math::snapped(p_v, grid_size);
+}
+
+// Records one brush's current topology as the do-state against the given
+// snapshot, into an already-created undo action. Shared by _commit_brush_undo
+// (single brush) and the multi-brush delete/tool paths (one action spanning
+// several brushes).
+static void _add_brush_undo_pair(EditorUndoRedoManager *p_undo_redo, LevelBrush *p_brush, const PackedVector3Array &p_old_verts, const Array &p_old_faces, const Array &p_old_mats) {
+	p_undo_redo->add_do_property(p_brush, "vertices", p_brush->get_vertices_data());
+	p_undo_redo->add_do_property(p_brush, "faces", p_brush->get_faces_data());
+	p_undo_redo->add_do_property(p_brush, "face_materials", p_brush->get_face_materials_data());
+	p_undo_redo->add_undo_property(p_brush, "vertices", p_old_verts);
+	p_undo_redo->add_undo_property(p_brush, "faces", p_old_faces);
+	p_undo_redo->add_undo_property(p_brush, "face_materials", p_old_mats);
 }
 
 void LevelEditorScreen::_delete_selection() {
@@ -1160,13 +1116,7 @@ void LevelEditorScreen::_delete_selection() {
 					faces.push_back(f);
 				}
 				target->delete_faces(faces);
-
-				undo_redo->add_do_property(target, "vertices", target->get_vertices_data());
-				undo_redo->add_do_property(target, "faces", target->get_faces_data());
-				undo_redo->add_do_property(target, "face_materials", target->get_face_materials_data());
-				undo_redo->add_undo_property(target, "vertices", old_verts);
-				undo_redo->add_undo_property(target, "faces", old_faces);
-				undo_redo->add_undo_property(target, "face_materials", old_mats);
+				_add_brush_undo_pair(undo_redo, target, old_verts, old_faces, old_mats);
 			}
 			undo_redo->add_do_method(current_map, "refresh");
 			undo_redo->add_undo_method(current_map, "refresh");
@@ -1200,13 +1150,7 @@ void LevelEditorScreen::_delete_selection() {
 					}
 				}
 				target->collapse_vertices(verts);
-
-				undo_redo->add_do_property(target, "vertices", target->get_vertices_data());
-				undo_redo->add_do_property(target, "faces", target->get_faces_data());
-				undo_redo->add_do_property(target, "face_materials", target->get_face_materials_data());
-				undo_redo->add_undo_property(target, "vertices", old_verts);
-				undo_redo->add_undo_property(target, "faces", old_faces);
-				undo_redo->add_undo_property(target, "face_materials", old_mats);
+				_add_brush_undo_pair(undo_redo, target, old_verts, old_faces, old_mats);
 			}
 			undo_redo->add_do_method(current_map, "refresh");
 			undo_redo->add_undo_method(current_map, "refresh");
@@ -1231,13 +1175,7 @@ void LevelEditorScreen::_delete_selection() {
 					verts.push_back(v);
 				}
 				target->collapse_vertices(verts);
-
-				undo_redo->add_do_property(target, "vertices", target->get_vertices_data());
-				undo_redo->add_do_property(target, "faces", target->get_faces_data());
-				undo_redo->add_do_property(target, "face_materials", target->get_face_materials_data());
-				undo_redo->add_undo_property(target, "vertices", old_verts);
-				undo_redo->add_undo_property(target, "faces", old_faces);
-				undo_redo->add_undo_property(target, "face_materials", old_mats);
+				_add_brush_undo_pair(undo_redo, target, old_verts, old_faces, old_mats);
 			}
 			undo_redo->add_do_method(current_map, "refresh");
 			undo_redo->add_undo_method(current_map, "refresh");
@@ -1252,20 +1190,11 @@ void LevelEditorScreen::_delete_selection() {
 }
 
 void LevelEditorScreen::_commit_brush_undo(const String &p_action, LevelBrush *p_brush, const PackedVector3Array &p_old_verts, const Array &p_old_faces, const Array &p_old_mats, bool p_execute) {
-	PackedVector3Array new_verts = p_brush->get_vertices_data();
-	Array new_faces = p_brush->get_faces_data();
-	Array new_mats = p_brush->get_face_materials_data();
-
 	LevelMap *map = current_map;
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	undo_redo->create_action(p_action);
-	undo_redo->add_do_property(p_brush, "vertices", new_verts);
-	undo_redo->add_do_property(p_brush, "faces", new_faces);
-	undo_redo->add_do_property(p_brush, "face_materials", new_mats);
+	_add_brush_undo_pair(undo_redo, p_brush, p_old_verts, p_old_faces, p_old_mats);
 	undo_redo->add_do_method(map, "refresh");
-	undo_redo->add_undo_property(p_brush, "vertices", p_old_verts);
-	undo_redo->add_undo_property(p_brush, "faces", p_old_faces);
-	undo_redo->add_undo_property(p_brush, "face_materials", p_old_mats);
 	undo_redo->add_undo_method(map, "refresh");
 	undo_redo->commit_action(p_execute);
 }
@@ -3411,12 +3340,7 @@ void LevelEditorScreen::_gizmo_end_drag() {
 			continue; // Nothing actually moved in this brush.
 		}
 		any_moved = true;
-		undo_redo->add_do_property(target, "vertices", new_verts);
-		undo_redo->add_do_property(target, "faces", target->get_faces_data());
-		undo_redo->add_do_property(target, "face_materials", target->get_face_materials_data());
-		undo_redo->add_undo_property(target, "vertices", E.value);
-		undo_redo->add_undo_property(target, "faces", target->get_faces_data());
-		undo_redo->add_undo_property(target, "face_materials", target->get_face_materials_data());
+		_add_brush_undo_pair(undo_redo, target, E.value, target->get_faces_data(), target->get_face_materials_data());
 	}
 	if (any_moved) {
 		undo_redo->add_do_method(current_map, "refresh");
@@ -3741,65 +3665,6 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 				p_canvas->draw_rect(Rect2(sp - Vector2(sel_vs, sel_vs), Size2(sel_vs * 2, sel_vs * 2)), vert_col);
 			}
 		}
-	}
-
-	// Hover: show all pickable elements of the hovered brush (dim), with the
-	// hovered element itself brighter.
-	Color hover_col(1, 1, 1, 0.5);
-	Color hover_brush_col(1, 1, 1, 0.15);
-	switch (mode) {
-		case MODE_FACE: {
-			if (hover_brush && hover_face >= 0) {
-				Transform3D hgt = hover_brush->get_global_transform();
-				LocalVector<int> poly = hover_brush->get_face(hover_face);
-				PackedVector2Array pts;
-				bool ok = true;
-				for (int idx : poly) {
-					Vector2 sp;
-					if (!p_vp->project(hgt.xform(hover_brush->get_vertex(idx)), sp)) {
-						ok = false;
-						break;
-					}
-					pts.push_back(sp);
-				}
-				if (ok && pts.size() >= 3) {
-					for (int i = 0; i < pts.size(); i++) {
-						p_canvas->draw_line(pts[i], pts[(i + 1) % pts.size()], hover_col, 1.0);
-					}
-				}
-			}
-		} break;
-		case MODE_EDGE: {
-			if (hover_brush) {
-				Transform3D hgt = hover_brush->get_global_transform();
-				HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = hover_brush->get_edges();
-				for (const LevelBrush::EdgeKey &e : edges) {
-					Vector2 a, b;
-					if (p_vp->project(hgt.xform(hover_brush->get_vertex(e.a)), a) && p_vp->project(hgt.xform(hover_brush->get_vertex(e.b)), b)) {
-						bool hot = has_hover_edge && e == hover_edge;
-						p_canvas->draw_line(a, b, hot ? hover_col : hover_brush_col, hot ? 2.0 : 1.0);
-					}
-				}
-			}
-		} break;
-		case MODE_VERTEX: {
-			if (hover_brush) {
-				Transform3D hgt = hover_brush->get_global_transform();
-				for (int i = 0; i < hover_brush->get_vertex_count(); i++) {
-					Vector2 sp;
-					if (p_vp->project(hgt.xform(hover_brush->get_vertex(i)), sp)) {
-						bool hot = has_hover_vertex && i == hover_vertex;
-						if (hot) {
-							p_canvas->draw_rect(Rect2(sp - Vector2(4, 4), Size2(8, 8)), hover_col, false, 1.0);
-						} else {
-							p_canvas->draw_rect(Rect2(sp - Vector2(3, 3), Size2(6, 6)), hover_brush_col, false, 1.0);
-						}
-					}
-				}
-			}
-		} break;
-		default:
-			break;
 	}
 }
 
