@@ -244,6 +244,10 @@ Node3D *LevelMap::bake() const {
 		}
 	}
 
+	if (mesh->get_surface_count() == 0 || collision_faces.is_empty()) {
+		return nullptr; // Nothing renderable/solid (e.g. all faces deleted).
+	}
+
 	MeshInstance3D *mi = memnew(MeshInstance3D);
 	mi->set_mesh(mesh);
 	mi->set_name(String(get_name()) + "_Baked");

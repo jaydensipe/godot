@@ -374,6 +374,22 @@ private:
 	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &_edge_set(LevelBrush *p_brush) { return selected_edges[p_brush]; }
 	HashSet<int> &_vertex_set(LevelBrush *p_brush) { return selected_vertices[p_brush]; }
 
+	// Erase map entries whose brush was deleted from the scene. Returns true
+	// if anything was pruned.
+	template <typename T>
+	static bool _prune_dead_brushes(HashMap<LevelBrush *, T> &p_map) {
+		List<LevelBrush *> dead;
+		for (const KeyValue<LevelBrush *, T> &E : p_map) {
+			if (!E.key->is_inside_tree()) {
+				dead.push_back(E.key);
+			}
+		}
+		for (LevelBrush *b : dead) {
+			p_map.erase(b);
+		}
+		return !dead.is_empty();
+	}
+
 	void _mode_changed(int p_mode);
 	void _set_mode(Mode p_mode);
 	void _update_mode_icons();

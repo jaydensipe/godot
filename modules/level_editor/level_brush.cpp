@@ -324,6 +324,7 @@ void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 		faces.push_back(LocalVector<int>(cap));
 		face_materials.push_back(Ref<Material>());
 	}
+	_notify_map_changed();
 }
 
 void LevelBrush::delete_faces(const Vector<int> &p_faces) {
@@ -337,6 +338,7 @@ void LevelBrush::delete_faces(const Vector<int> &p_faces) {
 			face_materials.remove_at(f);
 		}
 	}
+	_notify_map_changed();
 }
 
 void LevelBrush::weld_vertices(const Vector<int> &p_vertices) {
@@ -397,6 +399,7 @@ void LevelBrush::weld_vertices(const Vector<int> &p_vertices) {
 			loop = clean;
 		}
 	}
+	_notify_map_changed();
 }
 
 int LevelBrush::bridge_edges(const EdgeKey &p_edge_a, const EdgeKey &p_edge_b, const Ref<Material> &p_material) {
@@ -433,6 +436,7 @@ int LevelBrush::bridge_edges(const EdgeKey &p_edge_a, const EdgeKey &p_edge_b, c
 	}
 	faces.push_back(LocalVector<int>(face));
 	face_materials.push_back(p_material);
+	_notify_map_changed();
 	return (int)faces.size() - 1;
 }
 
@@ -509,6 +513,7 @@ void LevelBrush::collapse_vertices(const Vector<int> &p_vertices) {
 			}
 		}
 	}
+	_notify_map_changed();
 }
 
 void LevelBrush::split_faces(const Plane &p_plane) {
@@ -601,6 +606,7 @@ void LevelBrush::split_faces(const Plane &p_plane) {
 
 	faces = new_faces;
 	face_materials = new_mats;
+	_notify_map_changed();
 }
 
 LevelBrush *LevelBrush::clip_split(const Plane &p_plane) {
@@ -630,6 +636,7 @@ void LevelBrush::move_vertices(const Vector<int> &p_vertices, const Vector3 &p_d
 		ERR_FAIL_INDEX(idx, (int)verts.size());
 		verts[idx] += p_delta;
 	}
+	_notify_map_changed();
 }
 
 int LevelBrush::extrude_face(int p_face, real_t p_distance) {
@@ -662,30 +669,27 @@ int LevelBrush::extrude_face(int p_face, real_t p_distance) {
 		cap[i] = (int)(base + i);
 	}
 
-	// Replace the source face with the cap (flipped when extruding inward).
-	LocalVector<int> new_cap;
-	if (p_distance > 0) {
-		new_cap = cap;
-	} else {
-		for (uint32_t i = 0; i < n; i++) {
-			new_cap.push_back(cap[n - 1 - i]);
-		}
-	}
-	faces[p_face] = new_cap;
+	// Replace the source face with the cap. The cap keeps the source winding
+	// regardless of extrude direction - it remains the brush's outer boundary
+	// on that side either way.
+	faces[p_face] = cap;
 
 	// Append side quads stitching the source loop to the cap (wound outward).
+	// For negative (inward) extrudes the wall order must swap to keep normals
+	// pointing out of the solid.
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t j = (i + 1) % n;
 		if (p_distance > 0) {
 			faces.push_back({ src[i], src[j], (int)(base + j), (int)(base + i) });
 		} else {
-			faces.push_back({ src[j], src[i], (int)(base + i), (int)(base + j) });
+			faces.push_back({ src[i], (int)(base + i), (int)(base + j), src[j] });
 		}
 	}
 
 	// Materials: cap keeps the source material; sides get default (null).
 	_update_face_count_storage();
 	face_materials[p_face] = cap_mat;
+	_notify_map_changed();
 
 	return p_face;
 }

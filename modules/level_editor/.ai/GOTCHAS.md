@@ -130,6 +130,18 @@ Bugs that cost real debugging time. Read before touching the module.
     `extrude_face` also mutates - undo left materials desynced from faces.
     When in doubt use `_add_brush_undo_pair` (records all three).
 
+30. **Don't bail the whole gizmo when one axis is camera-behind.** Early code
+    returned GIZMO_NONE / skipped drawing entirely if ANY axis tip was behind
+    the camera - the gizmo vanished at grazing angles. Skip per-axis
+    (`axis_ok[]`), and gate plane handles on BOTH their axes being visible.
+    Pick and draw must use the same plane-handle extent
+    (`LevelEditorColors::GIZMO_PLANE_EXTENT`).
+
+31. **Plane keep-side semantics:** `Plane::distance_to(p) = normal.dot(p)-d`;
+    `clip()` keeps `distance >= -eps`. A clip plane at +X normal, d=5 keeps
+    only x>=5 (clips a unit box at origin AWAY) - the tests got this wrong
+    once (no-op plane needs the brush fully on the keep side).
+
 ## Serialization
 
 16. **Runtime classes must not live under `editor/`.** `LevelBrush`/`LevelMap`

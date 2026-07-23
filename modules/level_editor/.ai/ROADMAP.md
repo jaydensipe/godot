@@ -44,16 +44,18 @@ splits: ghost block, clip tool, gizmos (same treatment as tools/).
   same brush (geometry constraint).
 - **Preview bake allocates collision+occluder** even for the editor preview
   (wasted work) and material grouping is O(m²) - both known, deferred until a
-  benchmark proves it matters on real levels.
+  benchmark proves it matters on real levels. `bake()` returns nullptr when
+  there's no renderable geometry (all faces deleted).
 - **Brush `verts` array never compacts** - clip/weld/collapse leave orphaned
   entries, so long edit sessions bloat serialized brush data. Needs a
   compaction pass (remap face indices) at some point.
 - **Clip cap is a possibly non-convex n-gon** fan-triangulated downstream;
   non-convex cuts can produce overlapping tris (accepted, matches the
   no-convexity-guarantee data model).
-- **Direct C++ geometry edits don't auto-refresh the preview** (only the
-  serialized setters do) - editor code always calls `_refresh_map()` after
-  ops; keep it that way or add notifies per-op later.
+- **All geometry ops self-notify the parent map** (`_notify_map_changed`,
+  deferred refresh) - direct C++ edits update the preview without the caller
+  remembering `_refresh_map()`; the editor's explicit refresh calls coalesce
+  into the same deferred rebuild.
 
 ## Discussed but not built yet
 
@@ -79,7 +81,10 @@ splits: ghost block, clip tool, gizmos (same treatment as tools/).
 - Audit cleanup: rotate-ring pick now uses the drawn ring's world radius
   (was unpickable at most zooms), select-handle resize snapshots vertices
   (degenerate drags no longer bake data loss), extrude undo includes
-  face_materials, bake no longer leaks on missing scene root.
+  face_materials, bake no longer leaks on missing scene root. Gizmo no longer
+  vanishes when one axis goes behind the camera (per-axis skip, plane handles
+  gated on both axes, pick/draw share GIZMO_PLANE_EXTENT). Brush geometry ops
+  self-notify preview refresh.
 - Perspective 3D grid mesh (camera-following, layer-20, depth-tested) +
   View-menu display modes & grid toggles persisted via project metadata.
 - New tests: clip no-op/full-clip, clip_split caps/slabs, weld_vertices,

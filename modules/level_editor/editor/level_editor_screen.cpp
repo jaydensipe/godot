@@ -35,6 +35,7 @@
 #include "level_helpers.h"
 
 using namespace LevelHelpers;
+using LevelEditorColors::GIZMO_PLANE_EXTENT;
 
 #include "core/object/callable_mp.h"
 #include "editor/editor_data.h"
@@ -261,13 +262,7 @@ void LevelEditorViewport::set_view_type(ViewType p_type) {
 			view_controller->set_view_type(View3DController::VIEW_TYPE_USER);
 			break;
 		case VIEW_TOP:
-			camera->set_projection(Camera3D::PROJECTION_ORTHOGONAL);
-			distance = 40.0;
-			break;
 		case VIEW_FRONT:
-			camera->set_projection(Camera3D::PROJECTION_ORTHOGONAL);
-			distance = 40.0;
-			break;
 		case VIEW_SIDE:
 			camera->set_projection(Camera3D::PROJECTION_ORTHOGONAL);
 			distance = 40.0;
@@ -2088,7 +2083,9 @@ void LevelEditorScreen::_ghost_handle_drag_to(LevelEditorViewport *p_vp, const V
 	int h = ghost_handle_drag;
 	if (h >= GHOST_CORNER_0) {
 		int ci = h - GHOST_CORNER_0;
-		Vector3 corner = c + Vector3((ci & 1) ? ghost_aabb.size.x * 0.5 : -ghost_aabb.size.x * 0.5, (ci & 2) ? ghost_aabb.size.y * 0.5 : -ghost_aabb.size.y * 0.5, (ci & 4) ? ghost_aabb.size.z * 0.5 : -ghost_aabb.size.z * 0.5);
+		Vector3 corners[8];
+		aabb_corners(ghost_aabb, corners);
+		const Vector3 &corner = corners[ci];
 
 		Vector3 hit;
 		if (!p_vp->ray_to_view_plane(p_mouse, corner, hit)) {
@@ -2714,38 +2711,9 @@ void LevelEditorScreen::_notification(int p_what) {
 				pruned = true;
 			}
 			// Prune element selections whose brush was deleted.
-			{
-				List<LevelBrush *> dead;
-				for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
-					if (!E.key->is_inside_tree()) {
-						dead.push_back(E.key);
-					}
-				}
-				for (LevelBrush *b : dead) {
-					selected_faces.erase(b);
-					pruned = true;
-				}
-				dead.clear();
-				for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
-					if (!E.key->is_inside_tree()) {
-						dead.push_back(E.key);
-					}
-				}
-				for (LevelBrush *b : dead) {
-					selected_edges.erase(b);
-					pruned = true;
-				}
-				dead.clear();
-				for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_vertices) {
-					if (!E.key->is_inside_tree()) {
-						dead.push_back(E.key);
-					}
-				}
-				for (LevelBrush *b : dead) {
-					selected_vertices.erase(b);
-					pruned = true;
-				}
-			}
+			pruned = _prune_dead_brushes(selected_faces) || pruned;
+			pruned = _prune_dead_brushes(selected_edges) || pruned;
+			pruned = _prune_dead_brushes(selected_vertices) || pruned;
 			if (pruned) {
 				_update_overlays();
 			}
@@ -2894,16 +2862,19 @@ int LevelEditorScreen::_pick_gizmo(Camera3D *p_camera, const Vector2 &p_screen) 
 	// Approximate: project origin + unit axis and measure pixel length.
 	Vector3 axes[3] = { Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(0, 0, 1) };
 	Vector2 axis_end[3];
+	bool axis_ok[3] = { false, false, false };
 	for (int i = 0; i < 3; i++) {
 		Vector3 tip = origin + axes[i];
 		if (p_camera->is_position_behind(tip)) {
-			return GIZMO_NONE;
+			continue; // Only this axis is unusable - keep the rest of the gizmo.
 		}
 		Vector2 st = p_camera->unproject_position(tip);
 		axis_end[i] = so + (st - so).normalized() * axis_len;
+		axis_ok[i] = true;
 	}
 
-	// Check plane handles first (smaller targets).
+	// Check plane handles first (smaller targets). A plane is pickable only
+	// if both its axes are visible.
 	struct PlaneHandle {
 		int a, b;
 		GizmoPart part;
@@ -2914,8 +2885,11 @@ int LevelEditorScreen::_pick_gizmo(Camera3D *p_camera, const Vector2 &p_screen) 
 		{ 1, 2, GIZMO_YZ },
 	};
 	for (int p = 0; p < 3; p++) {
-		Vector2 pa = so + (axis_end[planes[p].a] - so) * 0.5;
-		Vector2 pb = so + (axis_end[planes[p].b] - so) * 0.5;
+		if (!axis_ok[planes[p].a] || !axis_ok[planes[p].b]) {
+			continue;
+		}
+		Vector2 pa = so + (axis_end[planes[p].a] - so) * GIZMO_PLANE_EXTENT;
+		Vector2 pb = so + (axis_end[planes[p].b] - so) * GIZMO_PLANE_EXTENT;
 		Vector2 center = (so + pa + pb) / 3.0;
 		if (p_screen.distance_to(center) < plane_tol) {
 			return planes[p].part;
@@ -2924,6 +2898,9 @@ int LevelEditorScreen::_pick_gizmo(Camera3D *p_camera, const Vector2 &p_screen) 
 
 	// Axis lines.
 	for (int i = 0; i < 3; i++) {
+		if (!axis_ok[i]) {
+			continue;
+		}
 		Vector2 a = so;
 		Vector2 b = axis_end[i];
 		Vector2 ab = b - a;
@@ -3463,13 +3440,15 @@ void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas
 
 	const real_t axis_len = 64.0 * EDSCALE;
 	Vector2 axis_end[3];
+	bool axis_ok[3] = { false, false, false };
 	for (int i = 0; i < 3; i++) {
 		Vector3 tip = origin + axes[i];
 		if (cam->is_position_behind(tip)) {
-			return;
+			continue; // Skip only the occluded axis, not the whole gizmo.
 		}
 		Vector2 st = cam->unproject_position(tip);
 		axis_end[i] = so + (st - so).normalized() * axis_len;
+		axis_ok[i] = true;
 	}
 
 	// Plane handles (quads at halfway between axes).
@@ -3483,8 +3462,11 @@ void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas
 		{ 1, 2, GIZMO_YZ },
 	};
 	for (int p = 0; p < 3; p++) {
-		Vector2 pa = so + (axis_end[planes[p].a] - so) * 0.45;
-		Vector2 pb = so + (axis_end[planes[p].b] - so) * 0.45;
+		if (!axis_ok[planes[p].a] || !axis_ok[planes[p].b]) {
+			continue;
+		}
+		Vector2 pa = so + (axis_end[planes[p].a] - so) * GIZMO_PLANE_EXTENT;
+		Vector2 pb = so + (axis_end[planes[p].b] - so) * GIZMO_PLANE_EXTENT;
 		PackedVector2Array quad;
 		quad.push_back(so);
 		quad.push_back(pa);
@@ -3497,6 +3479,9 @@ void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas
 
 	// Axis lines with arrowheads.
 	for (int i = 0; i < 3; i++) {
+		if (!axis_ok[i]) {
+			continue;
+		}
 		bool active = (gizmo_hover == (GizmoPart)i || gizmo_drag_part == (GizmoPart)i);
 		Color c = active ? LevelEditorColors::hot(axis_col[i]) : axis_col[i];
 		p_canvas->draw_line(so, axis_end[i], c, (active ? 3.0 : 2.0) * EDSCALE);
@@ -3545,7 +3530,7 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 			highlight.push_back(hover_brush);
 		}
 		auto add_selected_brushes = [&](auto &p_map) {
-			for (const KeyValue<LevelBrush *, HashSet<int>> &E : p_map) {
+			for (const auto &E : p_map) {
 				bool dup = false;
 				for (LevelBrush *b : highlight) {
 					if (b == E.key) {
@@ -3565,20 +3550,9 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 			case MODE_FACE:
 				add_selected_brushes(selected_faces);
 				break;
-			case MODE_EDGE: {
-				for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
-					bool dup = false;
-					for (LevelBrush *b : highlight) {
-						if (b == E.key) {
-							dup = true;
-							break;
-						}
-					}
-					if (!dup) {
-						highlight.push_back(E.key);
-					}
-				}
-			} break;
+			case MODE_EDGE:
+				add_selected_brushes(selected_edges);
+				break;
 			default:
 				break;
 		}

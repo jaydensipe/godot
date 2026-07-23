@@ -76,13 +76,14 @@ SubViewportContainer
 `LevelMap` (Node3D):
 - Brushes = `LevelBrush` children (`get_brushes()` scans children).
 - Editor-only internal `_LevelPreview` MeshInstance3D rebuilt in `refresh()`
-  from `bake()`.
+  from `bake()`. `bake()` returns nullptr when no renderable geometry exists.
 - **Preview refresh triggers**: `refresh()` is called explicitly after edits,
   plus automatically from `LevelBrush` - `_notify_map_changed()` (deferred
-  `refresh` on parent) fires in `set_vertices_data`/`set_faces_data`/
-  `set_face_materials_data`/`set_faces_flipped` (covers undo/redo property
-  restores), and `NOTIFICATION_LOCAL_TRANSFORM_CHANGED` (covers undo of node
-  position; brush enables `set_notify_local_transform(true)` in editor).
+  `refresh` on parent) fires in ALL mutating geometry ops (clip, split_faces,
+  extrude_face, delete_faces, weld_vertices, collapse_vertices, move_vertices,
+  bridge_edges) and the serialized setters (covers undo/redo), and
+  `NOTIFICATION_LOCAL_TRANSFORM_CHANGED` (covers undo of node position; brush
+  enables `set_notify_local_transform(true)` in editor).
 - `default_material` (StandardMaterial3D, albedo 0.7, CULL_BACK - needed so
   flipped/interior brushes render correctly).
 - `bake()` groups faces per unique material into an `ArrayMesh`

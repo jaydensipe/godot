@@ -113,6 +113,10 @@ inline Color hot(const Color &p_color) {
 	return p_color.lerp(Color(1, 1, 1), 0.5f);
 }
 
+// Move-gizmo plane handles sit this fraction of the way along their axes
+// (shared by pick + draw so the hit area matches the visual).
+inline constexpr real_t GIZMO_PLANE_EXTENT = 0.45f;
+
 // Text overlays.
 inline const Color TEXT{ 1.0f, 1.0f, 1.0f, 0.9f };
 inline const Color TEXT_DIM{ 1.0f, 1.0f, 1.0f, 0.8f };
