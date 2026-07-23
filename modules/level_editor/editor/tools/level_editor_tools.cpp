@@ -137,7 +137,6 @@ void LevelEditorScreen::_extrude_pressed() {
 }
 
 void LevelEditorScreen::_apply_material_pressed() {
-	apply_material_button->release_focus();
 	if (!current_map || current_material.is_null()) {
 		return;
 	}

@@ -31,6 +31,7 @@
 #include "level_editor_screen.h"
 
 #include "level_constants.h"
+#include "dock/level_editor_dock.h"
 #include "level_helpers.h"
 
 using namespace LevelHelpers;
@@ -670,23 +671,6 @@ LevelEditorScreen::LevelEditorScreen() {
 	extrude_button->set_text(TTRC("Extrude"));
 	extrude_button->connect("pressed", callable_mp(this, &LevelEditorScreen::_extrude_pressed));
 	toolbar->add_child(extrude_button);
-
-	toolbar->add_child(memnew(VSeparator));
-
-	Label *mat_label = memnew(Label);
-	mat_label->set_text(TTRC("Material:"));
-	toolbar->add_child(mat_label);
-
-	material_picker = memnew(EditorResourcePicker);
-	material_picker->set_base_type("Material");
-	material_picker->set_custom_minimum_size(Size2(160, 0));
-	material_picker->connect("resource_changed", callable_mp(this, &LevelEditorScreen::_material_changed));
-	toolbar->add_child(material_picker);
-
-	apply_material_button = memnew(Button);
-	apply_material_button->set_text(TTRC("Apply to Face"));
-	apply_material_button->connect("pressed", callable_mp(this, &LevelEditorScreen::_apply_material_pressed));
-	toolbar->add_child(apply_material_button);
 
 	toolbar->add_child(memnew(VSeparator));
 
@@ -3683,6 +3667,12 @@ LevelEditorPlugin::LevelEditorPlugin() {
 	EditorNode::get_singleton()->get_editor_main_screen()->get_control()->add_child(screen);
 	screen->hide();
 
+	dock = memnew(LevelEditorDock);
+	dock->set_screen(screen);
+	add_control_to_dock(DOCK_SLOT_RIGHT_BL, dock);
+	// Tab icon is set lazily in make_visible() - theme icons aren't
+	// registered yet when plugins construct.
+
 	EditorInterface::get_singleton()->get_selection()->connect("selection_changed", callable_mp(this, &LevelEditorPlugin::_editor_selection_changed));
 }
 
@@ -3709,6 +3699,8 @@ void LevelEditorPlugin::edited_scene_changed() {
 
 void LevelEditorPlugin::make_visible(bool p_visible) {
 	if (p_visible) {
+		// Theme icons are guaranteed registered by now.
+		set_dock_tab_icon(dock, get_plugin_icon());
 		screen->show();
 		screen->make_visible(true);
 	} else {

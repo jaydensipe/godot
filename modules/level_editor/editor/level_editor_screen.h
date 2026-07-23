@@ -44,6 +44,7 @@ class Button;
 class Camera3D;
 class DirectionalLight3D;
 class EditorResourcePicker;
+class LevelEditorDock;
 class OptionButton;
 class SpinBox;
 class WorldEnvironment;
@@ -160,11 +161,11 @@ private:
 	OptionButton *grid_size_option = nullptr;
 	SpinBox *extrude_spin = nullptr;
 	Button *extrude_button = nullptr;
-	Button *apply_material_button = nullptr;
 	Button *flip_faces_button = nullptr;
 	Button *bake_button = nullptr;
-	EditorResourcePicker *material_picker = nullptr;
 	MenuButton *tools_menu = nullptr;
+
+	LevelEditorDock *dock = nullptr;
 
 	real_t grid_size = 1.0;
 	real_t extrude_amount = 1.0;
@@ -345,7 +346,6 @@ private:
 	void _bake_pressed();
 	void _tools_menu_selected(int p_id);
 	void _join_edges();
-	void _material_changed(const Ref<Resource> &p_resource);
 	void _grid_size_selected(int p_index);
 	void _extrude_amount_changed(double p_value);
 
@@ -392,6 +392,10 @@ public:
 	LevelMap *get_map() const { return current_map; }
 	real_t get_grid_size() const { return grid_size; }
 
+	// Dock hooks (LevelEditorDock forwards its UI events here).
+	void _material_changed(const Ref<Resource> &p_resource);
+	void apply_material_from_dock() { _apply_material_pressed(); }
+
 	// Sync the level-editor brush selection with the editor's node selection.
 	void set_selected_brush_from_editor(LevelBrush *p_brush);
 
@@ -409,6 +413,7 @@ class LevelEditorPlugin : public EditorPlugin {
 	GDCLASS(LevelEditorPlugin, EditorPlugin);
 
 	LevelEditorScreen *screen = nullptr;
+	LevelEditorDock *dock = nullptr;
 
 	void _editor_selection_changed();
 
