@@ -107,6 +107,29 @@ Bugs that cost real debugging time. Read before touching the module.
     `EditorIcons`. Name one after a registered class (e.g. `LevelMap.svg`)
     and it becomes the scene-tree node icon automatically.
 
+26. **SubViewports sharing a World3D render EVERYTHING in that world.** All 4
+    level viewports share the scene's World3D, so `set_visible(false)` on one
+    viewport's own MeshInstance3D doesn't keep it out of the other panes.
+    Editor-only 3D content (the perspective grid mesh) must live on a render
+    layer only the intended camera culls in (layer 20 + camera cull_mask).
+
+27. **Pick and draw must share screen-size math.** The rotate ring was picked
+    at unit world radius but drawn at a screen-constant radius - picking was
+    offset at almost every zoom. Any gizmo with a pixel-constant size needs
+    ONE world-size helper used by both paths (`_rotate_world_radius`).
+
+28. **Restore-from-snapshot, never restore-by-recompute.** The select-handle
+    resize "restored" original geometry by remapping current verts into the
+    original AABB; a degenerate intermediate drag (zero extent on an axis)
+    destroyed vertex data and the restore baked the loss in. Snapshot the
+    serialized array at drag start (`select_drag_original_verts`) and
+    `set_vertices_data()` to restore - same pattern as gizmo drags.
+
+29. **Undo do/undo property lists must cover EVERY mutated property.**
+    Extrude recorded `vertices`+`faces` but not `face_materials`, which
+    `extrude_face` also mutates - undo left materials desynced from faces.
+    When in doubt use `_add_brush_undo_pair` (records all three).
+
 ## Serialization
 
 16. **Runtime classes must not live under `editor/`.** `LevelBrush`/`LevelMap`

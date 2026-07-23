@@ -57,11 +57,11 @@ void LevelEditorScreen::_extrude_pressed() {
 				LevelBrush *target = E.key;
 				PackedVector3Array old_verts = target->get_vertices_data();
 				Array old_faces = target->get_faces_data();
+				Array old_mats = target->get_face_materials_data();
 
 				LevelBrush *working = target->duplicate_brush();
 				// Extrude each selected face into new geometry (cap + side walls).
-				// Process from highest index down so removals don't shift pending
-				// indices.
+				// Process from highest index down so later indices stay valid.
 				Vector<int> sorted;
 				for (int f : E.value) {
 					sorted.push_back(f);
@@ -73,8 +73,10 @@ void LevelEditorScreen::_extrude_pressed() {
 
 				undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
 				undo_redo->add_do_property(target, "faces", working->get_faces_data());
+				undo_redo->add_do_property(target, "face_materials", working->get_face_materials_data());
 				undo_redo->add_undo_property(target, "vertices", old_verts);
 				undo_redo->add_undo_property(target, "faces", old_faces);
+				undo_redo->add_undo_property(target, "face_materials", old_mats);
 				memdelete(working);
 				did = true;
 			}
@@ -296,7 +298,10 @@ void LevelEditorScreen::_bake_pressed() {
 	ERR_FAIL_NULL(baked);
 
 	Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
-	ERR_FAIL_NULL(root);
+	if (!root) {
+		memdelete(baked);
+		return;
+	}
 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	undo_redo->create_action(TTR("Bake Level"));

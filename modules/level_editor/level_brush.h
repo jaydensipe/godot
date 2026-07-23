@@ -130,12 +130,11 @@ public:
 	// (used when splitting, where the two halves share the seam).
 	void clip(const Plane &p_plane, bool p_add_cap = true);
 
-	// Delete faces by index (indices must be sorted descending or the
-	// caller uses delete_faces_sorted).
+	// Delete faces by index (any order; sorted internally).
 	void delete_faces(const Vector<int> &p_faces);
 
 	// Join (weld) vertices: all listed vertices are moved to their average
-	// and merged into the lowest index. Degenerate faces are removed.
+	// and merged into the first listed vertex. Degenerate faces are removed.
 	void weld_vertices(const Vector<int> &p_vertices);
 
 	// Bridge two edges with a new face. Returns the new face index, or -1 if

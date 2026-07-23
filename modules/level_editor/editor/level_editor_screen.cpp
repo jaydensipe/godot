@@ -213,7 +213,7 @@ void LevelEditorViewport::_rebuild_grid_mesh(real_t p_grid_size) {
 
 	// Camera-centered (ground-projected), fixed extent around it - the grid
 	// "follows" the camera like the 3D editor's.
-	const real_t extent = 128.0;
+	const real_t extent = LevelEditorGrid::GRID_3D_EXTENT;
 	Vector3 cam_pos = camera ? camera->get_global_position() : Vector3();
 	grid_mesh_center = Vector3(Math::snapped(cam_pos.x, p_grid_size), 0, Math::snapped(cam_pos.z, p_grid_size));
 
@@ -245,7 +245,7 @@ void LevelEditorViewport::_update_grid_tracking() {
 	// Rebuild when the camera has moved far enough that the fixed-extent grid
 	// would go stale (half the extent).
 	Vector3 cam_pos = camera->get_global_position();
-	if (Vector2(cam_pos.x - grid_mesh_center.x, cam_pos.z - grid_mesh_center.z).length() > 64.0) {
+	if (Vector2(cam_pos.x - grid_mesh_center.x, cam_pos.z - grid_mesh_center.z).length() > LevelEditorGrid::GRID_3D_REBUILD_DIST) {
 		_rebuild_grid_mesh(grid_mesh_size);
 	}
 }
@@ -1001,13 +1001,11 @@ void LevelEditorScreen::make_visible(bool p_visible) {
 	}
 }
 
-void LevelEditorScreen::_resolve_map() {
-	if (current_map) {
-		return;
-	}
+// Finds the first LevelMap in the edited scene (DFS), or nullptr.
+LevelMap *LevelEditorScreen::_find_map_in_scene() const {
 	Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
 	if (!root) {
-		return;
+		return nullptr;
 	}
 	List<Node *> stack;
 	stack.push_back(root);
@@ -1016,13 +1014,22 @@ void LevelEditorScreen::_resolve_map() {
 		stack.pop_front();
 		LevelMap *lm = Object::cast_to<LevelMap>(n);
 		if (lm) {
-			current_map = lm;
-			current_map->refresh();
-			return;
+			return lm;
 		}
 		for (int i = 0; i < n->get_child_count(); i++) {
 			stack.push_back(n->get_child(i));
 		}
+	}
+	return nullptr;
+}
+
+void LevelEditorScreen::_resolve_map() {
+	if (current_map) {
+		return;
+	}
+	current_map = _find_map_in_scene();
+	if (current_map) {
+		current_map->refresh();
 	}
 }
 
@@ -1043,26 +1050,8 @@ void LevelEditorScreen::_update_map_ui() {
 	if (!current_map) {
 		// Fresh scene: only adopt a map found in the edited scene tree - never
 		// auto-create one (the user must press "Create LevelMap").
-		LevelMap *found = nullptr;
-		Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
-		if (root) {
-			List<Node *> stack;
-			stack.push_back(root);
-			while (!stack.is_empty()) {
-				Node *n = stack.front()->get();
-				stack.pop_front();
-				LevelMap *lm = Object::cast_to<LevelMap>(n);
-				if (lm) {
-					found = lm;
-					break;
-				}
-				for (int i = 0; i < n->get_child_count(); i++) {
-					stack.push_back(n->get_child(i));
-				}
-			}
-		}
-		if (found) {
-			current_map = found;
+		current_map = _find_map_in_scene();
+		if (current_map) {
 			current_map->refresh();
 		}
 	}
@@ -1551,6 +1540,7 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 					select_handle_drag = h;
 					select_drag_viewport = vp;
 					select_drag_original_aabb = _get_brush_local_aabb(selected_brush);
+					select_drag_original_verts = selected_brush->get_vertices_data();
 					return;
 				}
 			} else {
@@ -1804,7 +1794,7 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 				int f;
 				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
 					_clip_begin(brush, hit, vp);
-				} else if (vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE && current_map) {
+				} else if (vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE) {
 					// Ortho views: click anywhere - use the selected brush (or the
 					// most recent one) and place the point on the edit plane.
 					LevelBrush *target = selected_brush;
@@ -2306,7 +2296,7 @@ void LevelEditorScreen::_clip_update_second(const Vector3 &p_point) {
 int LevelEditorScreen::_pick_clip_point(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
 	for (int i = 0; i < 2; i++) {
 		Vector2 sp;
-		if (p_vp->project(clip_points[i], sp) && sp.distance_to(p_screen) < 10.0) {
+		if (p_vp->project(clip_points[i], sp) && sp.distance_to(p_screen) < 10.0 * EDSCALE) {
 			return i;
 		}
 	}
@@ -2532,7 +2522,9 @@ void LevelEditorScreen::_select_handle_drag_to(LevelEditorViewport *p_vp, const 
 	}
 
 	// Restore original geometry, then apply the resize from scratch (absolute).
-	_apply_brush_aabb(selected_brush, select_drag_original_aabb);
+	// Use the vertex snapshot - remapping into the original AABB would bake in
+	// any data lost by a degenerate intermediate drag.
+	selected_brush->set_vertices_data(select_drag_original_verts);
 
 	Transform3D gt = selected_brush->get_global_transform();
 	Transform3D inv = gt.affine_inverse();
@@ -2592,14 +2584,10 @@ void LevelEditorScreen::_select_handle_end_drag() {
 	}
 	select_handle_drag = GHOST_NONE;
 
-	// Commit as undo: original AABB vs current geometry.
+	// Commit as undo: original vertices vs current geometry.
 	LevelBrush *target = selected_brush;
-
-	// Snapshot "before" by applying the original AABB to a temp copy.
-	LevelBrush *before = target->duplicate_brush();
-	_apply_brush_aabb(before, select_drag_original_aabb);
-	PackedVector3Array old_verts = before->get_vertices_data();
-	memdelete(before);
+	PackedVector3Array old_verts = select_drag_original_verts;
+	select_drag_original_verts.clear();
 
 	PackedVector3Array new_verts = target->get_vertices_data();
 	if (new_verts == old_verts) {
@@ -3114,6 +3102,34 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 // Radius in pixels of the rotate rings on screen (before EDSCALE).
 static const real_t ROTATE_RING_PX = 64.0 * EDSCALE;
 
+// World-space ring radius that projects to ROTATE_RING_PX pixels at the
+// gizmo origin. Shared by pick + draw so they always agree.
+real_t LevelEditorScreen::_rotate_world_radius(LevelEditorViewport *p_vp, const Vector3 &p_origin, const Vector2 &p_center) const {
+	Camera3D *cam = p_vp->get_camera();
+	Vector3 test = p_origin + Vector3(1, 0, 0);
+	if (!cam->is_position_behind(test)) {
+		real_t px = cam->unproject_position(test).distance_to(p_center);
+		if (px > 0.001) {
+			return ROTATE_RING_PX / px;
+		}
+	}
+	return 1.0;
+}
+
+// The only usable rotate axis per ortho view (-1 = all, perspective).
+int LevelEditorScreen::_rotate_allowed_axis(LevelEditorViewport::ViewType p_type) const {
+	switch (p_type) {
+		case LevelEditorViewport::VIEW_TOP:
+			return 1;
+		case LevelEditorViewport::VIEW_FRONT:
+			return 2;
+		case LevelEditorViewport::VIEW_SIDE:
+			return 0;
+		default:
+			return -1;
+	}
+}
+
 int LevelEditorScreen::_pick_rotate_ring(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
 	if (!selected_brush) {
 		return -1;
@@ -3130,20 +3146,8 @@ int LevelEditorScreen::_pick_rotate_ring(LevelEditorViewport *p_vp, const Vector
 	real_t best_dist = tol;
 
 	// In ortho views, only the ring perpendicular to the view plane is usable.
-	int allowed_axis = -1;
-	switch (p_vp->get_view_type()) {
-		case LevelEditorViewport::VIEW_TOP:
-			allowed_axis = 1;
-			break;
-		case LevelEditorViewport::VIEW_FRONT:
-			allowed_axis = 2;
-			break;
-		case LevelEditorViewport::VIEW_SIDE:
-			allowed_axis = 0;
-			break;
-		default:
-			break;
-	}
+	const int allowed_axis = _rotate_allowed_axis(p_vp->get_view_type());
+	const real_t world_radius = _rotate_world_radius(p_vp, origin, center);
 
 	for (int axis = 0; axis < 3; axis++) {
 		if (allowed_axis >= 0 && axis != allowed_axis) {
@@ -3158,8 +3162,8 @@ int LevelEditorScreen::_pick_rotate_ring(LevelEditorViewport *p_vp, const Vector
 			Vector3 p;
 			// Ring in the plane perpendicular to the axis.
 			int u = (axis + 1) % 3, v = (axis + 2) % 3;
-			p[u] = Math::cos(a);
-			p[v] = Math::sin(a);
+			p[u] = Math::cos(a) * world_radius;
+			p[v] = Math::sin(a) * world_radius;
 			Vector3 world = origin + p;
 			Vector2 sp;
 			if (!p_vp->project(world, sp)) {
@@ -3209,37 +3213,13 @@ void LevelEditorScreen::_draw_rotate_gizmo(LevelEditorViewport *p_vp, Control *p
 		return;
 	}
 
-	Camera3D *cam = p_vp->get_camera();
 	Color axis_col[3] = { LevelEditorColors::GIZMO_AXIS_X, LevelEditorColors::GIZMO_AXIS_Y, LevelEditorColors::GIZMO_AXIS_Z };
 
 	// World-space radius so the ring projects to ~ROTATE_RING_PX pixels.
-	// Estimate via one test point like the move gizmo does.
-	real_t world_radius = 1.0;
-	{
-		Vector3 test = origin + Vector3(1, 0, 0);
-		if (!cam->is_position_behind(test)) {
-			real_t px = cam->unproject_position(test).distance_to(center);
-			if (px > 0.001) {
-				world_radius = ROTATE_RING_PX / px;
-			}
-		}
-	}
+	const real_t world_radius = _rotate_world_radius(p_vp, origin, center);
 
 	// In ortho views, only the ring perpendicular to the view plane is usable.
-	int allowed_axis = -1;
-	switch (p_vp->get_view_type()) {
-		case LevelEditorViewport::VIEW_TOP:
-			allowed_axis = 1;
-			break;
-		case LevelEditorViewport::VIEW_FRONT:
-			allowed_axis = 2;
-			break;
-		case LevelEditorViewport::VIEW_SIDE:
-			allowed_axis = 0;
-			break;
-		default:
-			break;
-	}
+	const int allowed_axis = _rotate_allowed_axis(p_vp->get_view_type());
 
 	const int SEGMENTS = 48;
 	for (int axis = 0; axis < 3; axis++) {
@@ -3247,7 +3227,7 @@ void LevelEditorScreen::_draw_rotate_gizmo(LevelEditorViewport *p_vp, Control *p
 			continue; // Ring disabled in this ortho view.
 		}
 		bool hot = (rotate_hover_axis == axis || rotate_drag_axis == axis);
-		Color col = hot ? axis_col[axis].lerp(Color(1, 1, 1), 0.5) : axis_col[axis];
+		Color col = hot ? LevelEditorColors::hot(axis_col[axis]) : axis_col[axis];
 		real_t width = (hot ? 3.0 : 2.0) * EDSCALE;
 
 		int u = (axis + 1) % 3, v = (axis + 2) % 3;
@@ -3518,7 +3498,7 @@ void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas
 	// Axis lines with arrowheads.
 	for (int i = 0; i < 3; i++) {
 		bool active = (gizmo_hover == (GizmoPart)i || gizmo_drag_part == (GizmoPart)i);
-		Color c = active ? axis_col[i].lerp(Color(1, 1, 1), 0.5) : axis_col[i];
+		Color c = active ? LevelEditorColors::hot(axis_col[i]) : axis_col[i];
 		p_canvas->draw_line(so, axis_end[i], c, (active ? 3.0 : 2.0) * EDSCALE);
 		// Arrowhead.
 		Vector2 dir = (axis_end[i] - so).normalized();
@@ -3701,7 +3681,7 @@ void LevelEditorScreen::_draw_drag_feedback(LevelEditorViewport *p_vp, Control *
 	preview->setup_box(AABB(mins, maxs - mins));
 	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = preview->get_edges();
 
-	Color col(0.2, 0.9, 0.4, 0.9);
+	Color col = LevelEditorColors::GHOST;
 	for (const LevelBrush::EdgeKey &e : edges) {
 		Vector2 a, b;
 		if (p_vp->project(preview->get_vertex(e.a), a) && p_vp->project(preview->get_vertex(e.b), b)) {
@@ -3806,9 +3786,6 @@ LevelEditorPlugin::LevelEditorPlugin() {
 	// registered yet when plugins construct.
 
 	EditorInterface::get_singleton()->get_selection()->connect("selection_changed", callable_mp(this, &LevelEditorPlugin::_editor_selection_changed));
-}
-
-void LevelEditorPlugin::_notification(int p_what) {
 }
 
 void LevelEditorPlugin::_editor_selection_changed() {

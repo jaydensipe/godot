@@ -21,12 +21,15 @@ modules/level_editor/
   .ai/                       # Project docs for AI/agent context handoff
   editor/
     level_editor_screen.{h,cpp}  # LevelEditorPlugin, LevelEditorScreen, LevelEditorViewport
-    level_constants.h        # LevelEditorColors namespace - ALL overlay drawing colors
+    level_constants.h        # LevelEditorColors (+hot()) / LevelEditorGrid
     level_helpers.h          # LevelHelpers namespace - aabb_corners/AABB_EDGE_IDX/
                              #   AABB_FACE_DIRS/aabb_face_center box helpers
     tools/
       level_editor_tools.cpp     # LevelEditorScreen tool-action members (extrude, material,
-                                 # flip faces, tools menu, bridge, bake)
+                                 # flip faces, tools/view menus, bridge, bake)
+    dock/
+      level_editor_dock.{h,cpp}  # LevelEditorDock - right-side per-tool settings dock
+                                 #   (active material picker + apply button)
 ```
 
 IMPORTANT: `level_brush.*` and `level_map.*` MUST stay at module root (they
@@ -110,6 +113,11 @@ SubViewportContainer
   highlight after the cursor leaves.
 - Editor selection sync: plugin listens to `EditorSelection::selection_changed`
   and adopts a selected `LevelBrush` (`set_selected_brush_from_editor`).
+- Map lookup: `_find_map_in_scene()` is the single DFS that finds the first
+  LevelMap in the edited scene; `_resolve_map()`/`_update_map_ui()` wrap it.
+- View menu: per-viewport display modes (Normal/Wireframe/Overdraw/Lighting/
+  Unshaded, ids = vp*MAX+mode) + global 2D/3D grid toggles; all persisted via
+  `EditorSettings::set_project_metadata("level_editor", ...)`.
 - Block flow: stage 1 drag → stage 2 "ghost" (AABB + 6 face handles + 8
   corner handles + inside-drag move + dim labels) → Enter commits
   (`_ghost_commit`), Esc cancels. `_compute_drag_aabb` shared by preview +
@@ -155,10 +163,13 @@ SubViewportContainer
   Zoom is cursor-centered (before/after `intersect_ortho_plane` pivot fixup).
   Ortho edit planes for tools pass through the relevant point (clip point /
   brush center), not the origin.
-- Perspective grid: ground-plane (Y=0) grid spans ±64 units, snapped to grid
-  size; segments are clipped against the camera near plane before projection
-  (otherwise whole lines vanish when flying low). Ortho grid: infinite,
-  derived from the view frustum corners on the edit plane.
+- Perspective grid: 3D line mesh (`ImmediateMesh`, vertex-colored unshaded)
+  on render layer 20, camera-centered with `GRID_3D_EXTENT` extent, rebuilt
+  when the camera moves > `GRID_3D_REBUILD_DIST` (layer mask needed because
+  ALL SubViewports share the scene World3D - visibility alone leaks the mesh
+  into ortho panes). Sits 2mm below Y=0 to avoid z-fighting floor brushes.
+  Ortho grid: infinite 2D overlay lines on the edit plane. Both togglable in
+  the View menu (persisted via project metadata).
 - `gui_input` forwarding: `LevelEditorViewport::gui_input` calls
   `screen->forward_input(camera, event)` FIRST, then handles navigation.
   `forward_input` maps camera → viewport and implements ALL tool logic
@@ -175,6 +186,13 @@ SubViewportContainer
 - `level_helpers.h` (`LevelHelpers` namespace): `aabb_corners()`,
   `AABB_EDGE_IDX`, `AABB_FACE_DIRS`, `aabb_face_center()` - all box
   drawing/picking uses these.
+- `level_constants.h` (`LevelEditorColors`): all overlay colors + `hot(color)`
+  (50% white lerp for hover/drag states). (`LevelEditorGrid`): grid `STEPS`/
+  `STEP_COUNT` ladder + `GRID_3D_EXTENT`/`GRID_3D_REBUILD_DIST` for the
+  perspective 3D grid mesh.
+- Rotate gizmo: `_rotate_world_radius()` (screen-constant ring radius) and
+  `_rotate_allowed_axis()` (per-view axis filter) are shared by pick + draw -
+  they MUST stay in sync (a desync made rings unpickable at most zooms).
 - `LevelEditorViewport::ray_to_view_plane(screen, point, hit)` - ray to the
   viewport's natural edit plane through a point (Y plane for perspective/top,
   Z for front, X for side). Use this for ALL edit-plane intersections.

@@ -53,6 +53,11 @@ inline constexpr real_t STEPS[] = {
 };
 inline constexpr int STEP_COUNT = (int)(sizeof(STEPS) / sizeof(STEPS[0]));
 
+// Perspective 3D grid: world-space extent around the camera, and how far the
+// camera may move before the mesh is rebuilt (half the extent).
+inline constexpr real_t GRID_3D_EXTENT = 128.0;
+inline constexpr real_t GRID_3D_REBUILD_DIST = GRID_3D_EXTENT / 2.0;
+
 } // namespace LevelEditorGrid
 
 // Shared drawing constants for the level editor overlay. All colors used by
@@ -101,6 +106,12 @@ inline const Color GIZMO_AXIS_X{ 0.95f, 0.3f, 0.3f };
 inline const Color GIZMO_AXIS_Y{ 0.4f, 0.9f, 0.4f };
 inline const Color GIZMO_AXIS_Z{ 0.3f, 0.6f, 1.0f };
 inline const Color GIZMO_CENTER{ 1.0f, 1.0f, 1.0f, 0.9f };
+
+// Hovered/dragged element highlight: lighter version of the element's color
+// (50% lerp to white).
+inline Color hot(const Color &p_color) {
+	return p_color.lerp(Color(1, 1, 1), 0.5f);
+}
 
 // Text overlays.
 inline const Color TEXT{ 1.0f, 1.0f, 1.0f, 0.9f };

@@ -384,4 +384,152 @@ TEST_CASE("[LevelBrush] collision and bake triangle counts match topology") {
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] clip by a missing plane is a no-op, a full clip empties") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	PackedVector3Array before = brush->get_vertices_data();
+
+	// Keep side is distance >= 0 (normal.dot(p) - d). A plane at x = -5 keeps
+	// the whole box (x >= -5): nothing crosses, brush untouched.
+	brush->clip(Plane(Vector3(1, 0, 0), -5.0));
+	CHECK(brush->get_face_count() == 6);
+	CHECK(brush->get_vertices_data() == before);
+
+	// A plane at x = 5 keeps only x >= 5: everything is clipped away.
+	brush->clip(Plane(Vector3(1, 0, 0), 5.0));
+	CHECK(brush->get_face_count() == 0);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] clip_split produces two closed halves with complementary caps") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Split at x=0.5: this brush keeps the +X side, the returned brush keeps
+	// the -X side.
+	LevelBrush *back = brush->clip_split(Plane(Vector3(1, 0, 0), 0.5));
+	REQUIRE(back != nullptr);
+
+	// Both halves have a cap face on the cut plane with opposing normals.
+	auto has_cap = [](LevelBrush *b, const Vector3 &p_normal) {
+		for (int f = 0; f < b->get_face_count(); f++) {
+			LocalVector<int> loop = b->get_face(f);
+			bool all_on_plane = loop.size() >= 3;
+			for (int idx : loop) {
+				if (Math::abs(b->get_vertex(idx).x - 0.5) > 0.001) {
+					all_on_plane = false;
+					break;
+				}
+			}
+			if (all_on_plane && b->get_face_normal(f).is_equal_approx(p_normal)) {
+				return true;
+			}
+		}
+		return false;
+	};
+	CHECK(has_cap(brush, Vector3(-1, 0, 0)));
+	CHECK(has_cap(back, Vector3(1, 0, 0)));
+
+	// Referenced verts of each half stay in their slab.
+	auto slab_ok = [](LevelBrush *b, bool p_upper) {
+		for (int f = 0; f < b->get_face_count(); f++) {
+			LocalVector<int> loop = b->get_face(f);
+			for (int idx : loop) {
+				real_t x = b->get_vertex(idx).x;
+				if (p_upper) {
+					if (x < 0.5 - 0.001) {
+						return false;
+					}
+				} else if (x > 0.5 + 0.001) {
+					return false;
+				}
+			}
+		}
+		return true;
+	};
+	CHECK(slab_ok(brush, true));
+	CHECK(slab_ok(back, false));
+
+	memdelete(back);
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] weld_vertices merges to the average and drops degenerate faces") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Weld the 4 top corners (y=1 verts).
+	Vector<int> top;
+	for (int i = 0; i < 8; i++) {
+		if (brush->get_vertex(i).y > 0.5) {
+			top.push_back(i);
+		}
+	}
+	REQUIRE(top.size() == 4);
+	brush->weld_vertices(top);
+
+	// Every remaining face still has >= 3 unique indices.
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		LocalVector<int> loop = brush->get_face(f);
+		HashSet<int> unique;
+		for (int idx : loop) {
+			unique.insert(idx);
+		}
+		CHECK(unique.size() >= 3);
+	}
+	// The welded survivor sits at the top-face center.
+	bool found_center = false;
+	for (int i = 0; i < brush->get_vertex_count(); i++) {
+		if (brush->get_vertex(i).is_equal_approx(Vector3(0.5, 1, 0.5))) {
+			found_center = true;
+		}
+	}
+	CHECK(found_center);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] extrude_face with negative distance keeps outward normals") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Pull the top face DOWN by 0.25 (cap at y=0.75, still above the center).
+	// Winding is flipped for negative distance so normals must stay outward.
+	brush->extrude_face(4, -0.25);
+
+	Vector3 center = brush->get_center();
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		Vector3 fc = brush->get_face_center(f);
+		Vector3 n = brush->get_face_normal(f);
+		Vector3 out = fc - center;
+		if (out.length_squared() < 0.0001) {
+			continue; // Face centered on the brush centroid: no outward direction.
+		}
+		CHECK(n.dot(out) > 0.0);
+	}
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] duplicate_brush copies topology, materials, and flipped flag") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 2, 3)));
+	Ref<Material> mat;
+	mat.instantiate();
+	brush->set_face_material(0, mat);
+	brush->set_faces_flipped(true);
+
+	LevelBrush *copy = brush->duplicate_brush();
+	REQUIRE(copy != nullptr);
+	CHECK(copy->get_vertices_data() == brush->get_vertices_data());
+	CHECK(copy->get_faces_data().size() == brush->get_faces_data().size());
+	CHECK(copy->get_face_material(0) == mat);
+	CHECK(copy->is_faces_flipped());
+
+	memdelete(copy);
+	memdelete(brush);
+}
+
 } // namespace TestLevelBrush

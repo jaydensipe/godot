@@ -75,7 +75,10 @@ scons platform=windows target=editor dev_build=yes accesskit=no d3d12=no angle=n
   setters and `NOTIFICATION_LOCAL_TRANSFORM_CHANGED` (covers all undo/redo
   paths - see GOTCHAS #22).
 - **Overlay colors centralized** in `editor/level_constants.h`
-  (`LevelEditorColors`) - the single source for every viewport overlay color.
+  (`LevelEditorColors` + `hot()` hover-lerp helper, `LevelEditorGrid` ladder/
+  3D-grid extents) - the single source for viewport overlay styling.
+- **Per-viewport display modes** (Normal/Wireframe/Overdraw/Lighting/Unshaded)
+  and 2D/3D grid toggles in the View menu, persisted per-project.
 
 ## User preferences / workflow notes
 

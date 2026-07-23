@@ -42,6 +42,18 @@ splits: ghost block, clip tool, gizmos (same treatment as tools/).
 - **Element selection is per-brush** (`HashMap<LevelBrush *, HashSet>`) -
   multi-brush gizmo drags work, but Bridge Edges requires both edges on the
   same brush (geometry constraint).
+- **Preview bake allocates collision+occluder** even for the editor preview
+  (wasted work) and material grouping is O(m²) - both known, deferred until a
+  benchmark proves it matters on real levels.
+- **Brush `verts` array never compacts** - clip/weld/collapse leave orphaned
+  entries, so long edit sessions bloat serialized brush data. Needs a
+  compaction pass (remap face indices) at some point.
+- **Clip cap is a possibly non-convex n-gon** fan-triangulated downstream;
+  non-convex cuts can produce overlapping tris (accepted, matches the
+  no-convexity-guarantee data model).
+- **Direct C++ geometry edits don't auto-refresh the preview** (only the
+  serialized setters do) - editor code always calls `_refresh_map()` after
+  ops; keep it that way or add notifies per-op later.
 
 ## Discussed but not built yet
 
@@ -64,6 +76,14 @@ splits: ghost block, clip tool, gizmos (same treatment as tools/).
 
 ## Recently completed (for context)
 
+- Audit cleanup: rotate-ring pick now uses the drawn ring's world radius
+  (was unpickable at most zooms), select-handle resize snapshots vertices
+  (degenerate drags no longer bake data loss), extrude undo includes
+  face_materials, bake no longer leaks on missing scene root.
+- Perspective 3D grid mesh (camera-following, layer-20, depth-tested) +
+  View-menu display modes & grid toggles persisted via project metadata.
+- New tests: clip no-op/full-clip, clip_split caps/slabs, weld_vertices,
+  negative extrude normals, duplicate_brush fidelity.
 - No-map gate: warning panel + Create LevelMap button; viewports hidden until
   a map exists (`edited_scene_changed` override, `_update_map_ui`).
 - Cross-brush element selection (per-brush sets, hover highlight, persistent

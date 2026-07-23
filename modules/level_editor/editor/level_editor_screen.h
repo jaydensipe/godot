@@ -279,6 +279,7 @@ private:
 	int select_handle_drag = GHOST_NONE;
 	LevelEditorViewport *select_drag_viewport = nullptr;
 	AABB select_drag_original_aabb; // Brush-local AABB at drag start.
+	PackedVector3Array select_drag_original_verts; // Brush vertices at drag start.
 
 	// Select-mode whole-brush drag (click selected brush, move like ghost).
 	bool select_moving = false;
@@ -296,6 +297,8 @@ private:
 
 	int _pick_rotate_ring(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
 	real_t _rotate_screen_angle(LevelEditorViewport *p_vp, const Vector2 &p_screen, int p_axis) const;
+	real_t _rotate_world_radius(LevelEditorViewport *p_vp, const Vector3 &p_origin, const Vector2 &p_center) const;
+	int _rotate_allowed_axis(LevelEditorViewport::ViewType p_type) const;
 	void _draw_rotate_gizmo(LevelEditorViewport *p_vp, Control *p_canvas);
 	void _rotate_end_drag();
 
@@ -363,6 +366,7 @@ private:
 
 	LevelMap *_get_or_create_map();
 	void _resolve_map();
+	LevelMap *_find_map_in_scene() const;
 
 	// Element-selection helpers (per-brush keyed sets).
 	void _clear_element_selection();
@@ -455,9 +459,6 @@ class LevelEditorPlugin : public EditorPlugin {
 	LevelEditorDock *dock = nullptr;
 
 	void _editor_selection_changed();
-
-protected:
-	void _notification(int p_what);
 
 public:
 	virtual String get_plugin_name() const override { return TTRC("Level"); }
