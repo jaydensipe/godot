@@ -694,6 +694,65 @@ int LevelBrush::extrude_face(int p_face, real_t p_distance) {
 	return p_face;
 }
 
+bool LevelBrush::subdivide_face(int p_face) {
+	ERR_FAIL_INDEX_V(p_face, (int)faces.size(), false);
+
+	LocalVector<int> src;
+	src = faces[p_face];
+	const uint32_t n = src.size();
+	if (n < 3) {
+		return false;
+	}
+
+	Ref<Material> mat;
+	if (p_face < (int)face_materials.size()) {
+		mat = face_materials[p_face];
+	}
+
+	// New vertex at the face's centroid (shared by both split styles).
+	Vector3 center;
+	for (uint32_t i = 0; i < n; i++) {
+		center += verts[src[i]];
+	}
+	center /= (real_t)n;
+	const int ci = (int)verts.size();
+	verts.push_back(center);
+
+	if (n == 4) {
+		// Hammer-style quad grid: edge midpoints + centroid, 4 quads keeping
+		// the source winding (corner, next midpoint, centroid, prev midpoint).
+		int mid[4];
+		for (uint32_t i = 0; i < 4; i++) {
+			uint32_t j = (i + 1) % 4;
+			mid[i] = (int)verts.size();
+			verts.push_back((verts[src[i]] + verts[src[j]]) * 0.5);
+		}
+
+		LocalVector<int> q0 = { src[0], mid[0], ci, mid[3] };
+		faces[p_face] = q0;
+		faces.push_back({ src[1], mid[1], ci, mid[0] });
+		faces.push_back({ src[2], mid[2], ci, mid[1] });
+		faces.push_back({ src[3], mid[3], ci, mid[2] });
+	} else {
+		// N-gon fallback: one triangle per edge, fanning from the centroid.
+		LocalVector<int> t0 = { src[0], src[1], ci };
+		faces[p_face] = t0;
+		for (uint32_t i = 1; i < n; i++) {
+			uint32_t j = (i + 1) % n;
+			faces.push_back({ src[i], src[j], ci });
+		}
+	}
+
+	_update_face_count_storage();
+	// All new faces inherit the source material.
+	for (uint32_t i = p_face; i < faces.size(); i++) {
+		face_materials[i] = mat;
+	}
+	_notify_map_changed();
+
+	return true;
+}
+
 void LevelBrush::get_bake_surface_data(int p_face, Vector<Vector3> &r_vertices, Vector<Vector3> &r_normals, Vector<Vector2> &r_uvs) const {
 	ERR_FAIL_INDEX(p_face, (int)faces.size());
 	const LocalVector<int> &loop = faces[p_face];
@@ -701,7 +760,10 @@ void LevelBrush::get_bake_surface_data(int p_face, Vector<Vector3> &r_vertices, 
 		return;
 	}
 
-	const Vector3 n = faces_flipped ? -get_face_normal(p_face) : get_face_normal(p_face);
+	// The stored loops are inward-facing under Godot's front-face convention,
+	// so the default (unflipped) bake reverses them to show a solid block;
+	// flipped bakes them as-is for an interior room shell.
+	const Vector3 n = faces_flipped ? get_face_normal(p_face) : -get_face_normal(p_face);
 
 	// Planar UV projection on the face's dominant axes.
 	Vector3 abs_n = n.abs();
@@ -723,12 +785,12 @@ void LevelBrush::get_bake_surface_data(int p_face, Vector<Vector3> &r_vertices, 
 		int tri[3];
 		if (faces_flipped) {
 			tri[0] = loop[0];
-			tri[1] = loop[i + 2];
-			tri[2] = loop[i + 1];
-		} else {
-			tri[0] = loop[0];
 			tri[1] = loop[i + 1];
 			tri[2] = loop[i + 2];
+		} else {
+			tri[0] = loop[0];
+			tri[1] = loop[i + 2];
+			tri[2] = loop[i + 1];
 		}
 		for (int t = 0; t < 3; t++) {
 			const Vector3 &p = verts[tri[t]];
@@ -745,12 +807,12 @@ void LevelBrush::get_collision_faces(Vector<Vector3> &r_faces) const {
 		for (uint32_t i = 0; i + 2 < loop.size(); i++) {
 			if (faces_flipped) {
 				r_faces.push_back(verts[loop[0]]);
-				r_faces.push_back(verts[loop[i + 2]]);
 				r_faces.push_back(verts[loop[i + 1]]);
+				r_faces.push_back(verts[loop[i + 2]]);
 			} else {
 				r_faces.push_back(verts[loop[0]]);
-				r_faces.push_back(verts[loop[i + 1]]);
 				r_faces.push_back(verts[loop[i + 2]]);
+				r_faces.push_back(verts[loop[i + 1]]);
 			}
 		}
 	}

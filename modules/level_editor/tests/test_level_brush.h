@@ -240,6 +240,17 @@ TEST_CASE("[LevelBrush] flip_faces inverts every normal") {
 	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
 
 	REQUIRE(!brush->is_faces_flipped());
+
+	// Default bake (faces_flipped = false) shows the solid block: face 4 is
+	// the top, so its baked normal points up.
+	Vector<Vector3> verts, normals;
+	Vector<Vector2> uvs;
+	brush->get_bake_surface_data(4, verts, normals, uvs);
+	REQUIRE(normals.size() == 6); // Quad = 2 triangles.
+	for (const Vector3 &n : normals) {
+		CHECK(n.is_equal_approx(Vector3(0, 1, 0)));
+	}
+
 	brush->flip_faces();
 	CHECK(brush->is_faces_flipped());
 
@@ -247,11 +258,11 @@ TEST_CASE("[LevelBrush] flip_faces inverts every normal") {
 	CHECK(brush->get_face_count() == 6);
 	CHECK(brush->get_face_normal(4).is_equal_approx(Vector3(0, 1, 0)));
 
-	// Bake data is inverted: normals flipped, winding reversed.
-	Vector<Vector3> verts, normals;
-	Vector<Vector2> uvs;
+	// Flipped bake inverts normals and winding (interior room shell).
+	verts.clear();
+	normals.clear();
+	uvs.clear();
 	brush->get_bake_surface_data(4, verts, normals, uvs);
-	REQUIRE(normals.size() == 6); // Quad = 2 triangles.
 	for (const Vector3 &n : normals) {
 		CHECK(n.is_equal_approx(Vector3(0, -1, 0)));
 	}

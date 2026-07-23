@@ -44,93 +44,118 @@ void LevelEditorScreen::_extrude_pressed() {
 		return;
 	}
 
-	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	undo_redo->create_action(TTR("Extrude Brush"));
-	bool did = false;
-
 	switch (mode) {
-		case MODE_FACE: {
-			if (selected_faces.is_empty()) {
-				break;
-			}
-			for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
-				LevelBrush *target = E.key;
-				PackedVector3Array old_verts = target->get_vertices_data();
-				Array old_faces = target->get_faces_data();
-				Array old_mats = target->get_face_materials_data();
-
-				LevelBrush *working = target->duplicate_brush();
-				// Extrude each selected face into new geometry (cap + side walls).
-				// Process from highest index down so later indices stay valid.
-				Vector<int> sorted;
-				for (int f : E.value) {
-					sorted.push_back(f);
-				}
-				sorted.sort();
-				for (int i = sorted.size() - 1; i >= 0; i--) {
-					working->extrude_face(sorted[i], extrude_amount);
-				}
-
-				undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
-				undo_redo->add_do_property(target, "faces", working->get_faces_data());
-				undo_redo->add_do_property(target, "face_materials", working->get_face_materials_data());
-				undo_redo->add_undo_property(target, "vertices", old_verts);
-				undo_redo->add_undo_property(target, "faces", old_faces);
-				undo_redo->add_undo_property(target, "face_materials", old_mats);
-				memdelete(working);
-				did = true;
-			}
-		} break;
-		case MODE_EDGE: {
-			if (selected_edges.is_empty()) {
-				break;
-			}
-			// Move the edges' vertices along Y (a directional "pull").
-			for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
-				LevelBrush *target = E.key;
-				PackedVector3Array old_verts = target->get_vertices_data();
-
-				LevelBrush *working = target->duplicate_brush();
-				Vector<int> verts;
-				for (const LevelBrush::EdgeKey &e : E.value) {
-					verts.push_back(e.a);
-					verts.push_back(e.b);
-				}
-				working->move_vertices(verts, Vector3(0, extrude_amount, 0));
-
-				undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
-				undo_redo->add_undo_property(target, "vertices", old_verts);
-				memdelete(working);
-				did = true;
-			}
-		} break;
-		case MODE_VERTEX: {
-			if (selected_vertices.is_empty()) {
-				break;
-			}
-			for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_vertices) {
-				LevelBrush *target = E.key;
-				PackedVector3Array old_verts = target->get_vertices_data();
-
-				LevelBrush *working = target->duplicate_brush();
-				Vector<int> verts;
-				for (int v : E.value) {
-					verts.push_back(v);
-				}
-				working->move_vertices(verts, Vector3(0, extrude_amount, 0));
-
-				undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
-				undo_redo->add_undo_property(target, "vertices", old_verts);
-				memdelete(working);
-				did = true;
-			}
-		} break;
+		case MODE_FACE:
+			_extrude_faces();
+			break;
+		case MODE_EDGE:
+			_extrude_edges();
+			break;
+		case MODE_VERTEX:
+			_extrude_vertices();
+			break;
 		default:
 			break;
 	}
+}
 
-	if (!did) {
+void LevelEditorScreen::_extrude_faces() {
+	if (!current_map || selected_faces.is_empty()) {
 		return;
+	}
+
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Extrude Brush"));
+
+	for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
+		LevelBrush *target = E.key;
+		PackedVector3Array old_verts = target->get_vertices_data();
+		Array old_faces = target->get_faces_data();
+		Array old_mats = target->get_face_materials_data();
+
+		LevelBrush *working = target->duplicate_brush();
+		// Extrude each selected face into new geometry (cap + side walls).
+		// Process from highest index down so later indices stay valid.
+		Vector<int> sorted;
+		for (int f : E.value) {
+			sorted.push_back(f);
+		}
+		sorted.sort();
+		for (int i = sorted.size() - 1; i >= 0; i--) {
+			working->extrude_face(sorted[i], extrude_amount);
+		}
+
+		undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
+		undo_redo->add_do_property(target, "faces", working->get_faces_data());
+		undo_redo->add_do_property(target, "face_materials", working->get_face_materials_data());
+		undo_redo->add_undo_property(target, "vertices", old_verts);
+		undo_redo->add_undo_property(target, "faces", old_faces);
+		undo_redo->add_undo_property(target, "face_materials", old_mats);
+		memdelete(working);
+	}
+
+	undo_redo->add_do_method(current_map, "refresh");
+	undo_redo->add_undo_method(current_map, "refresh");
+	undo_redo->commit_action();
+
+	_refresh_map();
+}
+
+void LevelEditorScreen::_extrude_edges() {
+	if (!current_map || selected_edges.is_empty()) {
+		return;
+	}
+
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Extrude Brush"));
+
+	// Move the edges' vertices along Y (a directional "pull").
+	for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
+		LevelBrush *target = E.key;
+		PackedVector3Array old_verts = target->get_vertices_data();
+
+		LevelBrush *working = target->duplicate_brush();
+		Vector<int> verts;
+		for (const LevelBrush::EdgeKey &e : E.value) {
+			verts.push_back(e.a);
+			verts.push_back(e.b);
+		}
+		working->move_vertices(verts, Vector3(0, extrude_amount, 0));
+
+		undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
+		undo_redo->add_undo_property(target, "vertices", old_verts);
+		memdelete(working);
+	}
+
+	undo_redo->add_do_method(current_map, "refresh");
+	undo_redo->add_undo_method(current_map, "refresh");
+	undo_redo->commit_action();
+
+	_refresh_map();
+}
+
+void LevelEditorScreen::_extrude_vertices() {
+	if (!current_map || selected_vertices.is_empty()) {
+		return;
+	}
+
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Extrude Brush"));
+
+	for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_vertices) {
+		LevelBrush *target = E.key;
+		PackedVector3Array old_verts = target->get_vertices_data();
+
+		LevelBrush *working = target->duplicate_brush();
+		Vector<int> verts;
+		for (int v : E.value) {
+			verts.push_back(v);
+		}
+		working->move_vertices(verts, Vector3(0, extrude_amount, 0));
+
+		undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
+		undo_redo->add_undo_property(target, "vertices", old_verts);
+		memdelete(working);
 	}
 
 	undo_redo->add_do_method(current_map, "refresh");
@@ -149,7 +174,7 @@ void LevelEditorScreen::_apply_material_pressed() {
 	undo_redo->create_action(TTR("Apply Brush Material"));
 	bool did = false;
 
-	if (mode == MODE_FACE && !selected_faces.is_empty()) {
+	if (!selected_faces.is_empty()) {
 		// Only the selected faces across brushes.
 		for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
 			LevelBrush *target = E.key;
@@ -180,7 +205,6 @@ void LevelEditorScreen::_apply_material_pressed() {
 }
 
 void LevelEditorScreen::_flip_faces_pressed() {
-	flip_faces_button->release_focus();
 	if (!current_map || !selected_brush) {
 		return;
 	}
@@ -202,6 +226,95 @@ void LevelEditorScreen::_flip_faces_pressed() {
 	undo_redo->commit_action(false);
 
 	_refresh_map();
+}
+
+void LevelEditorScreen::_vertex_menu_selected(int p_id) {
+	vertex_menu->release_focus();
+	switch (p_id) {
+		case 0: // Extrude
+			_extrude_vertices();
+			break;
+		case 1: // Collapse (merge at neighbors' average, same as Delete in vertex mode)
+			_collapse_vertices();
+			break;
+	}
+}
+
+void LevelEditorScreen::_edge_menu_selected(int p_id) {
+	edge_menu->release_focus();
+	switch (p_id) {
+		case 0: // Extrude
+			_extrude_edges();
+			break;
+		case 1: // Bridge
+			_join_edges();
+			break;
+		case 2: // Collapse
+			_collapse_edges();
+			break;
+	}
+}
+
+void LevelEditorScreen::_subdivide_faces() {
+	if (!current_map || selected_faces.is_empty()) {
+		return;
+	}
+
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Subdivide Faces"));
+	for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
+		LevelBrush *target = E.key;
+		PackedVector3Array old_verts = target->get_vertices_data();
+		Array old_faces = target->get_faces_data();
+		Array old_mats = target->get_face_materials_data();
+
+		// Subdivide on a copy (highest index first so earlier indices stay
+		// valid as faces are appended), then set the result as do-properties.
+		LevelBrush *working = target->duplicate_brush();
+		Vector<int> sorted;
+		for (int f : E.value) {
+			sorted.push_back(f);
+		}
+		sorted.sort();
+		for (int i = sorted.size() - 1; i >= 0; i--) {
+			working->subdivide_face(sorted[i]);
+		}
+
+		undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
+		undo_redo->add_do_property(target, "faces", working->get_faces_data());
+		undo_redo->add_do_property(target, "face_materials", working->get_face_materials_data());
+		undo_redo->add_undo_property(target, "vertices", old_verts);
+		undo_redo->add_undo_property(target, "faces", old_faces);
+		undo_redo->add_undo_property(target, "face_materials", old_mats);
+		memdelete(working);
+	}
+	undo_redo->add_do_method(current_map, "refresh");
+	undo_redo->add_undo_method(current_map, "refresh");
+	undo_redo->commit_action();
+
+	selected_faces.clear();
+	_refresh_map();
+}
+
+void LevelEditorScreen::_face_menu_selected(int p_id) {
+	face_menu->release_focus();
+	switch (p_id) {
+		case 0: // Extrude
+			_extrude_faces();
+			break;
+		case 1: // Apply Material
+			_apply_material_pressed();
+			break;
+		case 2: // Delete
+			_delete_faces();
+			break;
+		case 4: // Subdivide
+			_subdivide_faces();
+			break;
+		case 3: // Flip Faces (works on the selected brush, any mode)
+			_flip_faces_pressed();
+			break;
+	}
 }
 
 void LevelEditorScreen::_tools_menu_selected(int p_id) {
@@ -324,4 +437,91 @@ void LevelEditorScreen::_bake_pressed() {
 	undo_redo->commit_action();
 
 	EditorInterface::get_singleton()->edit_node(baked);
+}
+
+void LevelEditorScreen::_delete_faces() {
+	if (!current_map || selected_faces.is_empty()) {
+		return;
+	}
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Delete Faces"));
+	for (KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
+		LevelBrush *target = E.key;
+		PackedVector3Array old_verts = target->get_vertices_data();
+		Array old_faces = target->get_faces_data();
+		Array old_mats = target->get_face_materials_data();
+
+		Vector<int> faces;
+		for (int f : E.value) {
+			faces.push_back(f);
+		}
+		target->delete_faces(faces);
+		_add_brush_undo_pair(undo_redo, target, old_verts, old_faces, old_mats);
+	}
+	undo_redo->add_do_method(current_map, "refresh");
+	undo_redo->add_undo_method(current_map, "refresh");
+	undo_redo->commit_action(false);
+	selected_faces.clear();
+	_refresh_map();
+}
+
+void LevelEditorScreen::_collapse_edges() {
+	if (!current_map || selected_edges.is_empty()) {
+		return;
+	}
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Delete Edges"));
+	for (KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
+		LevelBrush *target = E.key;
+		PackedVector3Array old_verts = target->get_vertices_data();
+		Array old_faces = target->get_faces_data();
+		Array old_mats = target->get_face_materials_data();
+
+		// Collapse the edges' vertices (merges each edge to a point).
+		Vector<int> verts;
+		HashSet<int> seen;
+		for (const LevelBrush::EdgeKey &e : E.value) {
+			if (!seen.has(e.a)) {
+				verts.push_back(e.a);
+				seen.insert(e.a);
+			}
+			if (!seen.has(e.b)) {
+				verts.push_back(e.b);
+				seen.insert(e.b);
+			}
+		}
+		target->collapse_vertices(verts);
+		_add_brush_undo_pair(undo_redo, target, old_verts, old_faces, old_mats);
+	}
+	undo_redo->add_do_method(current_map, "refresh");
+	undo_redo->add_undo_method(current_map, "refresh");
+	undo_redo->commit_action(false);
+	selected_edges.clear();
+	_refresh_map();
+}
+
+void LevelEditorScreen::_collapse_vertices() {
+	if (!current_map || selected_vertices.is_empty()) {
+		return;
+	}
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Delete Vertices"));
+	for (KeyValue<LevelBrush *, HashSet<int>> &E : selected_vertices) {
+		LevelBrush *target = E.key;
+		PackedVector3Array old_verts = target->get_vertices_data();
+		Array old_faces = target->get_faces_data();
+		Array old_mats = target->get_face_materials_data();
+
+		Vector<int> verts;
+		for (int v : E.value) {
+			verts.push_back(v);
+		}
+		target->collapse_vertices(verts);
+		_add_brush_undo_pair(undo_redo, target, old_verts, old_faces, old_mats);
+	}
+	undo_redo->add_do_method(current_map, "refresh");
+	undo_redo->add_undo_method(current_map, "refresh");
+	undo_redo->commit_action(false);
+	selected_vertices.clear();
+	_refresh_map();
 }

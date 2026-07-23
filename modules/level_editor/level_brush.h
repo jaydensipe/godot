@@ -125,6 +125,11 @@ public:
 	// normal, and stitches side quads. Returns the new cap face index (or -1).
 	int extrude_face(int p_face, real_t p_distance);
 
+	// Subdivide a face: quads split into 4 quads via edge midpoints + centroid
+	// (Hammer-style); n-gons fall back to a triangle fan from the centroid.
+	// New faces inherit the face's material. Returns true on success.
+	bool subdivide_face(int p_face);
+
 	// Clip the brush with a plane (local space). Keeps the side the plane
 	// normal points to. Adds a cap face on the cut unless p_add_cap is false
 	// (used when splitting, where the two halves share the seam).

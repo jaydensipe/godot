@@ -60,7 +60,6 @@ using LevelEditorColors::GIZMO_PLANE_EXTENT;
 #include "scene/gui/panel_container.h"
 #include "scene/gui/popup_menu.h"
 #include "scene/gui/separator.h"
-#include "scene/gui/spin_box.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/material.h"
 
@@ -693,76 +692,19 @@ LevelEditorScreen::LevelEditorScreen() {
 	mode_buttons[MODE_CLIP]->set_tooltip_text(TTRC("Clip"));
 	mode_buttons[MODE_VERTEX]->set_tooltip_text(TTRC("Vertex"));
 	mode_buttons[MODE_EDGE]->set_tooltip_text(TTRC("Edge"));
-	mode_buttons[MODE_FACE]->set_tooltip_text(TTRC("Face"));
+	mode_buttons[MODE_FACE]->set_tooltip_text(TTRC("Shift: Hold while dragging to extrude."));
 
 	// Set shortcuts for buttons
 	mode_buttons[MODE_SELECT]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_transform", TTRC("Select / Move Mode"), Key::Q, true));
 	mode_buttons[MODE_ROTATE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_rotate", TTRC("Rotate Mode"), Key::E, true));
 	mode_buttons[MODE_SCALE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_scale", TTRC("Scale Mode"), Key::R, true));
 
-	toolbar->add_child(memnew(VSeparator));
+	mode_buttons[MODE_BLOCK]->set_shortcut(ED_SHORTCUT("level_editor/tool_block", TTRC("Block Mode"), Key::B, true));
+	mode_buttons[MODE_CLIP]->set_shortcut(ED_SHORTCUT("level_editor/tool_clip", TTRC("Clip Mode"), Key::C, true));
 
-	Label *grid_label = memnew(Label);
-	grid_label->set_text(TTRC("Grid:"));
-	toolbar->add_child(grid_label);
-
-	grid_size_option = memnew(OptionButton);
-	grid_size_option->set_clip_text(true);
-	grid_size_option->set_custom_minimum_size(Size2(115, 0));
-	for (int i = 0; i < LevelEditorGrid::STEP_COUNT; i++) {
-		// Plain decimals: integers without a trailing .0, fractions as-is.
-		real_t step = LevelEditorGrid::STEPS[i];
-		String label = (step >= 1.0) ? String::num_int64((int64_t)step) : String::num(step);
-		grid_size_option->add_item(label);
-	}
-	grid_size_option->set_fit_to_longest_item(false);
-	grid_size_option->select(_grid_step_index());
-	grid_size_option->get_popup()->connect("index_pressed", callable_mp(this, &LevelEditorScreen::_grid_size_selected));
-	toolbar->add_child(grid_size_option);
-
-	toolbar->add_child(memnew(VSeparator));
-
-	Label *ext_label = memnew(Label);
-	ext_label->set_text(TTRC("Extrude:"));
-	toolbar->add_child(ext_label);
-
-	extrude_spin = memnew(SpinBox);
-	extrude_spin->set_min(-1000);
-	extrude_spin->set_max(1000);
-	extrude_spin->set_step(0.25);
-	extrude_spin->set_value(1.0);
-	extrude_spin->set_custom_minimum_size(Size2(80, 0));
-	extrude_spin->connect("value_changed", callable_mp(this, &LevelEditorScreen::_extrude_amount_changed));
-	toolbar->add_child(extrude_spin);
-
-	extrude_button = memnew(Button);
-	extrude_button->set_text(TTRC("Extrude"));
-	extrude_button->connect("pressed", callable_mp(this, &LevelEditorScreen::_extrude_pressed));
-	toolbar->add_child(extrude_button);
-
-	toolbar->add_child(memnew(VSeparator));
-
-	flip_faces_button = memnew(Button);
-	flip_faces_button->set_text(TTRC("Flip Faces"));
-	flip_faces_button->set_tooltip_text(TTRC("Invert the selected brush's face normals - turns a solid block into an interior room shell."));
-	flip_faces_button->connect("pressed", callable_mp(this, &LevelEditorScreen::_flip_faces_pressed));
-	toolbar->add_child(flip_faces_button);
-
-	bake_button = memnew(Button);
-	bake_button->set_text(TTRC("Bake Level"));
-	bake_button->set_tooltip_text(TTRC("Bake brushes to a MeshInstance3D with trimesh collision and an occluder."));
-	bake_button->connect("pressed", callable_mp(this, &LevelEditorScreen::_bake_pressed));
-	toolbar->add_child(bake_button);
-
-	toolbar->add_child(memnew(VSeparator));
-
-	tools_menu = memnew(MenuButton);
-	tools_menu->set_text(TTRC("Tools"));
-	tools_menu->set_flat(false);
-	PopupMenu *tools_popup = tools_menu->get_popup();
-	tools_popup->add_item(TTRC("Bridge Edge"), 0);
-	tools_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_tools_menu_selected));
-	toolbar->add_child(tools_menu);
+	mode_buttons[MODE_VERTEX]->set_shortcut(ED_SHORTCUT("level_editor/tool_vertex", TTRC("Vertex Mode"), Key::KEY_1, true));
+	mode_buttons[MODE_EDGE]->set_shortcut(ED_SHORTCUT("level_editor/tool_edge", TTRC("Edge Mode"), Key::KEY_2, true));
+	mode_buttons[MODE_FACE]->set_shortcut(ED_SHORTCUT("level_editor/tool_face", TTRC("Face Mode"), Key::KEY_3, true));
 
 	toolbar->add_child(memnew(VSeparator));
 
@@ -771,6 +713,7 @@ LevelEditorScreen::LevelEditorScreen() {
 	view_menu = memnew(MenuButton);
 	view_menu->set_text(TTRC("View"));
 	view_menu->set_flat(false);
+	view_menu->set_theme_type_variation("FlatMenuButton");
 	PopupMenu *view_popup = view_menu->get_popup();
 	static const char *vp_names[4] = { "Perspective", "Top", "Front", "Side" };
 	static const char *mode_names[LevelEditorViewport::DISPLAY_MAX] = { "Normal", "Wireframe", "Overdraw", "Lighting", "Unshaded" };
@@ -796,6 +739,83 @@ LevelEditorScreen::LevelEditorScreen() {
 	view_popup->set_item_checked(view_popup->get_item_index(4 * LevelEditorViewport::DISPLAY_MAX + 1), grid_3d_enabled);
 	view_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_view_grid_toggled));
 	toolbar->add_child(view_menu);
+
+	tools_menu = memnew(MenuButton);
+	tools_menu->set_text(TTRC("Tools"));
+	tools_menu->set_flat(false);
+	tools_menu->set_theme_type_variation("FlatMenuButton");
+	PopupMenu *tools_popup = tools_menu->get_popup();
+	tools_popup->add_item(TTRC("Bridge Edge"), 0);
+	tools_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_tools_menu_selected));
+	toolbar->add_child(tools_menu);
+
+	toolbar->add_child(memnew(VSeparator));
+
+	vertex_menu = memnew(MenuButton);
+	vertex_menu->set_text(TTRC("Vertex"));
+	vertex_menu->set_flat(false);
+	vertex_menu->set_theme_type_variation("FlatMenuButton");
+	PopupMenu *vertex_popup = vertex_menu->get_popup();
+	vertex_popup->add_item(TTRC("Extrude"), 0);
+	vertex_popup->add_item(TTRC("Collapse"), 1);
+	vertex_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_vertex_menu_selected));
+	toolbar->add_child(vertex_menu);
+
+	edge_menu = memnew(MenuButton);
+	edge_menu->set_text(TTRC("Edge"));
+	edge_menu->set_flat(false);
+	edge_menu->set_theme_type_variation("FlatMenuButton");
+	PopupMenu *edge_popup = edge_menu->get_popup();
+	edge_popup->add_item(TTRC("Extrude"), 0);
+	edge_popup->add_item(TTRC("Bridge"), 1);
+	edge_popup->add_item(TTRC("Collapse"), 2);
+	edge_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_edge_menu_selected));
+	toolbar->add_child(edge_menu);
+
+	face_menu = memnew(MenuButton);
+	face_menu->set_text(TTRC("Face"));
+	face_menu->set_flat(false);
+	face_menu->set_theme_type_variation("FlatMenuButton");
+	PopupMenu *face_popup = face_menu->get_popup();
+	face_popup->add_item(TTRC("Extrude"), 0);
+	face_popup->add_item(TTRC("Apply Material"), 1);
+	face_popup->add_item(TTRC("Delete"), 2);
+	face_popup->add_item(TTRC("Subdivide"), 4);
+	face_popup->add_separator();
+	face_popup->add_item(TTRC("Flip Faces"), 3);
+	face_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_face_menu_selected));
+	toolbar->add_child(face_menu);
+
+	Control *toolbar_spring = memnew(Control);
+	toolbar_spring->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	toolbar_spring->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	toolbar->add_child(toolbar_spring);
+
+	Label *grid_label = memnew(Label);
+	grid_label->set_text(TTRC("Grid:"));
+	toolbar->add_child(grid_label);
+
+	grid_size_option = memnew(OptionButton);
+	grid_size_option->set_clip_text(true);
+	grid_size_option->set_custom_minimum_size(Size2(115, 0));
+	for (int i = 0; i < LevelEditorGrid::STEP_COUNT; i++) {
+		// Plain decimals: integers without a trailing .0, fractions as-is.
+		real_t step = LevelEditorGrid::STEPS[i];
+		String label = (step >= 1.0) ? String::num_int64((int64_t)step) : String::num(step);
+		grid_size_option->add_item(label);
+	}
+	grid_size_option->set_fit_to_longest_item(false);
+	grid_size_option->select(_grid_step_index());
+	grid_size_option->get_popup()->connect("index_pressed", callable_mp(this, &LevelEditorScreen::_grid_size_selected));
+	toolbar->add_child(grid_size_option);
+
+	toolbar->add_child(memnew(VSeparator));
+
+	bake_button = memnew(Button);
+	bake_button->set_text(TTRC("Bake Level"));
+	bake_button->set_tooltip_text(TTRC("Bake brushes to a MeshInstance3D with trimesh collision and an occluder."));
+	bake_button->connect("pressed", callable_mp(this, &LevelEditorScreen::_bake_pressed));
+	toolbar->add_child(bake_button);
 
 	// Quad viewports: main vertical split with two horizontal splits inside,
 	// all with nested dragger intersections enabled - grabbing the center
@@ -1164,7 +1184,7 @@ real_t LevelEditorScreen::_snap(real_t p_v) const {
 // snapshot, into an already-created undo action. Shared by _commit_brush_undo
 // (single brush) and the multi-brush delete/tool paths (one action spanning
 // several brushes).
-static void _add_brush_undo_pair(EditorUndoRedoManager *p_undo_redo, LevelBrush *p_brush, const PackedVector3Array &p_old_verts, const Array &p_old_faces, const Array &p_old_mats) {
+void LevelEditorScreen::_add_brush_undo_pair(EditorUndoRedoManager *p_undo_redo, LevelBrush *p_brush, const PackedVector3Array &p_old_verts, const Array &p_old_faces, const Array &p_old_mats) {
 	p_undo_redo->add_do_property(p_brush, "vertices", p_brush->get_vertices_data());
 	p_undo_redo->add_do_property(p_brush, "faces", p_brush->get_faces_data());
 	p_undo_redo->add_do_property(p_brush, "face_materials", p_brush->get_face_materials_data());
@@ -1198,90 +1218,15 @@ void LevelEditorScreen::_delete_selection() {
 			undo_redo->commit_action();
 			_refresh_map();
 		} break;
-		case MODE_FACE: {
-			if (selected_faces.is_empty()) {
-				return;
-			}
-			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-			undo_redo->create_action(TTR("Delete Faces"));
-			for (KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
-				LevelBrush *target = E.key;
-				PackedVector3Array old_verts = target->get_vertices_data();
-				Array old_faces = target->get_faces_data();
-				Array old_mats = target->get_face_materials_data();
-
-				Vector<int> faces;
-				for (int f : E.value) {
-					faces.push_back(f);
-				}
-				target->delete_faces(faces);
-				_add_brush_undo_pair(undo_redo, target, old_verts, old_faces, old_mats);
-			}
-			undo_redo->add_do_method(current_map, "refresh");
-			undo_redo->add_undo_method(current_map, "refresh");
-			undo_redo->commit_action(false);
-			selected_faces.clear();
-			_refresh_map();
-		} break;
-		case MODE_EDGE: {
-			if (selected_edges.is_empty()) {
-				return;
-			}
-			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-			undo_redo->create_action(TTR("Delete Edges"));
-			for (KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
-				LevelBrush *target = E.key;
-				PackedVector3Array old_verts = target->get_vertices_data();
-				Array old_faces = target->get_faces_data();
-				Array old_mats = target->get_face_materials_data();
-
-				// Collapse the edges' vertices (merges each edge to a point).
-				Vector<int> verts;
-				HashSet<int> seen;
-				for (const LevelBrush::EdgeKey &e : E.value) {
-					if (!seen.has(e.a)) {
-						verts.push_back(e.a);
-						seen.insert(e.a);
-					}
-					if (!seen.has(e.b)) {
-						verts.push_back(e.b);
-						seen.insert(e.b);
-					}
-				}
-				target->collapse_vertices(verts);
-				_add_brush_undo_pair(undo_redo, target, old_verts, old_faces, old_mats);
-			}
-			undo_redo->add_do_method(current_map, "refresh");
-			undo_redo->add_undo_method(current_map, "refresh");
-			undo_redo->commit_action(false);
-			selected_edges.clear();
-			_refresh_map();
-		} break;
-		case MODE_VERTEX: {
-			if (selected_vertices.is_empty()) {
-				return;
-			}
-			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-			undo_redo->create_action(TTR("Delete Vertices"));
-			for (KeyValue<LevelBrush *, HashSet<int>> &E : selected_vertices) {
-				LevelBrush *target = E.key;
-				PackedVector3Array old_verts = target->get_vertices_data();
-				Array old_faces = target->get_faces_data();
-				Array old_mats = target->get_face_materials_data();
-
-				Vector<int> verts;
-				for (int v : E.value) {
-					verts.push_back(v);
-				}
-				target->collapse_vertices(verts);
-				_add_brush_undo_pair(undo_redo, target, old_verts, old_faces, old_mats);
-			}
-			undo_redo->add_do_method(current_map, "refresh");
-			undo_redo->add_undo_method(current_map, "refresh");
-			undo_redo->commit_action(false);
-			selected_vertices.clear();
-			_refresh_map();
-		} break;
+		case MODE_FACE:
+			_delete_faces();
+			break;
+		case MODE_EDGE:
+			_collapse_edges();
+			break;
+		case MODE_VERTEX:
+			_collapse_vertices();
+			break;
 		default:
 			break;
 	}
@@ -1619,6 +1564,7 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 				if (part != GIZMO_NONE) {
 					gizmo_drag_uniform_scale = false;
 					gizmo_drag_part = (GizmoPart)part;
+					gizmo_extrude_drag = (mode == MODE_FACE && mb->is_shift_pressed());
 					_gizmo_begin_drag(vp, mb->get_position());
 					return; // Consumed by gizmo.
 				} else if (mode == MODE_SCALE) {
@@ -2074,6 +2020,35 @@ bool LevelEditorScreen::_ghost_ray_to_edit_plane(LevelEditorViewport *p_vp, cons
 	return p_vp->ray_to_view_plane(p_screen, ghost_aabb.get_center(), r_hit);
 }
 
+// Intersect the mouse ray with a plane that contains p_point and the given
+// axis, oriented as perpendicular to the camera as possible. This is what
+// allows face/corner handles to move along the view plane's fixed axis (e.g.
+// up/down in the top view), which the view-plane intersection cannot do.
+bool LevelEditorScreen::_ray_to_axis_plane(LevelEditorViewport *p_vp, const Vector2 &p_screen, const Vector3 &p_point, int p_axis, Vector3 &r_hit) const {
+	Vector3 ro, rd;
+	p_vp->get_ray(p_screen, ro, rd);
+
+	Vector3 axis;
+	axis[p_axis] = 1.0;
+
+	// Plane normal: perpendicular to the axis, chosen so the plane faces the
+	// camera as directly as possible (most stable picking).
+	Vector3 cam_pos = p_vp->get_camera()->get_global_position();
+	Vector3 to_cam = cam_pos - p_point;
+	Vector3 n = axis.cross(axis.cross(to_cam));
+	if (n.length_squared() < CMP_EPSILON) {
+		// Camera looks straight down the axis - pick any perpendicular normal.
+		n = axis.cross(Vector3(1, 0, 0));
+		if (n.length_squared() < CMP_EPSILON) {
+			n = axis.cross(Vector3(0, 1, 0));
+		}
+	}
+	n.normalize();
+
+	Plane pl(n, n.dot(p_point));
+	return pl.intersects_ray(ro, rd, &r_hit);
+}
+
 void LevelEditorScreen::_ghost_handle_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse) {
 	// Drag the handle along its axis (face) or freely (corner), snapped.
 	Vector3 c = ghost_aabb.get_center();
@@ -2087,36 +2062,31 @@ void LevelEditorScreen::_ghost_handle_drag_to(LevelEditorViewport *p_vp, const V
 		aabb_corners(ghost_aabb, corners);
 		const Vector3 &corner = corners[ci];
 
-		Vector3 hit;
-		if (!p_vp->ray_to_view_plane(p_mouse, corner, hit)) {
-			return;
-		}
-		hit = _snap(hit);
-		if (ci & 1) {
-			maxs.x = MAX(hit.x, mins.x + CMP_EPSILON);
-		} else {
-			mins.x = MIN(hit.x, maxs.x - CMP_EPSILON);
-		}
-		if (ci & 2) {
-			maxs.y = MAX(hit.y, mins.y + CMP_EPSILON);
-		} else {
-			mins.y = MIN(hit.y, maxs.y - CMP_EPSILON);
-		}
-		if (ci & 4) {
-			maxs.z = MAX(hit.z, mins.z + CMP_EPSILON);
-		} else {
-			mins.z = MIN(hit.z, maxs.z - CMP_EPSILON);
+		// Drag each of the corner's three axes on its own camera-facing plane,
+		// so vertical movement works in the top view (and vice versa). Each
+		// component uses the last mouse hit on that axis' plane.
+		for (int axis = 0; axis < 3; axis++) {
+			Vector3 hit;
+			if (!_ray_to_axis_plane(p_vp, p_mouse, corner, axis, hit)) {
+				continue;
+			}
+			real_t v = _snap(hit[axis]);
+			if (ci & (1 << axis)) {
+				maxs[axis] = MAX(v, mins[axis] + CMP_EPSILON);
+			} else {
+				mins[axis] = MIN(v, maxs[axis] - CMP_EPSILON);
+			}
 		}
 	} else {
-		// Face handle: slide that face along its own axis. Intersect the
-		// mouse ray with the viewport's edit plane (ortho rays are parallel,
-		// so a face-aligned plane would never be hit), then take only the
-		// handle axis component.
+		// Face handle: slide that face along its own axis. Intersect the mouse
+		// ray with a camera-facing plane that contains the axis - the view plane
+		// is parallel to the face axis in two of the three views (e.g. the top
+		// view's XZ plane can never move a top/bottom face up or down).
 		int axis = (h - GHOST_FACE_XN) / 2; // 0=x, 1=y, 2=z
 		bool is_max = ((h - GHOST_FACE_XN) % 2) == 1;
 
 		Vector3 hit;
-		if (!p_vp->ray_to_view_plane(p_mouse, c, hit)) {
+		if (!_ray_to_axis_plane(p_vp, p_mouse, c, axis, hit)) {
 			return;
 		}
 		real_t v = _snap(hit[axis]);
@@ -2532,40 +2502,39 @@ void LevelEditorScreen::_select_handle_drag_to(LevelEditorViewport *p_vp, const 
 
 	int h = select_handle_drag;
 
-	// Intersect with the viewport edit plane in world space, then convert to
-	// brush-local.
-	Vector3 hit;
-	Vector3 wc = gt.xform(bb.get_center());
-	if (!p_vp->ray_to_view_plane(p_mouse, wc, hit)) {
-		return;
-	}
-
-	Vector3 local_hit = _snap(inv.xform(hit));
-
+	// Intersect with a camera-facing plane that contains the dragged axis in
+	// world space (the view plane is parallel to the Y axis in top view, so it
+	// can never move handles up/down), then convert to brush-local.
 	if (h >= GHOST_CORNER_0) {
 		int ci = h - GHOST_CORNER_0;
-		if (ci & 1) {
-			maxs.x = MAX(local_hit.x, mins.x + grid_size);
-		} else {
-			mins.x = MIN(local_hit.x, maxs.x - grid_size);
-		}
-		if (ci & 2) {
-			maxs.y = MAX(local_hit.y, mins.y + grid_size);
-		} else {
-			mins.y = MIN(local_hit.y, maxs.y - grid_size);
-		}
-		if (ci & 4) {
-			maxs.z = MAX(local_hit.z, mins.z + grid_size);
-		} else {
-			mins.z = MIN(local_hit.z, maxs.z - grid_size);
+		Vector3 corners[8];
+		aabb_corners(bb, corners);
+		Vector3 wc = gt.xform(corners[ci]);
+		for (int axis = 0; axis < 3; axis++) {
+			Vector3 hit;
+			if (!_ray_to_axis_plane(p_vp, p_mouse, wc, axis, hit)) {
+				continue;
+			}
+			real_t v = _snap(inv.xform(hit)[axis]);
+			if (ci & (1 << axis)) {
+				maxs[axis] = MAX(v, mins[axis] + grid_size);
+			} else {
+				mins[axis] = MIN(v, maxs[axis] - grid_size);
+			}
 		}
 	} else {
 		int axis = (h - GHOST_FACE_XN) / 2;
 		bool is_max = ((h - GHOST_FACE_XN) % 2) == 1;
+		Vector3 hit;
+		Vector3 wc = gt.xform(bb.get_center());
+		if (!_ray_to_axis_plane(p_vp, p_mouse, wc, axis, hit)) {
+			return;
+		}
+		real_t v = _snap(inv.xform(hit)[axis]);
 		if (is_max) {
-			maxs[axis] = MAX(local_hit[axis], mins[axis] + grid_size);
+			maxs[axis] = MAX(v, mins[axis] + grid_size);
 		} else {
-			mins[axis] = MIN(local_hit[axis], maxs[axis] - grid_size);
+			mins[axis] = MIN(v, maxs[axis] - grid_size);
 		}
 	}
 
@@ -2965,6 +2934,45 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 		}
 	}
 
+	// Shift+drag in Face mode: extrude the selected faces once, then the drag
+	// moves the new cap faces along their normals (Hammer-style pull).
+	gizmo_extrude_cap_faces.clear();
+	gizmo_extrude_normals.clear();
+	gizmo_extrude_orig_verts.clear();
+	gizmo_extrude_orig_faces.clear();
+	gizmo_extrude_orig_mats.clear();
+	gizmo_extrude_moved_verts.clear();
+	if (gizmo_extrude_drag) {
+		for (KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
+			LevelBrush *b = E.key;
+			gizmo_extrude_orig_verts[b] = b->get_vertices_data();
+			gizmo_extrude_orig_faces[b] = b->get_faces_data();
+			gizmo_extrude_orig_mats[b] = b->get_face_materials_data();
+
+			// Highest index first so earlier indices stay valid as faces append.
+			Vector<int> sorted;
+			for (int f : E.value) {
+				sorted.push_back(f);
+			}
+			sorted.sort();
+			Vector<int> caps;
+			for (int i = sorted.size() - 1; i >= 0; i--) {
+				gizmo_extrude_normals.push_back(b->get_face_normal(sorted[i]));
+				b->extrude_face(sorted[i], 0.001); // Minimal stub; the drag sets the real distance.
+				caps.push_back(sorted[i]); // extrude_face replaces src with the cap in place.
+			}
+			gizmo_extrude_cap_faces[b] = caps;
+			gizmo_extrude_moved_verts[b] = b->get_vertices_data();
+
+			// Update the selection to the caps so overlays track the extrusion.
+			E.value.clear();
+			for (int c : caps) {
+				E.value.insert(c);
+			}
+		}
+		_refresh_map();
+	}
+
 	// Build the constraint plane: passes through the gizmo origin, faces the camera.
 	Camera3D *cam = p_vp->get_camera();
 	Vector3 cam_pos = cam->get_global_position();
@@ -3355,6 +3363,31 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 		return;
 	}
 
+	if (gizmo_extrude_drag) {
+		// Extrude drag: reset to the post-extrude topology, then offset each
+		// cap face along its own normal by the delta's signed distance onto it.
+		int order = 0;
+		for (KeyValue<LevelBrush *, Vector<int>> &E : gizmo_extrude_cap_faces) {
+			LevelBrush *brush = E.key;
+			brush->set_vertices_data(gizmo_extrude_moved_verts[brush]);
+
+			Transform3D inv = brush->get_global_transform().affine_inverse();
+			Vector3 local_delta = inv.basis.xform(p_world_delta);
+
+			for (int cap : E.value) {
+				const Vector3 &n = gizmo_extrude_normals[order++];
+				Vector<int> loop_verts;
+				LocalVector<int> loop = brush->get_face(cap);
+				for (int idx : loop) {
+					loop_verts.push_back(idx);
+				}
+				brush->move_vertices(loop_verts, n * local_delta.dot(n));
+			}
+		}
+		_refresh_map();
+		return;
+	}
+
 	// Restore original vertices, then apply the new delta -> absolute drags.
 	// Multi-brush: each selected brush's own vertex subset moves.
 	for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
@@ -3395,6 +3428,32 @@ void LevelEditorScreen::_gizmo_end_drag() {
 			undo_redo->add_undo_property(target, "position", old_pos);
 			undo_redo->commit_action(false);
 		}
+		return;
+	}
+
+	if (gizmo_extrude_drag) {
+		gizmo_extrude_drag = false;
+		// Commit the extrusion (topology change at drag start + cap pull) as a
+		// single undo action, recorded against the pre-extrude snapshots.
+		EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+		undo_redo->create_action(TTR("Extrude Faces"));
+		bool any = false;
+		for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_extrude_orig_verts) {
+			any = true;
+			_add_brush_undo_pair(undo_redo, E.key, E.value, gizmo_extrude_orig_faces[E.key], gizmo_extrude_orig_mats[E.key]);
+		}
+		if (any) {
+			undo_redo->add_do_method(current_map, "refresh");
+			undo_redo->add_undo_method(current_map, "refresh");
+			undo_redo->commit_action(false);
+		}
+		gizmo_extrude_orig_verts.clear();
+		gizmo_extrude_orig_faces.clear();
+		gizmo_extrude_orig_mats.clear();
+		gizmo_extrude_cap_faces.clear();
+		gizmo_extrude_normals.clear();
+		gizmo_extrude_moved_verts.clear();
+		gizmo_drag_brush_verts.clear();
 		return;
 	}
 

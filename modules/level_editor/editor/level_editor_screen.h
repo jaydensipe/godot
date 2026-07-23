@@ -191,9 +191,11 @@ private:
 	OptionButton *grid_size_option = nullptr;
 	SpinBox *extrude_spin = nullptr;
 	Button *extrude_button = nullptr;
-	Button *flip_faces_button = nullptr;
 	Button *bake_button = nullptr;
 	MenuButton *tools_menu = nullptr;
+	MenuButton *vertex_menu = nullptr;
+	MenuButton *edge_menu = nullptr;
+	MenuButton *face_menu = nullptr;
 	MenuButton *view_menu = nullptr;
 	PopupMenu *view_submenus[4] = {};
 
@@ -242,6 +244,7 @@ private:
 
 	int _pick_box_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen, const AABB &p_aabb, const Transform3D &p_xform) const;
 	int _pick_ghost_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
+	bool _ray_to_axis_plane(LevelEditorViewport *p_vp, const Vector2 &p_screen, const Vector3 &p_point, int p_axis, Vector3 &r_hit) const;
 	void _ghost_handle_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _ghost_commit();
 	void _ghost_cancel();
@@ -351,6 +354,15 @@ private:
 	PackedVector3Array gizmo_drag_original_verts; // Brush vertices at drag start.
 	Vector3 gizmo_drag_original_position; // Brush node position at drag start (Select mode).
 	bool gizmo_drag_uniform_scale = false; // Scale drag started off-gizmo (mouse-X uniform).
+	bool gizmo_extrude_drag = false; // Shift+drag in Face mode: extrude instead of move.
+	// Face-mode extrude-drag snapshots (indices shift after extruding, so the
+	// generic vertex snapshot can't restore them).
+	HashMap<LevelBrush *, PackedVector3Array> gizmo_extrude_orig_verts;
+	HashMap<LevelBrush *, Array> gizmo_extrude_orig_faces;
+	HashMap<LevelBrush *, Array> gizmo_extrude_orig_mats;
+	HashMap<LevelBrush *, Vector<int>> gizmo_extrude_cap_faces; // Cap face per brush, in extrude order.
+	Vector<Vector3> gizmo_extrude_normals; // Brush-local cap normals, same order.
+	HashMap<LevelBrush *, PackedVector3Array> gizmo_extrude_moved_verts; // Post-extrude topology at drag start.
 
 	Vector3 _get_gizmo_origin() const; // World-space pivot of current selection.
 	bool _has_selection() const;
@@ -396,10 +408,17 @@ private:
 	void _edit_brush_node(LevelBrush *p_brush);
 
 	void _extrude_pressed();
+	void _extrude_faces();
+	void _extrude_edges();
+	void _extrude_vertices();
 	void _apply_material_pressed();
 	void _flip_faces_pressed();
+	void _subdivide_faces();
 	void _bake_pressed();
 	void _tools_menu_selected(int p_id);
+	void _vertex_menu_selected(int p_id);
+	void _edge_menu_selected(int p_id);
+	void _face_menu_selected(int p_id);
 	void _view_display_selected(int p_id);
 	void _view_grid_toggled(int p_id);
 	void _join_edges();
@@ -419,10 +438,17 @@ private:
 	void _update_hover(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _clear_selection();
 	void _delete_selection();
+	void _delete_faces();
+	void _collapse_edges();
+	void _collapse_vertices();
 
 	// Undo helper: records the brush's current vertices/faces/materials as the
 	// "do" state against previously-snapshotted data, in one action.
 	void _commit_brush_undo(const String &p_action, LevelBrush *p_brush, const PackedVector3Array &p_old_verts, const Array &p_old_faces, const Array &p_old_mats, bool p_execute = false);
+	// Records one brush's current topology as the do-state against the given
+	// snapshot, into an already-created undo action. Shared by tool actions
+	// that span multiple brushes in one undo action.
+	void _add_brush_undo_pair(EditorUndoRedoManager *p_undo_redo, LevelBrush *p_brush, const PackedVector3Array &p_old_verts, const Array &p_old_faces, const Array &p_old_mats);
 	void _update_overlays();
 	void _refresh_map();
 	void _update_map_ui();
