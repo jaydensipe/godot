@@ -35,6 +35,7 @@
 #include "editor/editor_interface.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
+#include "editor/editor_string_names.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/inspector/editor_resource_picker.h"
 #include "editor/settings/editor_settings.h"
@@ -43,6 +44,7 @@
 #include "scene/3d/light_3d.h"
 #include "scene/3d/world_environment.h"
 #include "scene/gui/button.h"
+#include "scene/gui/control.h"
 #include "scene/gui/label.h"
 #include "scene/gui/margin_container.h"
 #include "scene/gui/menu_button.h"
@@ -283,8 +285,6 @@ void LevelEditorViewport::queue_overlay_redraw() {
 	}
 }
 
-
-
 void LevelEditorViewport::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_RESIZED: {
@@ -497,16 +497,28 @@ void aabb_corners(const AABB &p_aabb, Vector3 r_corners[8]) {
 
 // The 12 edges of a box as index pairs into aabb_corners().
 const int AABB_EDGE_IDX[12][2] = {
-	{ 0, 1 }, { 1, 3 }, { 3, 2 }, { 2, 0 },
-	{ 4, 5 }, { 5, 7 }, { 7, 6 }, { 6, 4 },
-	{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 },
+	{ 0, 1 },
+	{ 1, 3 },
+	{ 3, 2 },
+	{ 2, 0 },
+	{ 4, 5 },
+	{ 5, 7 },
+	{ 7, 6 },
+	{ 6, 4 },
+	{ 0, 4 },
+	{ 1, 5 },
+	{ 2, 6 },
+	{ 3, 7 },
 };
 
 // Outward direction per face handle index (0..5: -x, +x, -y, +y, -z, +z).
 const Vector3 AABB_FACE_DIRS[6] = {
-	Vector3(-1, 0, 0), Vector3(1, 0, 0),
-	Vector3(0, -1, 0), Vector3(0, 1, 0),
-	Vector3(0, 0, -1), Vector3(0, 0, 1),
+	Vector3(-1, 0, 0),
+	Vector3(1, 0, 0),
+	Vector3(0, -1, 0),
+	Vector3(0, 1, 0),
+	Vector3(0, 0, -1),
+	Vector3(0, 0, 1),
 };
 
 Vector3 aabb_face_center(const AABB &p_aabb, int p_face) {
@@ -536,22 +548,39 @@ LevelEditorScreen::LevelEditorScreen() {
 
 	toolbar = memnew(HBoxContainer);
 	toolbar_margin->add_child(toolbar);
-	static const char *mode_names[MODE_MAX] = { "Select", "Rotate", "Scale", "Block", "Clip", "Vertex", "Edge", "Face" };
 
-	// Tool modes in one button-group panel (Select, Rotate, Scale, Block, Clip)...
+	// Tool modes in button-group panels (Select, Rotate, Scale) / (Block, Clip)...
 	PanelContainer *tool_panel = memnew(PanelContainer);
 	tool_panel->set_theme_type_variation("PanelContainerButtonGroup");
 	toolbar->add_child(tool_panel);
 	HBoxContainer *tool_hbox = memnew(HBoxContainer);
 	tool_panel->add_child(tool_hbox);
 
-	for (int i = MODE_SELECT; i <= MODE_CLIP; i++) {
+	for (int i = MODE_SELECT; i <= MODE_SCALE; i++) {
 		Button *b = memnew(Button);
 		b->set_toggle_mode(true);
 		b->set_pressed(i == 0);
 		b->connect("pressed", callable_mp(this, &LevelEditorScreen::_mode_changed).bind(i));
 		b->set_theme_type_variation(SceneStringName(FlatButton));
 		tool_hbox->add_child(b);
+		mode_buttons[i] = b;
+	}
+
+	toolbar->add_child(memnew(VSeparator));
+
+	PanelContainer *draw_panel = memnew(PanelContainer);
+	draw_panel->set_theme_type_variation("PanelContainerButtonGroup");
+	toolbar->add_child(draw_panel);
+	HBoxContainer *draw_hbox = memnew(HBoxContainer);
+	draw_panel->add_child(draw_hbox);
+
+	for (int i = MODE_BLOCK; i <= MODE_CLIP; i++) {
+		Button *b = memnew(Button);
+		b->set_toggle_mode(true);
+		b->set_pressed(false);
+		b->connect("pressed", callable_mp(this, &LevelEditorScreen::_mode_changed).bind(i));
+		b->set_theme_type_variation(SceneStringName(FlatButton));
+		draw_hbox->add_child(b);
 		mode_buttons[i] = b;
 	}
 
@@ -576,16 +605,16 @@ LevelEditorScreen::LevelEditorScreen() {
 
 	// Icons are (re)assigned in NOTIFICATION_THEME_CHANGED. Text labels are
 	// fallbacks for buttons without icons.
-	mode_buttons[MODE_SELECT]->set_tooltip_text(TTRC("Select / Move"));
-	mode_buttons[MODE_ROTATE]->set_tooltip_text(TTRC("Rotate"));
-	mode_buttons[MODE_ROTATE]->set_text(mode_names[MODE_ROTATE]);
-	mode_buttons[MODE_SCALE]->set_tooltip_text(TTRC("Scale"));
-	mode_buttons[MODE_SCALE]->set_text(mode_names[MODE_SCALE]);
 	mode_buttons[MODE_BLOCK]->set_tooltip_text(TTRC("Block"));
 	mode_buttons[MODE_CLIP]->set_tooltip_text(TTRC("Clip"));
 	mode_buttons[MODE_VERTEX]->set_tooltip_text(TTRC("Vertex"));
 	mode_buttons[MODE_EDGE]->set_tooltip_text(TTRC("Edge"));
 	mode_buttons[MODE_FACE]->set_tooltip_text(TTRC("Face"));
+
+	// Set shortcuts for buttons
+	mode_buttons[MODE_SELECT]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_transform", TTRC("Select / Move Mode"), Key::Q, true));
+	mode_buttons[MODE_ROTATE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_rotate", TTRC("Rotate Mode"), Key::E, true));
+	mode_buttons[MODE_SCALE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_scale", TTRC("Scale Mode"), Key::R, true));
 
 	toolbar->add_child(memnew(VSeparator));
 
@@ -694,6 +723,28 @@ LevelEditorScreen::LevelEditorScreen() {
 	viewports[1]->set_view_type(LevelEditorViewport::VIEW_TOP);
 	viewports[2]->set_view_type(LevelEditorViewport::VIEW_FRONT);
 	viewports[3]->set_view_type(LevelEditorViewport::VIEW_SIDE);
+
+	// Shown instead of the quad viewports when the edited scene has no
+	// LevelMap yet.
+	no_map_panel = memnew(MarginContainer);
+	no_map_panel->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	no_map_panel->hide();
+	add_child(no_map_panel);
+
+	VBoxContainer *no_map_vbox = memnew(VBoxContainer);
+	no_map_vbox->set_alignment(BoxContainer::ALIGNMENT_CENTER);
+	no_map_panel->add_child(no_map_vbox);
+
+	no_map_label = memnew(Label);
+	no_map_label->set_text(TTRC("This scene does not contain a LevelMap node. Create one to begin editing."));
+	no_map_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	no_map_vbox->add_child(no_map_label);
+
+	create_map_button = memnew(Button);
+	create_map_button->set_text(TTRC("Create LevelMap"));
+	create_map_button->set_h_size_flags(SIZE_SHRINK_CENTER);
+	create_map_button->connect("pressed", callable_mp(this, &LevelEditorScreen::_create_map_pressed));
+	no_map_vbox->add_child(create_map_button);
 
 	top_split->add_child(viewports[0]);
 	top_split->add_child(viewports[1]);
@@ -821,13 +872,14 @@ void LevelEditorScreen::set_selected_brush_from_editor(LevelBrush *p_brush) {
 	LevelMap *map = Object::cast_to<LevelMap>(p_brush->get_parent());
 	if (map && map != current_map) {
 		current_map = map;
+		_update_map_ui();
 	}
 	_update_overlays();
 }
 
 void LevelEditorScreen::make_visible(bool p_visible) {
 	if (p_visible) {
-		_resolve_map();
+		_update_map_ui();
 		_update_overlays();
 		grab_focus();
 	}
@@ -858,6 +910,63 @@ void LevelEditorScreen::_resolve_map() {
 	}
 }
 
+void LevelEditorScreen::on_scene_changed() {
+	current_map = nullptr;
+	_clear_selection();
+	_update_map_ui();
+	_update_overlays();
+}
+
+void LevelEditorScreen::_update_warning_color() {
+	if (no_map_label && is_inside_tree()) {
+		no_map_label->add_theme_color_override(SceneStringName(font_color), no_map_label->get_theme_color(SNAME("warning_color"), EditorStringName(Editor)));
+	}
+}
+
+void LevelEditorScreen::_update_map_ui() {
+	if (!current_map) {
+		// Fresh scene: only adopt a map found in the edited scene tree - never
+		// auto-create one (the user must press "Create LevelMap").
+		LevelMap *found = nullptr;
+		Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
+		if (root) {
+			List<Node *> stack;
+			stack.push_back(root);
+			while (!stack.is_empty()) {
+				Node *n = stack.front()->get();
+				stack.pop_front();
+				LevelMap *lm = Object::cast_to<LevelMap>(n);
+				if (lm) {
+					found = lm;
+					break;
+				}
+				for (int i = 0; i < n->get_child_count(); i++) {
+					stack.push_back(n->get_child(i));
+				}
+			}
+		}
+		if (found) {
+			current_map = found;
+			current_map->refresh();
+		}
+	}
+
+	bool has_map = current_map != nullptr;
+	if (rows_split) {
+		rows_split->set_visible(has_map);
+	}
+	if (no_map_panel) {
+		no_map_panel->set_visible(!has_map);
+	}
+}
+
+void LevelEditorScreen::_create_map_pressed() {
+	create_map_button->release_focus();
+	_get_or_create_map();
+	_update_map_ui();
+	_update_overlays();
+}
+
 LevelMap *LevelEditorScreen::_get_or_create_map() {
 	_resolve_map();
 	if (current_map) {
@@ -876,6 +985,8 @@ LevelMap *LevelEditorScreen::_get_or_create_map() {
 void LevelEditorScreen::_update_mode_icons() {
 	if (mode_buttons[MODE_SELECT]) {
 		mode_buttons[MODE_SELECT]->set_button_icon(get_editor_theme_icon(SNAME("ToolSelect")));
+		mode_buttons[MODE_ROTATE]->set_button_icon(get_editor_theme_icon(SNAME("ToolRotate")));
+		mode_buttons[MODE_SCALE]->set_button_icon(get_editor_theme_icon(SNAME("ToolScale")));
 		mode_buttons[MODE_BLOCK]->set_button_icon(get_editor_theme_icon(SNAME("Object")));
 		mode_buttons[MODE_CLIP]->set_button_icon(get_editor_theme_icon(SNAME("EditAddRemove")));
 		mode_buttons[MODE_VERTEX]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignCenterLeft")));
@@ -1219,6 +1330,9 @@ void LevelEditorScreen::_update_hover(LevelEditorViewport *p_vp, const Vector2 &
 }
 
 void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> &p_event) {
+	if (!current_map) {
+		return; // No map yet - tool input is disabled.
+	}
 	LevelEditorViewport *vp = nullptr;
 	for (int i = 0; i < 4; i++) {
 		if (viewports[i]->get_camera() == p_camera) {
@@ -2407,6 +2521,7 @@ void LevelEditorScreen::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_THEME_CHANGED: {
 			_update_mode_icons();
+			_update_warning_color();
 		} break;
 		case NOTIFICATION_PROCESS: {
 			// Drop dangling selection if the brush was deleted externally.
@@ -2417,6 +2532,7 @@ void LevelEditorScreen::_notification(int p_what) {
 			if (current_map && !current_map->is_inside_tree()) {
 				current_map = nullptr;
 				_clear_selection();
+				_update_map_ui();
 			}
 		} break;
 	}
@@ -3315,7 +3431,7 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 // ---------------------------------------------------------------------------
 
 const Ref<Texture2D> LevelEditorPlugin::get_plugin_icon() const {
-	return EditorInterface::get_singleton()->get_base_control()->get_theme_icon(SNAME("Editor3DHandle"), SNAME("EditorIcons"));
+	return EditorInterface::get_singleton()->get_base_control()->get_theme_icon(SNAME("Subdivision"), SNAME("EditorIcons"));
 }
 
 LevelEditorPlugin::LevelEditorPlugin() {
@@ -3343,6 +3459,10 @@ void LevelEditorPlugin::_editor_selection_changed() {
 			return;
 		}
 	}
+}
+
+void LevelEditorPlugin::edited_scene_changed() {
+	screen->on_scene_changed();
 }
 
 void LevelEditorPlugin::make_visible(bool p_visible) {

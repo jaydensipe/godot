@@ -152,6 +152,9 @@ private:
 	SplitContainer *rows_split = nullptr;
 
 	HBoxContainer *toolbar = nullptr;
+	Control *no_map_panel = nullptr;
+	Label *no_map_label = nullptr;
+	Button *create_map_button = nullptr;
 	Button *mode_buttons[MODE_MAX] = {};
 	SpinBox *grid_size_spin = nullptr;
 	SpinBox *extrude_spin = nullptr;
@@ -352,6 +355,9 @@ private:
 	void _commit_brush_undo(const String &p_action, LevelBrush *p_brush, const PackedVector3Array &p_old_verts, const Array &p_old_faces, const Array &p_old_mats, bool p_execute = false);
 	void _update_overlays();
 	void _refresh_map();
+	void _update_map_ui();
+	void _create_map_pressed();
+	void _update_warning_color();
 
 	void _compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) const;
 
@@ -379,6 +385,9 @@ public:
 	void make_visible(bool p_visible);
 	void forward_input(Camera3D *p_camera, const Ref<InputEvent> &p_event);
 
+	// Called by the plugin when the edited scene changes (new/opened scene).
+	void on_scene_changed();
+
 	LevelEditorScreen();
 };
 
@@ -398,6 +407,7 @@ public:
 	virtual const Ref<Texture2D> get_plugin_icon() const override;
 	virtual bool has_main_screen() const override { return true; }
 	virtual void make_visible(bool p_visible) override;
+	virtual void edited_scene_changed() override;
 
 	LevelEditorPlugin();
 };
