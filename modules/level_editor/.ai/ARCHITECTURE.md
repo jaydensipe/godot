@@ -33,6 +33,10 @@ modules/level_editor/
       clip/
         level_editor_clip.cpp    # Clip tool state machine (begin/drag/cycle/apply/cancel)
                                  #   + cut-line and edge-color preview drawing
+      brush/
+        level_editor_brush.cpp   # Block tool ghost box (handles, drag, dim labels, commit)
+                                 #   + shared box-handle picking (_pick_box_handle,
+                                 #   _ray_to_axis_plane used by select-mode handles)
     gizmos/
       level_editor_gizmos.cpp    # LevelEditorScreen gizmo members (translate/scale arrow
                                  #   gizmo, rotate rings, Shift+drag face extrude, undo commits)

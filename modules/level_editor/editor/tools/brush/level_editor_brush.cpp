@@ -1,0 +1,385 @@
+/**************************************************************************/
+/*  level_editor_brush.cpp                                               */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+// Block tool: drag-out ghost box with resize handles, dimension labels,
+// and brush commit. Includes the shared box-handle picking used by the
+// select-mode resize handles. These are LevelEditorScreen member functions,
+// split out of level_editor_screen.cpp for organization.
+
+#include "../../level_editor_screen.h"
+
+#include "../../level_constants.h"
+#include "../../level_helpers.h"
+
+#include "editor/editor_interface.h"
+#include "editor/editor_undo_redo_manager.h"
+#include "editor/themes/editor_scale.h"
+
+using namespace LevelHelpers;
+
+// ---- Ghost block (stage 2) -------------------------------------------------
+
+// Shared box-handle picking: corners (high priority) then face centers.
+// Positions are computed in world space via p_xform.
+int LevelEditorScreen::_pick_box_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen, const AABB &p_aabb, const Transform3D &p_xform) const {
+	const real_t face_tol = 10.0 * EDSCALE;
+	const real_t corner_tol = 8.0 * EDSCALE;
+
+	Vector3 corners[8];
+	aabb_corners(p_aabb, corners);
+	for (int i = 0; i < 8; i++) {
+		Vector2 sp;
+		if (p_vp->project(p_xform.xform(corners[i]), sp) && sp.distance_to(p_screen) < corner_tol) {
+			return GHOST_CORNER_0 + i;
+		}
+	}
+
+	int best = GHOST_NONE;
+	real_t best_d = face_tol;
+	for (int i = 0; i < 6; i++) {
+		Vector2 sp;
+		if (p_vp->project(p_xform.xform(aabb_face_center(p_aabb, i)), sp)) {
+			real_t d = sp.distance_to(p_screen);
+			if (d < best_d) {
+				best_d = d;
+				best = GHOST_FACE_XN + i;
+			}
+		}
+	}
+	return best;
+}
+
+int LevelEditorScreen::_pick_ghost_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
+	return _pick_box_handle(p_vp, p_screen, ghost_aabb, Transform3D());
+}
+
+bool LevelEditorScreen::_ghost_hit_test(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
+	// Screen-space point-in-polygon test against the ghost's projected faces.
+	Vector3 corners[8];
+	aabb_corners(ghost_aabb, corners);
+	static const int face_idx[6][4] = {
+		{ 4, 5, 7, 6 },
+		{ 1, 0, 2, 3 }, // +Z, -Z
+		{ 5, 1, 3, 7 },
+		{ 0, 4, 6, 2 }, // +X, -X
+		{ 7, 6, 2, 3 },
+		{ 0, 1, 5, 4 }, // +Y, -Y
+	};
+	for (auto &f : face_idx) {
+		Vector2 quad[4];
+		bool ok = true;
+		for (int i = 0; i < 4; i++) {
+			if (!p_vp->project(corners[f[i]], quad[i])) {
+				ok = false;
+				break;
+			}
+		}
+		if (!ok) {
+			continue;
+		}
+		// Ray-casting point-in-quad test.
+		int crossings = 0;
+		for (int i = 0; i < 4; i++) {
+			Vector2 a = quad[i];
+			Vector2 b = quad[(i + 1) % 4];
+			if ((a.y > p_screen.y) != (b.y > p_screen.y)) {
+				real_t x = a.x + (p_screen.y - a.y) * (b.x - a.x) / (b.y - a.y);
+				if (p_screen.x < x) {
+					crossings++;
+				}
+			}
+		}
+		if (crossings % 2 == 1) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool LevelEditorScreen::_ghost_ray_to_edit_plane(LevelEditorViewport *p_vp, const Vector2 &p_screen, Vector3 &r_hit) const {
+	return p_vp->ray_to_view_plane(p_screen, ghost_aabb.get_center(), r_hit);
+}
+
+// Intersect the mouse ray with a plane that contains p_point and the given
+// axis, oriented as perpendicular to the camera as possible. This is what
+// allows face/corner handles to move along the view plane's fixed axis (e.g.
+// up/down in the top view), which the view-plane intersection cannot do.
+bool LevelEditorScreen::_ray_to_axis_plane(LevelEditorViewport *p_vp, const Vector2 &p_screen, const Vector3 &p_point, int p_axis, Vector3 &r_hit) const {
+	Vector3 ro, rd;
+	p_vp->get_ray(p_screen, ro, rd);
+	Plane pl = LevelHelpers::axis_drag_plane(p_point, p_axis, p_vp->get_camera()->get_global_position());
+	return pl.intersects_ray(ro, rd, &r_hit);
+}
+
+void LevelEditorScreen::_ghost_handle_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse) {
+	// Drag the handle along its axis (face) or freely (corner), snapped.
+	Vector3 c = ghost_aabb.get_center();
+	Vector3 mins = ghost_aabb.position;
+	Vector3 maxs = ghost_aabb.position + ghost_aabb.size;
+
+	int h = ghost_handle_drag;
+	if (h >= GHOST_CORNER_0) {
+		int ci = h - GHOST_CORNER_0;
+		Vector3 corners[8];
+		aabb_corners(ghost_aabb, corners);
+		const Vector3 &corner = corners[ci];
+
+		// Drag each of the corner's three axes on its own camera-facing plane,
+		// so vertical movement works in the top view (and vice versa). Each
+		// component uses the last mouse hit on that axis' plane.
+		for (int axis = 0; axis < 3; axis++) {
+			Vector3 hit;
+			if (!_ray_to_axis_plane(p_vp, p_mouse, corner, axis, hit)) {
+				continue;
+			}
+			real_t v = _snap(hit[axis]);
+			if (ci & (1 << axis)) {
+				maxs[axis] = MAX(v, mins[axis] + CMP_EPSILON);
+			} else {
+				mins[axis] = MIN(v, maxs[axis] - CMP_EPSILON);
+			}
+		}
+	} else {
+		// Face handle: slide that face along its own axis. Intersect the mouse
+		// ray with a camera-facing plane that contains the axis - the view plane
+		// is parallel to the face axis in two of the three views (e.g. the top
+		// view's XZ plane can never move a top/bottom face up or down).
+		int axis = (h - GHOST_FACE_XN) / 2; // 0=x, 1=y, 2=z
+		bool is_max = ((h - GHOST_FACE_XN) % 2) == 1;
+
+		Vector3 hit;
+		if (!_ray_to_axis_plane(p_vp, p_mouse, c, axis, hit)) {
+			return;
+		}
+		real_t v = _snap(hit[axis]);
+		if (is_max) {
+			maxs[axis] = MAX(v, mins[axis] + CMP_EPSILON);
+		} else {
+			mins[axis] = MIN(v, maxs[axis] - CMP_EPSILON);
+		}
+	}
+
+	ghost_aabb = AABB(mins, maxs - mins);
+	_update_overlays();
+}
+
+void LevelEditorScreen::_ghost_commit() {
+	ghost_active = false;
+	ghost_handle_hover = GHOST_NONE;
+	ghost_handle_drag = GHOST_NONE;
+	ghost_moving = false;
+
+	LevelMap *map = _get_or_create_map();
+	ERR_FAIL_NULL(map);
+
+	Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
+	ERR_FAIL_NULL(root);
+
+	Transform3D map_inv = map->get_global_transform().affine_inverse();
+
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->set_name("Brush");
+	brush->setup_box(map_inv.xform(ghost_aabb));
+	if (current_material.is_valid()) {
+		for (int f = 0; f < brush->get_face_count(); f++) {
+			brush->set_face_material(f, current_material);
+		}
+	}
+
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Add Level Brush"));
+	undo_redo->add_do_method(map, "add_child", brush);
+	undo_redo->add_do_method(brush, "set_owner", root);
+	undo_redo->add_do_method(map, "refresh");
+	undo_redo->add_undo_method(map, "remove_child", brush);
+	undo_redo->add_undo_method(map, "refresh");
+	undo_redo->commit_action();
+
+	selected_brush = brush;
+	_edit_brush_node(brush);
+	_refresh_map();
+}
+
+void LevelEditorScreen::_ghost_cancel() {
+	ghost_active = false;
+	ghost_handle_hover = GHOST_NONE;
+	ghost_handle_drag = GHOST_NONE;
+	ghost_moving = false;
+	_update_overlays();
+}
+
+void LevelEditorScreen::_draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas) {
+	if (!ghost_active) {
+		return;
+	}
+
+	Vector3 corners[8];
+	aabb_corners(ghost_aabb, corners);
+
+	// Box edges.
+	Color col = LevelEditorColors::GHOST;
+	for (auto &e : AABB_EDGE_IDX) {
+		Vector2 a, b;
+		if (p_vp->project(corners[e[0]], a) && p_vp->project(corners[e[1]], b)) {
+			p_canvas->draw_line(a, b, col, 2.0);
+		}
+	}
+
+	// Face handles: squares at face centers.
+	for (int i = 0; i < 6; i++) {
+		Vector3 fc = aabb_face_center(ghost_aabb, i);
+		Vector2 sp;
+		if (p_vp->project(fc, sp)) {
+			bool hot = (ghost_handle_hover == GHOST_FACE_XN + i || ghost_handle_drag == GHOST_FACE_XN + i);
+			Color hc = hot ? LevelEditorColors::GHOST_HANDLE_HOT : LevelEditorColors::GHOST_HANDLE;
+			real_t hs_px = 4.0 * EDSCALE;
+			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hc);
+		}
+	}
+
+	// Corner handles.
+	for (int i = 0; i < 8; i++) {
+		Vector2 sp;
+		if (p_vp->project(corners[i], sp)) {
+			bool hot = (ghost_handle_hover == GHOST_CORNER_0 + i || ghost_handle_drag == GHOST_CORNER_0 + i);
+			Color hc = hot ? LevelEditorColors::GHOST_HANDLE_HOT : LevelEditorColors::GHOST_HANDLE;
+			real_t hs_px = 3.0 * EDSCALE;
+			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hc);
+		}
+	}
+
+	_draw_dim_labels(p_vp, p_canvas, ghost_aabb);
+}
+
+void LevelEditorScreen::_draw_dim_labels(LevelEditorViewport *p_vp, Control *p_canvas, const AABB &p_aabb) {
+	Vector3 corners[8];
+	aabb_corners(p_aabb, corners);
+
+	Ref<Font> font = get_theme_font(SNAME("font"), SNAME("Label"));
+	const int font_size = get_theme_font_size(SNAME("font_size"), SNAME("Label"));
+	Color text_col = LevelEditorColors::TEXT;
+
+	struct DimLabel {
+		int edge_a, edge_b;
+		int axis;
+	};
+	static const DimLabel dim_labels[3] = {
+		{ 2, 3, 0 }, // X edge along the top -> width
+		{ 6, 7, 2 }, // Z edge along the top -> depth
+		{ 0, 2, 1 }, // Y edge -> height
+	};
+	for (const DimLabel &dl : dim_labels) {
+		// Ortho views show only the two axes visible in that view; the
+		// perspective view shows all three.
+		switch (p_vp->get_view_type()) {
+			case LevelEditorViewport::VIEW_TOP: // X and Z
+				if (dl.axis == 1) {
+					continue;
+				}
+				break;
+			case LevelEditorViewport::VIEW_FRONT: // X and Y
+				if (dl.axis == 2) {
+					continue;
+				}
+				break;
+			case LevelEditorViewport::VIEW_SIDE: // Z and Y
+				if (dl.axis == 0) {
+					continue;
+				}
+				break;
+			default:
+				break;
+		}
+		Vector3 mid = (corners[dl.edge_a] + corners[dl.edge_b]) * 0.5;
+		Vector2 sp;
+		if (!p_vp->project(mid, sp)) {
+			continue;
+		}
+		String text = String::num(p_aabb.size[dl.axis], 2);
+		Vector2 text_size = font->get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size);
+		p_canvas->draw_string(font, sp - text_size * 0.5 + Vector2(0, text_size.y * 0.35), text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, text_col);
+	}
+}
+void LevelEditorScreen::_compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) const {
+	r_mins = drag_start.min(drag_current);
+	r_maxs = drag_start.max(drag_current);
+
+	LevelEditorViewport::ViewType vt = drag_viewport->get_view_type();
+	real_t thickness = grid_size;
+
+	// Reuse the last brush's Y height if there is one, so walls of uniform
+	// height are quick to lay out (edits to the previous block carry over).
+	const LevelBrush *ref_brush = selected_brush;
+	Vector<LevelBrush *> map_brushes;
+	if (!ref_brush && current_map) {
+		map_brushes = current_map->get_brushes();
+		if (!map_brushes.is_empty()) {
+			ref_brush = map_brushes[map_brushes.size() - 1];
+		}
+	}
+	real_t ref_height = -1.0;
+	if (ref_brush) {
+		real_t min_y = (real_t)Math::INF, max_y = -(real_t)Math::INF;
+		for (int i = 0; i < ref_brush->get_vertex_count(); i++) {
+			Vector3 w = ref_brush->get_global_transform().xform(ref_brush->get_vertex(i));
+			min_y = MIN(min_y, w.y);
+			max_y = MAX(max_y, w.y);
+		}
+		if (max_y - min_y > CMP_EPSILON) {
+			ref_height = max_y - min_y;
+		}
+	}
+
+	switch (vt) {
+		case LevelEditorViewport::VIEW_TOP:
+		case LevelEditorViewport::VIEW_PERSPECTIVE:
+			// Drag plane is the ground; block rises in Y.
+			if (ref_height > 0.0) {
+				thickness = ref_height;
+			}
+			r_mins.y = _snap(drag_start.y);
+			r_maxs.y = r_mins.y + thickness;
+			break;
+		case LevelEditorViewport::VIEW_FRONT:
+			r_mins.z = _snap(drag_start.z);
+			r_maxs.z = r_mins.z + thickness;
+			break;
+		case LevelEditorViewport::VIEW_SIDE:
+			r_mins.x = _snap(drag_start.x);
+			r_maxs.x = r_mins.x + thickness;
+			break;
+	}
+
+	for (int i = 0; i < 3; i++) {
+		if (r_maxs[i] - r_mins[i] < CMP_EPSILON) {
+			r_maxs[i] = r_mins[i] + thickness;
+		}
+	}
+}
