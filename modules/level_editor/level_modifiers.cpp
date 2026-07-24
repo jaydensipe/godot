@@ -35,6 +35,166 @@
 
 #include "scene/resources/material.h"
 
+Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_loop(const EdgeKey &p_edge) const {
+	Vector<EdgeKey> loop;
+
+	// Faces using each vertex (adjacency for finding the face on the other
+	// side of an edge).
+	auto faces_with_edge = [&](const EdgeKey &e, int &r_a, int &r_b) {
+		r_a = -1;
+		r_b = -1;
+		for (uint32_t f = 0; f < faces.size(); f++) {
+			const LocalVector<int> &l = faces[f];
+			const uint32_t n = l.size();
+			for (uint32_t i = 0; i < n; i++) {
+				int ia = l[i];
+				int ib = l[(i + 1) % n];
+				if ((ia == e.a && ib == e.b) || (ia == e.b && ib == e.a)) {
+					if (r_a < 0) {
+						r_a = (int)f;
+					} else {
+						r_b = (int)f;
+						return;
+					}
+				}
+			}
+		}
+	};
+
+	// Opposite edge of p_edge within face p_face (quads only; -1 verts =
+	// no well-defined opposite -> loop stops at n-gons).
+	auto opposite_edge = [&](int p_face, const EdgeKey &e) -> EdgeKey {
+		const LocalVector<int> &l = faces[p_face];
+		if (l.size() != 4) {
+			return EdgeKey(-1, -1);
+		}
+		for (uint32_t i = 0; i < 4; i++) {
+			int ia = l[i];
+			int ib = l[(i + 1) % 4];
+			if ((ia == e.a && ib == e.b) || (ia == e.b && ib == e.a)) {
+				int oa = l[(i + 2) % 4];
+				int ob = l[(i + 3) % 4];
+				return EdgeKey(oa, ob);
+			}
+		}
+		return EdgeKey(-1, -1);
+	};
+
+	// Walk one direction: from p_edge across p_start_face, following opposite
+	// edges until returning to p_edge, dead-ending, or hitting an edge the
+	// other direction already collected (closed rings meet in the middle).
+	auto walk = [&](const EdgeKey &p_start_edge, int p_start_face, HashSet<EdgeKey, EdgeKeyHasher> &r_visited, Vector<EdgeKey> &r_out) {
+		EdgeKey cur = p_start_edge;
+		int face = p_start_face;
+		while (face >= 0) {
+			EdgeKey next = opposite_edge(face, cur);
+			if (next.a < 0 || next == p_start_edge || r_visited.has(next)) {
+				break;
+			}
+			r_out.push_back(next);
+			r_visited.insert(next);
+			// Continue across the face on the OTHER side of `next`.
+			int fa, fb;
+			faces_with_edge(next, fa, fb);
+			face = (fa == face) ? fb : fa;
+			cur = next;
+		}
+	};
+
+	int fa, fb;
+	faces_with_edge(p_edge, fa, fb);
+	HashSet<EdgeKey, EdgeKeyHasher> visited;
+	visited.insert(p_edge);
+	Vector<EdgeKey> forward;
+	walk(p_edge, fa, visited, forward);
+	Vector<EdgeKey> backward;
+	walk(p_edge, fb, visited, backward);
+
+	// Assemble: backward (reversed) + start + forward.
+	for (int i = backward.size() - 1; i >= 0; i--) {
+		loop.push_back(backward[i]);
+	}
+	loop.push_back(p_edge);
+	for (const EdgeKey &e : forward) {
+		loop.push_back(e);
+	}
+	return loop;
+}
+
+Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_chain(const EdgeKey &p_edge) const {
+	Vector<EdgeKey> chain;
+	chain.push_back(p_edge);
+
+	const Vector3 dir = (verts[p_edge.b] - verts[p_edge.a]).normalized();
+	const real_t PARALLEL_DOT = 0.999;
+
+	// All edges touching a vertex.
+	auto edges_at = [&](int p_vert, Vector<EdgeKey> &r_out) {
+		for (uint32_t f = 0; f < faces.size(); f++) {
+			const LocalVector<int> &l = faces[f];
+			const uint32_t n = l.size();
+			for (uint32_t i = 0; i < n; i++) {
+				int ia = l[i];
+				int ib = l[(i + 1) % n];
+				if (ia == p_vert || ib == p_vert) {
+					EdgeKey e(ia, ib);
+					bool seen = false;
+					for (const EdgeKey &x : r_out) {
+						if (x == e) {
+							seen = true;
+							break;
+						}
+					}
+					if (!seen) {
+						r_out.push_back(e);
+					}
+				}
+			}
+		}
+	};
+
+	HashSet<EdgeKey, EdgeKeyHasher> visited;
+	visited.insert(p_edge);
+
+	// Walk one endpoint direction at a time.
+	for (int pass = 0; pass < 2; pass++) {
+		int tip = (pass == 0) ? p_edge.a : p_edge.b;
+		Vector<EdgeKey> side;
+		while (true) {
+			Vector<EdgeKey> touching;
+			edges_at(tip, touching);
+			EdgeKey best(-1, -1);
+			for (const EdgeKey &cand : touching) {
+				if (visited.has(cand)) {
+					continue;
+				}
+				Vector3 cd = (verts[cand.b] - verts[cand.a]).normalized();
+				if (Math::abs(cd.dot(dir)) > PARALLEL_DOT) {
+					best = cand;
+					break; // At most one collinear continuation at a clean vertex.
+				}
+			}
+			if (best.a < 0) {
+				break;
+			}
+			side.push_back(best);
+			visited.insert(best);
+			tip = (best.a == tip) ? best.b : best.a;
+		}
+		if (pass == 0) {
+			// Prepend the a-side in reverse walk order.
+			for (int i = side.size() - 1; i >= 0; i--) {
+				chain.push_back(side[i]);
+			}
+		} else {
+			for (const EdgeKey &e : side) {
+				chain.push_back(e);
+			}
+		}
+	}
+	return chain;
+}
+
 void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 	// Solid clip: keep only the front side, capping the cut.
 	const real_t eps = 0.0005;
@@ -535,4 +695,154 @@ bool LevelBrush::subdivide_face(int p_face) {
 	_notify_map_changed();
 
 	return true;
+}
+
+int LevelBrush::bevel_edges(const Vector<EdgeKey> &p_edges, real_t p_distance) {
+	if (p_distance <= CMP_EPSILON) {
+		return 0;
+	}
+
+	int beveled = 0;
+	for (const EdgeKey &edge : p_edges) {
+		// Find the (up to) 2 faces adjacent to this edge.
+		int adj[2] = { -1, -1 };
+		int adj_pos[2] = { -1, -1 }; // Loop index of the edge's FIRST vert.
+		bool adj_rev[2] = { false, false }; // Edge runs backward in the loop.
+		int adj_count = 0;
+		for (uint32_t f = 0; f < faces.size() && adj_count < 2; f++) {
+			const LocalVector<int> &l = faces[f];
+			const uint32_t n = l.size();
+			for (uint32_t i = 0; i < n; i++) {
+				int ia = l[i];
+				int ib = l[(i + 1) % n];
+				if (ia == edge.a && ib == edge.b) {
+					adj[adj_count] = (int)f;
+					adj_pos[adj_count] = (int)i;
+					adj_rev[adj_count] = false;
+					adj_count++;
+					break;
+				}
+				if (ia == edge.b && ib == edge.a) {
+					adj[adj_count] = (int)f;
+					adj_pos[adj_count] = (int)i;
+					adj_rev[adj_count] = true;
+					adj_count++;
+					break;
+				}
+			}
+		}
+		if (adj_count != 2) {
+			continue; // Open boundary or degenerate - can't bevel.
+		}
+
+		// For each adjacent face: create a new vert per endpoint, slid
+		// p_distance into the face along its boundary edges at that endpoint.
+		// new_vert[face_slot][endpoint(0=a,1=b)]
+		int nv[2][2] = { { -1, -1 }, { -1, -1 } };
+		bool ok = true;
+		for (int s = 0; s < 2 && ok; s++) {
+			LocalVector<int> &l = faces[adj[s]];
+			const uint32_t n = l.size();
+			// Loop positions of endpoints a and b within this face.
+			int pa, pb;
+			if (!adj_rev[s]) {
+				pa = adj_pos[s];
+				pb = (adj_pos[s] + 1) % n;
+			} else {
+				pb = adj_pos[s];
+				pa = (adj_pos[s] + 1) % n;
+			}
+			const int endpoints[2] = { pa, pb };
+			const int orig_verts[2] = { edge.a, edge.b };
+			for (int e = 0; e < 2; e++) {
+				int pos = endpoints[e];
+				int prev = l[(pos + n - 1) % n];
+				int next = l[(pos + 1) % n];
+				const Vector3 &vp = verts[orig_verts[e]];
+				// Slide along the angle bisector of the two boundary edges. To
+				// recede exactly p_distance along each boundary edge, the bisector
+				// slide is p_distance / cos(half the corner angle).
+				Vector3 to_prev = (verts[prev] - vp).normalized();
+				Vector3 to_next = (verts[next] - vp).normalized();
+				Vector3 slide = to_prev + to_next;
+				if (slide.length_squared() < CMP_EPSILON) {
+					ok = false;
+					break;
+				}
+				slide.normalize();
+				real_t cos_half = slide.dot(to_next);
+				if (cos_half < 0.01) {
+					ok = false; // Degenerate 180-degree corner.
+					break;
+				}
+				nv[s][e] = (int)verts.size();
+				verts.push_back(vp + slide * (p_distance / cos_half));
+			}
+		}
+		if (!ok) {
+			continue;
+		}
+
+		// Replace the edge's endpoints in each adjacent face: the face loop
+		// gains the new vert where the old corner was (loop: ...prev, OLD,
+		// next... becomes ...prev, NEW, next... with OLD removed). Since the
+		// edge itself spanned a->b, both endpoints get replaced in the loop.
+		Ref<Material> bevel_mat;
+		for (int s = 0; s < 2; s++) {
+			LocalVector<int> &l = faces[adj[s]];
+			const uint32_t n = l.size();
+			LocalVector<int> nl;
+			for (uint32_t i = 0; i < n; i++) {
+				if (l[i] == edge.a) {
+					nl.push_back(nv[s][0]);
+				} else if (l[i] == edge.b) {
+					nl.push_back(nv[s][1]);
+				} else {
+					nl.push_back(l[i]);
+				}
+			}
+			l = nl;
+			if (adj[s] < (int)face_materials.size() && bevel_mat.is_null()) {
+				bevel_mat = face_materials[adj[s]];
+			}
+		}
+
+		// New bevel face spanning the slid verts, wound to match the original
+		// edge orientation: (a_in_F1, a_in_F2, b_in_F2, b_in_F1).
+		LocalVector<int> bevel;
+		bevel.push_back(nv[0][0]);
+		bevel.push_back(nv[1][0]);
+		bevel.push_back(nv[1][1]);
+		bevel.push_back(nv[0][1]);
+		faces.push_back(LocalVector<int>(bevel));
+		face_materials.push_back(bevel_mat);
+
+		// Verify the bevel face normal points OUT of the brush. The slid verts
+		// are INSIDE the original volume, so edge_mid -> bevel_center points
+		// inward; the face normal must oppose it.
+		Vector3 edge_mid = (verts[edge.a] + verts[edge.b]) * 0.5;
+		Vector3 bevel_center;
+		for (uint32_t i = 0; i < 4; i++) {
+			bevel_center += verts[bevel[i]];
+		}
+		bevel_center *= 0.25;
+		Vector3 in_dir = bevel_center - edge_mid;
+		Vector3 e1 = verts[bevel[1]] - verts[bevel[0]];
+		Vector3 e2 = verts[bevel[3]] - verts[bevel[0]];
+		if (e1.cross(e2).dot(in_dir) > 0.0) {
+			// Reverse winding.
+			LocalVector<int> rev;
+			for (int i = 3; i >= 0; i--) {
+				rev.push_back(bevel[i]);
+			}
+			faces[faces.size() - 1] = rev;
+		}
+
+		beveled++;
+	}
+
+	if (beveled > 0) {
+		_notify_map_changed();
+	}
+	return beveled;
 }

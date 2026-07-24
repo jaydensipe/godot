@@ -689,4 +689,117 @@ TEST_CASE("[LevelBrush] subdivide_face rejects invalid faces") {
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] get_edge_loop walks the ring of parallel edges") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// A vertical edge (bottom-front-left to top-front-left: verts 0 and 3
+	// share x=0,z=0... verts 0=(0,0,0), 3=(0,1,0)): its loop is all 4
+	// vertical edges of the box.
+	LevelBrush::EdgeKey vertical(0, 3);
+	Vector<LevelBrush::EdgeKey> loop = brush->get_edge_loop(vertical);
+
+	CHECK(loop.size() == 4);
+	// Every loop edge is vertical (parallel to the start, no shared verts).
+	for (const LevelBrush::EdgeKey &e : loop) {
+		Vector3 a = brush->get_vertex(e.a);
+		Vector3 b = brush->get_vertex(e.b);
+		Vector3 d = (b - a).normalized();
+		CHECK(Math::abs(d.y) > 0.99);
+	}
+
+	// An edge that doesn't exist yields just itself.
+	Vector<LevelBrush::EdgeKey> empty = brush->get_edge_loop(LevelBrush::EdgeKey(0, 7));
+	CHECK(empty.size() == 1);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] get_edge_loop stops at n-gon boundaries") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// A horizontal top-front edge loops through the top face (4 horizontal
+	// top edges before subdivision).
+	LevelBrush::EdgeKey top_front(3, 2); // (0,1,0) -> (1,1,0)
+	CHECK(brush->get_edge_loop(top_front).size() == 4);
+
+	// Subdivide the top into a triangle fan: the edge now borders a triangle,
+	// which has no well-defined opposite - the loop dies immediately.
+	REQUIRE(brush->subdivide_face(4)); // +Y face -> 4 triangles.
+	CHECK(brush->get_edge_loop(top_front).size() == 1);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] get_edge_chain follows collinear segments") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+	REQUIRE(brush->subdivide_face(4)); // Top face -> 4 quads via midpoints+centroid.
+
+	// Find the centroid vert (the one at the face center (1,2,1)).
+	int centroid = -1;
+	for (int i = 0; i < brush->get_vertex_count(); i++) {
+		if (brush->get_vertex(i).is_equal_approx(Vector3(1, 2, 1))) {
+			centroid = i;
+			break;
+		}
+	}
+	REQUIRE(centroid >= 0);
+
+	// Find the midpoint of the top face's +Z outer edge (1,2,2) and form the
+	// "top middle line" edge from it to the centroid.
+	int mid_zp = -1;
+	for (int i = 0; i < brush->get_vertex_count(); i++) {
+		if (brush->get_vertex(i).is_equal_approx(Vector3(1, 2, 2))) {
+			mid_zp = i;
+			break;
+		}
+	}
+	REQUIRE(mid_zp >= 0);
+
+	// The chain from (mid_zp, centroid) should continue straight to the
+	// opposite midpoint (1,2,0) - 2 segments total, no perpendicular turns.
+	LevelBrush::EdgeKey start(mid_zp, centroid);
+	Vector<LevelBrush::EdgeKey> chain = brush->get_edge_chain(start);
+	CHECK(chain.size() == 2);
+	for (const LevelBrush::EdgeKey &e : chain) {
+		Vector3 d = (brush->get_vertex(e.b) - brush->get_vertex(e.a)).normalized();
+		CHECK(Math::abs(d.z) > 0.99); // All segments run along Z.
+	}
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] bevel_edges replaces an edge with a chamfer face") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+
+	// Bevel the top-front edge (0,2,0) -> (2,2,0): verts 3 -> 2.
+	Vector<LevelBrush::EdgeKey> edges;
+	edges.push_back(LevelBrush::EdgeKey(3, 2));
+	CHECK(brush->bevel_edges(edges, 0.5) == 1);
+
+	// 6 + 1 faces; 8 + 4 verts (2 per adjacent face).
+	CHECK(brush->get_face_count() == 7);
+	CHECK(brush->get_vertex_count() == 12);
+
+	// The new bevel face (last) is a quad whose normal points outward -
+	// up-and-backward (+Y, -Z): the 45-degree chamfer of the top-back edge.
+	LocalVector<int> bevel = brush->get_face(6);
+	CHECK(bevel.size() == 4);
+	Vector3 n = brush->get_face_normal(6);
+	CHECK(n.y > 0.5);
+	CHECK(n.z < -0.5);
+	CHECK(Math::abs(n.x) < 0.001);
+
+	// All four bevel verts sit on the chamfer plane y - z = 1.5.
+	for (int idx : bevel) {
+		const Vector3 &v = brush->get_vertex(idx);
+		CHECK(Math::abs((v.y - v.z) - 1.5) < 0.01);
+	}
+
+	memdelete(brush);
+}
+
 } // namespace TestLevelBrush

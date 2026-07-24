@@ -375,6 +375,8 @@ private:
 
 	// Element-selection helpers (per-brush keyed sets).
 	void _clear_element_selection();
+	void _select_edge_loop(LevelBrush *p_brush, const LevelBrush::EdgeKey &p_edge);
+	void _select_edge_chain(LevelBrush *p_brush, const LevelBrush::EdgeKey &p_edge);
 	HashSet<int> &_face_set(LevelBrush *p_brush) { return selected_faces[p_brush]; }
 	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &_edge_set(LevelBrush *p_brush) { return selected_edges[p_brush]; }
 	HashSet<int> &_vertex_set(LevelBrush *p_brush) { return selected_vertices[p_brush]; }
@@ -414,6 +416,7 @@ private:
 	void _view_display_selected(int p_id);
 	void _view_grid_toggled(int p_id);
 	void _action_bridge_edges();
+	void _action_bevel_edges();
 	void _grid_size_selected(int p_index);
 
 	int _grid_step_index() const;

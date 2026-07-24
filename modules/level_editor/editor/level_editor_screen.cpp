@@ -691,7 +691,7 @@ LevelEditorScreen::LevelEditorScreen() {
 	mode_buttons[MODE_BLOCK]->set_tooltip_text(TTRC("Block"));
 	mode_buttons[MODE_CLIP]->set_tooltip_text(TTRC("Clip"));
 	mode_buttons[MODE_VERTEX]->set_tooltip_text(TTRC("Vertex"));
-	mode_buttons[MODE_EDGE]->set_tooltip_text(TTRC("Edge"));
+	mode_buttons[MODE_EDGE]->set_tooltip_text(TTRC("Edge (double-click: select straight chain, Alt+double-click: select loop)"));
 	mode_buttons[MODE_FACE]->set_tooltip_text(TTRC("Shift: Hold while dragging to extrude."));
 
 	// Set shortcuts for buttons
@@ -769,6 +769,7 @@ LevelEditorScreen::LevelEditorScreen() {
 	edge_popup->add_item(TTRC("Extrude"), 0);
 	edge_popup->add_item(TTRC("Bridge"), 1);
 	edge_popup->add_item(TTRC("Collapse"), 2);
+	edge_popup->add_item(TTRC("Bevel"), 3);
 	edge_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_edge_menu_selected));
 	toolbar->add_child(edge_menu);
 
@@ -780,7 +781,7 @@ LevelEditorScreen::LevelEditorScreen() {
 	face_popup->add_item(TTRC("Extrude"), 0);
 	face_popup->add_item(TTRC("Apply Material"), 1);
 	face_popup->add_item(TTRC("Delete"), 2);
-	face_popup->add_shortcut(ED_SHORTCUT("level_editor/subdivide_face", TTRC("Subdivide"), KeyModifierMask::CMD_OR_CTRL | Key::D, true), 4);
+	face_popup->add_shortcut(ED_SHORTCUT("level_editor/subdivide_face", TTRC("Subdivide"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::SHIFT | Key::D, true), 4);
 	face_popup->add_separator();
 	face_popup->add_shortcut(ED_SHORTCUT("level_editor/flip_faces", TTRC("Flip Faces"), Key::F, true), 3);
 	face_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_face_menu_selected));
@@ -1111,8 +1112,8 @@ void LevelEditorScreen::_update_mode_icons() {
 		mode_buttons[MODE_SELECT]->set_button_icon(get_editor_theme_icon(SNAME("ToolSelect")));
 		mode_buttons[MODE_ROTATE]->set_button_icon(get_editor_theme_icon(SNAME("ToolRotate")));
 		mode_buttons[MODE_SCALE]->set_button_icon(get_editor_theme_icon(SNAME("ToolScale")));
-		mode_buttons[MODE_BLOCK]->set_button_icon(get_editor_theme_icon(SNAME("Object")));
-		mode_buttons[MODE_CLIP]->set_button_icon(get_editor_theme_icon(SNAME("EditAddRemove")));
+		mode_buttons[MODE_BLOCK]->set_button_icon(get_editor_theme_icon(SNAME("Brush")));
+		mode_buttons[MODE_CLIP]->set_button_icon(get_editor_theme_icon(SNAME("Clip")));
 		mode_buttons[MODE_VERTEX]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignCenterLeft")));
 		mode_buttons[MODE_EDGE]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignRightWide")));
 		mode_buttons[MODE_FACE]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignFullRect")));
@@ -1280,6 +1281,28 @@ void LevelEditorScreen::_clear_element_selection() {
 	selected_faces.clear();
 	selected_edges.clear();
 	selected_vertices.clear();
+}
+
+void LevelEditorScreen::_select_edge_loop(LevelBrush *p_brush, const LevelBrush::EdgeKey &p_edge) {
+	// Replace the edge selection on this brush with the whole loop.
+	Vector<LevelBrush::EdgeKey> loop = p_brush->get_edge_loop(p_edge);
+	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &set = _edge_set(p_brush);
+	set.clear();
+	for (const LevelBrush::EdgeKey &e : loop) {
+		set.insert(e);
+	}
+	_update_overlays();
+}
+
+void LevelEditorScreen::_select_edge_chain(LevelBrush *p_brush, const LevelBrush::EdgeKey &p_edge) {
+	// Replace the edge selection on this brush with the collinear chain.
+	Vector<LevelBrush::EdgeKey> chain = p_brush->get_edge_chain(p_edge);
+	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &set = _edge_set(p_brush);
+	set.clear();
+	for (const LevelBrush::EdgeKey &e : chain) {
+		set.insert(e);
+	}
+	_update_overlays();
 }
 
 void LevelEditorScreen::_update_overlays() {
@@ -1897,17 +1920,29 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 				LevelBrush *brush = nullptr;
 				LevelBrush::EdgeKey e;
 				if (_pick_edge(p_camera, mb->get_position(), brush, e)) {
-					if (!add) {
-						selected_edges.clear();
-					}
-					HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &set = _edge_set(brush);
-					if (set.has(e) && add) {
-						set.erase(e);
-						if (set.is_empty()) {
-							selected_edges.erase(brush);
+					if (mb->is_double_click()) {
+						if (mb->is_alt_pressed()) {
+							// Alt+double-click: edge loop (Blender alt-click) - opposite
+							// edges across each face, both directions.
+							_select_edge_loop(brush, e);
+						} else {
+							// Double-click: collinear chain (straight run of segments,
+							// e.g. consecutive pieces of a subdivided edge).
+							_select_edge_chain(brush, e);
 						}
 					} else {
-						set.insert(e);
+						if (!add) {
+							selected_edges.clear();
+						}
+						HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &set = _edge_set(brush);
+						if (set.has(e) && add) {
+							set.erase(e);
+							if (set.is_empty()) {
+								selected_edges.erase(brush);
+							}
+						} else {
+							set.insert(e);
+						}
 					}
 					if (brush != selected_brush) {
 						selected_brush = brush;

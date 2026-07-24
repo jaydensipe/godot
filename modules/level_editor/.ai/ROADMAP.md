@@ -155,3 +155,9 @@ split (`tools/select/`); mode-specific input handling still lives in
   viewports (axis-plane drags allow vertical moves in top view), Face-mode
   Shift+drag extrudes along face normals. Gizmo code split into
   `editor/gizmos/level_editor_gizmos.cpp`.
+- Edge double-click selection: collinear chain by default, Blender-style
+  edge loop on Alt+double-click (`get_edge_chain`/`get_edge_loop`).
+- Bevel (chamfer) tool: Edge menu, `LevelBrush::bevel_edges` (grid-size cut).
+- Vertex/Edge/Face toolbar menus with `_action_*` tool actions; Subdivide
+  (quad grid / n-gon fan) on Face menu; Flip Faces moved into Face menu.
+- Mode shortcuts: Q/E/R/B/C + 1/2/3; menu shortcuts Ctrl+D subdivide, F flip.

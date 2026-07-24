@@ -219,6 +219,47 @@ void LevelEditorScreen::_vertex_menu_selected(int p_id) {
 	}
 }
 
+void LevelEditorScreen::_action_bevel_edges() {
+	if (!current_map || selected_edges.is_empty()) {
+		return;
+	}
+
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Bevel Edges"));
+	bool did = false;
+	for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
+		LevelBrush *target = E.key;
+		PackedVector3Array old_verts = target->get_vertices_data();
+		Array old_faces = target->get_faces_data();
+		Array old_mats = target->get_face_materials_data();
+
+		Vector<LevelBrush::EdgeKey> edges;
+		for (const LevelBrush::EdgeKey &e : E.value) {
+			edges.push_back(e);
+		}
+
+		LevelBrush *working = target->duplicate_brush();
+		if (working->bevel_edges(edges, grid_size) > 0) {
+			undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
+			undo_redo->add_do_property(target, "faces", working->get_faces_data());
+			undo_redo->add_do_property(target, "face_materials", working->get_face_materials_data());
+			undo_redo->add_undo_property(target, "vertices", old_verts);
+			undo_redo->add_undo_property(target, "faces", old_faces);
+			undo_redo->add_undo_property(target, "face_materials", old_mats);
+			did = true;
+		}
+		memdelete(working);
+	}
+	if (!did) {
+		return;
+	}
+	undo_redo->add_do_method(current_map, "refresh");
+	undo_redo->add_undo_method(current_map, "refresh");
+	undo_redo->commit_action();
+
+	_refresh_map();
+}
+
 void LevelEditorScreen::_edge_menu_selected(int p_id) {
 	edge_menu->release_focus();
 	switch (p_id) {
@@ -230,6 +271,9 @@ void LevelEditorScreen::_edge_menu_selected(int p_id) {
 			break;
 		case 2: // Collapse
 			_action_collapse_edges();
+			break;
+		case 3: // Bevel
+			_action_bevel_edges();
 			break;
 	}
 }

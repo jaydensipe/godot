@@ -146,6 +146,22 @@ public:
 	// the edges share a vertex (can't bridge).
 	int bridge_edges(const EdgeKey &p_edge_a, const EdgeKey &p_edge_b, const Ref<Material> &p_material);
 
+	// Edge loop selection (Blender alt-click): starting from p_edge, walk both
+	// directions across each face to the opposite edge, until returning to the
+	// start or hitting a dead end (n-gon boundary / open topology). Returns
+	// all edges in the loop, including p_edge.
+	Vector<EdgeKey> get_edge_loop(const EdgeKey &p_edge) const;
+
+	// Collinear edge chain: from p_edge, walk both directions through shared
+	// vertices following only edges parallel to it (e.g. consecutive segments
+	// of a subdivided straight edge). Returns all chain edges, incl. p_edge.
+	Vector<EdgeKey> get_edge_chain(const EdgeKey &p_edge) const;
+
+	// Bevel (chamfer) the given edges: each edge is replaced by a new face
+	// spanning two verts slid p_distance into each adjacent face. Returns
+	// the number of edges successfully beveled.
+	int bevel_edges(const Vector<EdgeKey> &p_edges, real_t p_distance);
+
 	// Collapse vertices: moves each to the average position of its edge
 	// neighbors and welds duplicates. Degenerate faces (< 3 unique verts)
 	// are removed.
