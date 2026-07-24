@@ -51,6 +51,17 @@ Bugs that cost real debugging time. Read before touching the module.
    index - out-of-bounds. Keep loop-position vs vertex-index bookkeeping
    explicit everywhere.
 
+10. **Winding: stored loops are CCW-outward (Newell), Vulkan is CW-front.**
+    `setup_box` loops report outward normals via Newell's method, which means
+    they appear counter-clockwise from outside. Godot/Vulkan rasterizes
+    clockwise-front, so emitting stored loops as-is makes the EXTERIOR the
+    back face (culled -> you see the interior). FIX: the bake boundary
+    (`get_bake_surface_data` / `get_collision_faces`) reverses winding for
+    the default (solid) bake and emits loops as-is for `faces_flipped`
+    (interior). Vertex normals are unaffected (outward = solid). RULE: any
+    new geometry->render path must emit Vulkan-convention (clockwise-front)
+    triangles; convert at the boundary, never change the stored topology.
+
 ## Undo
 
 10. **`commit_action(false)` skips do-methods.** Used for live-applied changes

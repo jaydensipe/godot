@@ -760,10 +760,7 @@ void LevelBrush::get_bake_surface_data(int p_face, Vector<Vector3> &r_vertices, 
 		return;
 	}
 
-	// The stored loops are inward-facing under Godot's front-face convention,
-	// so the default (unflipped) bake reverses them to show a solid block;
-	// flipped bakes them as-is for an interior room shell.
-	const Vector3 n = faces_flipped ? get_face_normal(p_face) : -get_face_normal(p_face);
+	const Vector3 n = faces_flipped ? -get_face_normal(p_face) : get_face_normal(p_face);
 
 	// Planar UV projection on the face's dominant axes.
 	Vector3 abs_n = n.abs();
@@ -783,6 +780,9 @@ void LevelBrush::get_bake_surface_data(int p_face, Vector<Vector3> &r_vertices, 
 
 	for (uint32_t i = 0; i + 2 < loop.size(); i++) {
 		int tri[3];
+		// Stored loops are CCW-outward (Newell convention); Vulkan/Godot uses
+		// clockwise-front, so the default (solid) bake reverses the winding.
+		// Flipped (interior) brushes emit the loops as-is.
 		if (faces_flipped) {
 			tri[0] = loop[0];
 			tri[1] = loop[i + 1];

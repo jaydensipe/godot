@@ -276,8 +276,8 @@ Node3D *LevelMap::bake() const {
 LevelMap::LevelMap() {
 	default_material.instantiate();
 	default_material->set_albedo(Color(0.7, 0.7, 0.7));
-	// Back-face culling so flipped brushes (interiors) render correctly:
-	// outward faces vanish from outside, inward faces show inside.
+	// Standard back-face culling: the bake emits Vulkan-style clockwise-front
+	// triangles (see get_bake_surface_data), so exteriors draw and interiors cull.
 	default_material->set_cull_mode(BaseMaterial3D::CULL_BACK);
 
 	if (Engine::get_singleton()->is_editor_hint()) {

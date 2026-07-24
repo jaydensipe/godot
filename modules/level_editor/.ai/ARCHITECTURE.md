@@ -58,7 +58,7 @@ SubViewportContainer
 
 `LevelBrush` (Node3D):
 - `LocalVector<Vector3> verts`, `LocalVector<LocalVector<int>> faces` (n-gon
-  loops, outward winding), `LocalVector<Ref<Material>> face_materials`,
+  loops, CCW-outward winding per Newell's method), `LocalVector<Ref<Material>> face_materials`,
   `bool faces_flipped`.
 - Serialized: `vertices` (PackedVector3Array), `faces` (Array of
   PackedInt32Array), `face_materials` (Array), `faces_flipped` (bool).
@@ -69,8 +69,10 @@ SubViewportContainer
   `bridge_edges`, `flip_faces`/`set_faces_flipped`.
 - `EdgeKey {int a,b; ordered}` + `EdgeKeyHasher` used for edge identity.
 - Bake helpers: `get_bake_surface_data` (fan tris + planar UV, uv_scale 0.25),
-  `get_collision_faces`. Both honor `faces_flipped` (reversed winding +
-  negated normals).
+  `get_collision_faces`. Stored loops are CCW-outward, but Vulkan/Godot
+  rasterizes clockwise-front - so both helpers REVERSE the winding for the
+  default (solid) bake and emit loops as-is when `faces_flipped` (interior).
+  Vertex normals follow the flag (outward = solid, negated = flipped).
 - `ray_intersect` = Möller–Trumbore over fan tris, local space.
 
 `LevelMap` (Node3D):
@@ -84,8 +86,9 @@ SubViewportContainer
   bridge_edges) and the serialized setters (covers undo/redo), and
   `NOTIFICATION_LOCAL_TRANSFORM_CHANGED` (covers undo of node position; brush
   enables `set_notify_local_transform(true)` in editor).
-- `default_material` (StandardMaterial3D, albedo 0.7, CULL_BACK - needed so
-  flipped/interior brushes render correctly).
+- `default_material` (StandardMaterial3D, albedo 0.7, CULL_BACK - standard
+  back-face culling; correct because the bake emits Vulkan-convention
+  clockwise-front triangles).
 - `bake()` groups faces per unique material into an `ArrayMesh`
   (map-local space; normals via inverse-transpose), plus
   StaticBody3D+ConcavePolygonShape3D and OccluderInstance3D(ArrayOccluder3D)
