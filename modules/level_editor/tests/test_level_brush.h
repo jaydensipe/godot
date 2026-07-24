@@ -532,4 +532,161 @@ TEST_CASE("[LevelBrush] duplicate_brush copies topology, materials, and flipped 
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] get_edges are unique and canonically ordered") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = brush->get_edges();
+	CHECK(edges.size() == 12); // A cube has 12 unique edges.
+	for (const LevelBrush::EdgeKey &e : edges) {
+		CHECK(e.a < e.b); // Canonical ordering: smaller index first.
+		CHECK(e.a >= 0);
+		CHECK(e.b < 8);
+	}
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] get_face_center and get_center track geometry") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 4, 6)));
+
+	CHECK(brush->get_center().is_equal_approx(Vector3(1, 2, 3)));
+	CHECK(brush->get_face_center(4).is_equal_approx(Vector3(1, 4, 3))); // +Y face.
+	CHECK(brush->get_face_center(5).is_equal_approx(Vector3(1, 0, 3))); // -Y face.
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] clip without cap leaves the cut open") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Vertical cut at x=0.5, keep +X half, no cap.
+	brush->clip(Plane(Vector3(1, 0, 0), 0.5), false);
+
+	// 5 faces survive: +X (untouched quad), +Y/-Y/+Z/-Z (each halved by the
+	// cut), and no cap on the cut plane.
+	CHECK(brush->get_face_count() == 5);
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		LocalVector<int> loop = brush->get_face(f);
+		bool all_on_plane = true;
+		for (int idx : loop) {
+			if (Math::abs(brush->get_vertex(idx).x - 0.5) > 0.001) {
+				all_on_plane = false;
+				break;
+			}
+		}
+		CHECK(!all_on_plane); // No cap face.
+	}
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] subdivide_face splits a quad into four quads") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+
+	Ref<Material> mat;
+	mat.instantiate();
+	brush->set_face_material(4, mat); // +Y face.
+
+	REQUIRE(brush->subdivide_face(4));
+
+	// 6 - 1 + 4 faces; 5 new verts (4 midpoints + centroid).
+	CHECK(brush->get_face_count() == 9);
+	CHECK(brush->get_vertex_count() == 8 + 5);
+
+	// All four new faces are quads, inherit the material, and keep the
+	// outward (+Y) normal.
+	int quad_count = 0;
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		LocalVector<int> loop = brush->get_face(f);
+		bool on_top = true;
+		for (int idx : loop) {
+			if (Math::abs(brush->get_vertex(idx).y - 2.0) > 0.001) {
+				on_top = false;
+				break;
+			}
+		}
+		if (on_top) {
+			quad_count++;
+			CHECK(loop.size() == 4);
+			CHECK(brush->get_face_material(f) == mat);
+			CHECK(brush->get_face_normal(f).is_equal_approx(Vector3(0, 1, 0)));
+		}
+	}
+	CHECK(quad_count == 4);
+
+	// The centroid vert exists at the face center.
+	bool has_center = false;
+	for (int i = 0; i < brush->get_vertex_count(); i++) {
+		if (brush->get_vertex(i).is_equal_approx(Vector3(1, 2, 1))) {
+			has_center = true;
+			break;
+		}
+	}
+	CHECK(has_center);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] subdivide_face fans an n-gon into triangles") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Make pentagons: split_faces with an oblique plane crosses two ADJACENT
+	// edges of a face, splitting it into a triangle + a pentagon.
+	brush->split_faces(Plane(Vector3(1, 1, 1).normalized(), 1.6 / Math::sqrt(3.0)));
+	int ngon = -1;
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		if (brush->get_face(f).size() > 4) {
+			ngon = f;
+			break;
+		}
+	}
+	REQUIRE(ngon >= 0);
+	const int n = (int)brush->get_face(ngon).size();
+	const int faces_before = brush->get_face_count();
+
+	REQUIRE(brush->subdivide_face(ngon));
+
+	// The n-gon is replaced by n triangles: the first at index ngon, the
+	// remaining n-1 APPENDED at the end (indices faces_before .. end).
+	// Other faces (including any other pentagons) are untouched.
+	CHECK(brush->get_face_count() == faces_before - 1 + n);
+	CHECK(brush->get_face(ngon).size() == 3);
+	for (int i = 0; i < n - 1; i++) {
+		CHECK(brush->get_face(faces_before + i).size() == 3);
+	}
+
+	// All triangles together reference exactly the n-gon's original loop
+	// verts plus the new centroid.
+	HashSet<int> tris_verts;
+	for (int idx : brush->get_face(ngon)) {
+		tris_verts.insert(idx);
+	}
+	for (int i = 0; i < n - 1; i++) {
+		for (int idx : brush->get_face(faces_before + i)) {
+			tris_verts.insert(idx);
+		}
+	}
+	CHECK(tris_verts.size() == n + 1); // n loop verts + centroid.
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] subdivide_face rejects invalid faces") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	ERR_PRINT_OFF;
+	CHECK(!brush->subdivide_face(-1));
+	CHECK(!brush->subdivide_face(6));
+	ERR_PRINT_ON;
+	CHECK(brush->get_face_count() == 6); // Untouched.
+
+	memdelete(brush);
+}
+
 } // namespace TestLevelBrush

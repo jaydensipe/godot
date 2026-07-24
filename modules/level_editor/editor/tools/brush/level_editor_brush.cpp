@@ -220,6 +220,7 @@ void LevelEditorScreen::_ghost_commit() {
 	undo_redo->add_do_method(map, "refresh");
 	undo_redo->add_undo_method(map, "remove_child", brush);
 	undo_redo->add_undo_method(map, "refresh");
+	undo_redo->add_do_reference(brush); // Keep the node alive across undo.
 	undo_redo->commit_action();
 
 	selected_brush = brush;

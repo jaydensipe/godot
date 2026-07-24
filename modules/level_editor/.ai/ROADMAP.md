@@ -15,8 +15,48 @@ Cleaned up in the latest pass:
 - Removed: unused `node_3d_editor_plugin.h` include, dead `focus_on`,
   dead `gizmo_drag_original_rotation`, no-op branches/unused locals.
 
-Watch next: `level_editor_screen.cpp` is ~3.4k lines - candidates for future
-splits: ghost block, clip tool.
+### Audit (2026-07): bugs to fix
+
+All fixed in the post-audit pass:
+
+1. ~~Undo loses face materials after Clip/Split~~ - `_clip_apply` now
+   snapshots `face_materials` too; also resets all clip state.
+2. ~~Node-creation undo actions missing `add_do_reference`~~ - added in
+   `_ghost_commit` and `_bake_pressed`.
+3. ~~Brush-delete undo doesn't restore `owner`~~ - undo re-sets owner.
+4. ~~Mid-drag mode switch drops drag/extrude state + undo~~ - `_set_mode`
+   now cleanly ends gizmo/rotate/select-handle drags (committing their
+   undo actions) before switching.
+5. ~~Missing `release_focus()` in `_grid_size_selected`~~ - added.
+6. ~~`on_scene_changed` doesn't cancel ghost/clip~~ - cancels both.
+7. ~~`_clip_apply` leaves stale clip state~~ - resets everything `_clip_cancel` does.
+8. `_action_extrude_faces` keeping `selected_faces` - VERIFIED NOT A BUG:
+   `extrude_face` replaces each source face with its cap in place (no
+   re-index), so the selection correctly tracks the new caps for chained
+   extrudes.
+9. ~~Scale pivots inconsistent~~ - `_apply_gizmo_scale` now pivots at the
+   AABB center like `_apply_gizmo_scale_uniform`.
+10. ~~`split_faces` welds against ANY nearby vertex~~ - welding is now
+    restricted to intersection verts created by the same split call.
+
+### Audit (2026-07): dead code / smells (low priority)
+
+Removed: `_extrude_pressed()` + `_extrude_amount_changed()` (half-removed
+extrude SpinBox feature), `SpinBox`/`EditorResourcePicker` fwd decls, unused
+`plugin`/`dock` members + `set_plugin()`, dead `MODE_ROTATE` arm in
+`_gizmo_end_drag`. Kept (intentional): unreachable-looking Enter/Esc
+branches in forward_input (focus-path ambiguity, harmless), duplicated
+gizmo axis-projection in pick/draw (must stay in sync visually),
+`clip(p_add_cap=false)` param, key-swallow lists.
+
+Remaining smells: `_draw_drag_feedback` memnews a full LevelBrush per
+overlay draw; weld-by-epsilon loop still duplicated in clip/collapse
+(extract candidate); verts array grows monotonically (orphan verts are
+never compacted - affects `get_center` centroid after welds).
+
+Watch next: select-mode box handles (~170 lines) could follow the tools/
+split (`tools/select/`); mode-specific input handling still lives in
+`forward_input` (~490 lines) while draw/apply logic moved to tools/.
 
 ## Known placeholders & limitations
 

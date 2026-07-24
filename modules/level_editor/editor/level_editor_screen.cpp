@@ -780,9 +780,9 @@ LevelEditorScreen::LevelEditorScreen() {
 	face_popup->add_item(TTRC("Extrude"), 0);
 	face_popup->add_item(TTRC("Apply Material"), 1);
 	face_popup->add_item(TTRC("Delete"), 2);
-	face_popup->add_item(TTRC("Subdivide"), 4);
+	face_popup->add_shortcut(ED_SHORTCUT("level_editor/subdivide_face", TTRC("Subdivide"), KeyModifierMask::CMD_OR_CTRL | Key::D, true), 4);
 	face_popup->add_separator();
-	face_popup->add_item(TTRC("Flip Faces"), 3);
+	face_popup->add_shortcut(ED_SHORTCUT("level_editor/flip_faces", TTRC("Flip Faces"), Key::F, true), 3);
 	face_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_face_menu_selected));
 	toolbar->add_child(face_menu);
 
@@ -990,9 +990,7 @@ void LevelEditorScreen::_edit_brush_node(LevelBrush *p_brush) {
 	call_deferred("grab_focus");
 }
 
-void LevelEditorScreen::set_plugin(EditorPlugin *p_plugin) {
-	plugin = p_plugin;
-}
+
 
 void LevelEditorScreen::set_selected_brush_from_editor(LevelBrush *p_brush) {
 	if (!p_brush || p_brush == selected_brush) {
@@ -1050,6 +1048,12 @@ void LevelEditorScreen::_resolve_map() {
 
 void LevelEditorScreen::on_scene_changed() {
 	current_map = nullptr;
+	if (ghost_active) {
+		_ghost_cancel();
+	}
+	if (clip_active) {
+		_clip_cancel();
+	}
 	_clear_selection();
 	_update_map_ui();
 	_update_overlays();
@@ -1132,6 +1136,21 @@ void LevelEditorScreen::_mode_changed(int p_mode) {
 }
 
 void LevelEditorScreen::_set_mode(Mode p_mode) {
+	// Interrupt any in-progress drag first - the drag's undo action commits
+	// against the OLD mode's snapshots, so ending it cleanly is required
+	// before switching (a dropped extrude drag would be un-undoable).
+	if (gizmo_dragging) {
+		_gizmo_end_drag();
+	}
+	if (rotate_drag_axis >= 0) {
+		_rotate_end_drag();
+	}
+	if (select_handle_drag != GHOST_NONE) {
+		_select_handle_end_drag();
+	}
+	select_moving = false;
+	select_move_viewport = nullptr;
+
 	mode = p_mode;
 	for (int i = 0; i < MODE_MAX; i++) {
 		mode_buttons[i]->set_pressed(i == (int)mode);
@@ -1159,13 +1178,10 @@ int LevelEditorScreen::_grid_step_index() const {
 }
 
 void LevelEditorScreen::_grid_size_selected(int p_index) {
+	grid_size_option->release_focus();
 	grid_size = LevelEditorGrid::STEPS[CLAMP(p_index, 0, LevelEditorGrid::STEP_COUNT - 1)];
 	grid_size_option->select(CLAMP(p_index, 0, LevelEditorGrid::STEP_COUNT - 1));
 	_update_overlays();
-}
-
-void LevelEditorScreen::_extrude_amount_changed(double p_value) {
-	extrude_amount = (real_t)p_value;
 }
 
 void LevelEditorScreen::_material_changed(const Ref<Resource> &p_resource) {
@@ -1206,6 +1222,7 @@ void LevelEditorScreen::_delete_selection() {
 			// Delete the whole brush node.
 			LevelBrush *target = selected_brush;
 			LevelMap *map = current_map;
+			Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
 			_clear_selection();
 
 			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
@@ -1213,6 +1230,7 @@ void LevelEditorScreen::_delete_selection() {
 			undo_redo->add_do_method(map, "remove_child", target);
 			undo_redo->add_do_method(map, "refresh");
 			undo_redo->add_undo_method(map, "add_child", target);
+			undo_redo->add_undo_method(target, "set_owner", root);
 			undo_redo->add_undo_method(map, "refresh");
 			undo_redo->add_undo_reference(target);
 			undo_redo->commit_action();
@@ -2377,7 +2395,6 @@ const Ref<Texture2D> LevelEditorPlugin::get_plugin_icon() const {
 
 LevelEditorPlugin::LevelEditorPlugin() {
 	screen = memnew(LevelEditorScreen);
-	screen->set_plugin(this);
 	screen->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	EditorNode::get_singleton()->get_editor_main_screen()->get_control()->add_child(screen);
 	screen->hide();

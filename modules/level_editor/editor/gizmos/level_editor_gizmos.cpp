@@ -348,6 +348,27 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 	}
 	gizmo_drag_plane_normal = n;
 	gizmo_drag_plane_point = gizmo_drag_start_origin;
+
+	// Grab offset: where on the drag axis/plane the user actually grabbed,
+	// relative to the gizmo origin. Subtracting this from drag hits keeps the
+	// first mouse move from jumping (the click is never exactly at the origin).
+	gizmo_drag_grab_offset = Vector3();
+	Vector3 gro, grd;
+	p_vp->get_ray(p_mouse, gro, grd);
+	if (gizmo_drag_part == GIZMO_X || gizmo_drag_part == GIZMO_Y || gizmo_drag_part == GIZMO_Z) {
+		Vector3 axis;
+		axis[gizmo_drag_part] = 1.0;
+		Vector3 grab;
+		if (LevelHelpers::closest_point_on_line_to_ray(gizmo_drag_start_origin, axis, gro, grd, grab)) {
+			gizmo_drag_grab_offset = grab - gizmo_drag_start_origin;
+		}
+	} else {
+		Plane plane(gizmo_drag_plane_normal, gizmo_drag_plane_normal.dot(gizmo_drag_plane_point));
+		Vector3 grab;
+		if (plane.intersects_ray(gro, grd, &grab)) {
+			gizmo_drag_grab_offset = grab - gizmo_drag_start_origin;
+		}
+	}
 }
 
 void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse) {
@@ -366,7 +387,13 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 		if (!LevelHelpers::closest_point_on_line_to_ray(gizmo_drag_start_origin, axis, ro, rd, axis_point)) {
 			return; // Mouse ray parallel to the axis.
 		}
-		delta = _snap(axis_point) - _snap(gizmo_drag_start_origin);
+		// Scale mode wants the raw (unsnapped) delta; it snaps the resulting
+		// brush SIZE to the grid instead, which avoids start-of-drag jitter.
+		if (mode == MODE_SCALE) {
+			delta = axis_point - gizmo_drag_start_origin - gizmo_drag_grab_offset;
+		} else {
+			delta = _snap(axis_point - gizmo_drag_grab_offset) - _snap(gizmo_drag_start_origin);
+		}
 		// Keep only the axis component.
 		Vector3 constrained;
 		constrained[gizmo_drag_part] = delta[gizmo_drag_part];
@@ -378,9 +405,11 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 		if (!plane.intersects_ray(ro, rd, &hit)) {
 			return;
 		}
-		Vector3 snapped_hit = _snap(hit);
-		Vector3 snapped_start = _snap(gizmo_drag_start_origin);
-		delta = snapped_hit - snapped_start;
+		if (mode == MODE_SCALE) {
+			delta = hit - gizmo_drag_start_origin - gizmo_drag_grab_offset;
+		} else {
+			delta = _snap(hit - gizmo_drag_grab_offset) - _snap(gizmo_drag_start_origin);
+		}
 
 		switch (gizmo_drag_part) {
 			case GIZMO_XY:
@@ -401,7 +430,8 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 	if (mode == MODE_SCALE) {
 		if (gizmo_drag_uniform_scale) {
 			// Click-anywhere uniform drag (started off-gizmo): use mouse X.
-			real_t factor = 1.0 + (p_mouse.x - gizmo_drag_mouse_start.x) * 0.01;
+			// 400px of drag = 2x scale (100px = 2x felt twitchy).
+			real_t factor = 1.0 + (p_mouse.x - gizmo_drag_mouse_start.x) * 0.0025;
 			_apply_gizmo_scale_uniform(factor);
 		} else {
 			_apply_gizmo_scale(delta);
@@ -620,19 +650,36 @@ void LevelEditorScreen::_apply_gizmo_scale_uniform(real_t p_factor) {
 	}
 	selected_brush->set_vertices_data(gizmo_drag_original_verts);
 
+	// Scale around the center with the raw factor, then snap the resulting
+	// AABB edges to the grid (same as axis scale).
 	AABB bb;
-	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
+	for (int i = 0; i < gizmo_drag_original_verts.size(); i++) {
 		if (i == 0) {
-			bb.position = selected_brush->get_vertex(0);
+			bb.position = gizmo_drag_original_verts[0];
 		} else {
-			bb.expand_to(selected_brush->get_vertex(i));
+			bb.expand_to(gizmo_drag_original_verts[i]);
 		}
 	}
 	Vector3 center = bb.get_center();
+
 	real_t f = MAX(p_factor, 0.01);
+	Vector3 mins = center + (bb.position - center) * f;
+	Vector3 maxs = center + (bb.position + bb.size - center) * f;
+	for (int axis = 0; axis < 3; axis++) {
+		mins[axis] = _snap(mins[axis]);
+		maxs[axis] = _snap(maxs[axis]);
+		if (maxs[axis] - mins[axis] < grid_size) {
+			maxs[axis] = mins[axis] + grid_size;
+		}
+	}
+
 	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
 		Vector3 v = selected_brush->get_vertex(i);
-		selected_brush->set_vertex(i, center + (v - center) * f);
+		for (int axis = 0; axis < 3; axis++) {
+			real_t t = (bb.size[axis] > CMP_EPSILON) ? (v[axis] - bb.position[axis]) / bb.size[axis] : 0.0;
+			v[axis] = mins[axis] + t * (maxs[axis] - mins[axis]);
+		}
+		selected_brush->set_vertex(i, v);
 	}
 	_refresh_map();
 }
@@ -641,37 +688,60 @@ void LevelEditorScreen::_apply_gizmo_scale(const Vector3 &p_world_delta) {
 	if (!selected_brush) {
 		return;
 	}
-	// Restore, then scale original vertices from the brush-local AABB min.
+	// Restore, then scale original vertices around the brush center (same
+	// pivot as uniform scale).
 	selected_brush->set_vertices_data(gizmo_drag_original_verts);
 
-	// Per-axis scale factor: 1 unit of drag = +100%.
 	Transform3D inv = selected_brush->get_global_transform().affine_inverse();
 	Vector3 local_delta = inv.basis.xform(p_world_delta);
 
+	// Original size from the drag-start snapshot (the live brush is already
+	// restored above, but the AABB must come from the ORIGINAL geometry).
 	AABB bb;
-	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
+	for (int i = 0; i < gizmo_drag_original_verts.size(); i++) {
 		if (i == 0) {
-			bb.position = selected_brush->get_vertex(0);
+			bb.position = gizmo_drag_original_verts[0];
 		} else {
-			bb.expand_to(selected_brush->get_vertex(i));
+			bb.expand_to(gizmo_drag_original_verts[i]);
 		}
 	}
 
+	// Scale around the center with the raw factor, then snap the resulting
+	// min/max of each axis to the grid independently - the brush grows from
+	// its center AND its edges land on grid lines (the snapped size may be
+	// asymmetric per side, which is expected at grid boundaries).
+	const real_t SCALE_RATE = 0.25; // 4 world units of drag = 2x scale.
+	Vector3 center = bb.get_center();
 	Vector3 factors(1, 1, 1);
 	if (gizmo_drag_part == GIZMO_XY || gizmo_drag_part == GIZMO_XZ || gizmo_drag_part == GIZMO_YZ) {
 		// Center/plane drag: uniform scale by the largest dragged component.
-		real_t f = 1.0 + MAX(local_delta.x, MAX(local_delta.y, local_delta.z));
+		real_t f = 1.0 + MAX(local_delta.x, MAX(local_delta.y, local_delta.z)) * SCALE_RATE;
 		factors = Vector3(f, f, f);
 	} else if (gizmo_drag_part >= GIZMO_X && gizmo_drag_part <= GIZMO_Z) {
-		factors[gizmo_drag_part] = 1.0 + local_delta[gizmo_drag_part];
+		factors[gizmo_drag_part] = 1.0 + local_delta[gizmo_drag_part] * SCALE_RATE;
 	}
 	factors.x = MAX(factors.x, 0.01);
 	factors.y = MAX(factors.y, 0.01);
 	factors.z = MAX(factors.z, 0.01);
 
+	// Scaled AABB around the center, edges snapped to the grid.
+	Vector3 mins = center + (bb.position - center) * factors;
+	Vector3 maxs = center + (bb.position + bb.size - center) * factors;
+	for (int axis = 0; axis < 3; axis++) {
+		mins[axis] = _snap(mins[axis]);
+		maxs[axis] = _snap(maxs[axis]);
+		if (maxs[axis] - mins[axis] < grid_size) {
+			maxs[axis] = mins[axis] + grid_size;
+		}
+	}
+
+	// Remap original verts from the original AABB into the snapped one.
 	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
 		Vector3 v = selected_brush->get_vertex(i);
-		v = bb.position + (v - bb.position) * factors;
+		for (int axis = 0; axis < 3; axis++) {
+			real_t t = (bb.size[axis] > CMP_EPSILON) ? (v[axis] - bb.position[axis]) / bb.size[axis] : 0.0;
+			v[axis] = mins[axis] + t * (maxs[axis] - mins[axis]);
+		}
 		selected_brush->set_vertex(i, v);
 	}
 	_refresh_map();
@@ -763,6 +833,21 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		return;
 	}
 
+	// Scale mode: commit against the drag-start vertex snapshot (the shared
+	// element-path map is unused in this mode).
+	if (mode == MODE_SCALE) {
+		LevelBrush *target = selected_brush;
+		PackedVector3Array old_verts = gizmo_drag_original_verts;
+		PackedVector3Array new_verts = target->get_vertices_data();
+		if (new_verts != old_verts) {
+			Array cur_faces = target->get_faces_data();
+			Array cur_mats = target->get_face_materials_data();
+			_commit_brush_undo(TTR("Scale Brush"), target, old_verts, cur_faces, cur_mats);
+		}
+		gizmo_drag_original_verts.clear();
+		return;
+	}
+
 	if (gizmo_extrude_drag) {
 		gizmo_extrude_drag = false;
 		// Commit the extrusion (topology change at drag start + cap pull) as a
@@ -794,8 +879,9 @@ void LevelEditorScreen::_gizmo_end_drag() {
 	}
 
 	// Commit the move as one undo action across all dragged brushes.
+	// (Rotate never reaches here - it has its own ring-gizmo drag path.)
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	undo_redo->create_action(mode == MODE_ROTATE ? TTR("Rotate Brush") : (mode == MODE_SCALE ? TTR("Scale Brush") : TTR("Move Brush Element")));
+	undo_redo->create_action(mode == MODE_SCALE ? TTR("Scale Brush") : TTR("Move Brush Element"));
 	bool any_moved = false;
 	for (const KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
 		LevelBrush *target = E.key;
@@ -868,7 +954,8 @@ void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas
 		p_canvas->draw_colored_polygon(quad, c);
 	}
 
-	// Axis lines with arrowheads.
+	// Axis lines; arrowheads in translate modes, cube tips in Scale mode
+	// (matches the 3D editor's scale gizmo).
 	for (int i = 0; i < 3; i++) {
 		if (!axis_ok[i]) {
 			continue;
@@ -876,13 +963,18 @@ void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas
 		bool active = (gizmo_hover == (GizmoPart)i || gizmo_drag_part == (GizmoPart)i);
 		Color c = active ? LevelEditorColors::hot(axis_col[i]) : axis_col[i];
 		p_canvas->draw_line(so, axis_end[i], c, (active ? 3.0 : 2.0) * EDSCALE);
-		// Arrowhead.
-		Vector2 dir = (axis_end[i] - so).normalized();
-		Vector2 perp(-dir.y, dir.x);
-		real_t arrow_len = 10.0 * EDSCALE;
-		real_t arrow_w = 4.0 * EDSCALE;
-		p_canvas->draw_line(axis_end[i], axis_end[i] - dir * arrow_len + perp * arrow_w, c, 2.0 * EDSCALE);
-		p_canvas->draw_line(axis_end[i], axis_end[i] - dir * arrow_len - perp * arrow_w, c, 2.0 * EDSCALE);
+		if (mode == MODE_SCALE) {
+			real_t hs = 5.0 * EDSCALE;
+			p_canvas->draw_rect(Rect2(axis_end[i] - Vector2(hs, hs), Size2(hs * 2, hs * 2)), c);
+		} else {
+			// Arrowhead.
+			Vector2 dir = (axis_end[i] - so).normalized();
+			Vector2 perp(-dir.y, dir.x);
+			real_t arrow_len = 10.0 * EDSCALE;
+			real_t arrow_w = 4.0 * EDSCALE;
+			p_canvas->draw_line(axis_end[i], axis_end[i] - dir * arrow_len + perp * arrow_w, c, 2.0 * EDSCALE);
+			p_canvas->draw_line(axis_end[i], axis_end[i] - dir * arrow_len - perp * arrow_w, c, 2.0 * EDSCALE);
+		}
 	}
 
 	// Center square.

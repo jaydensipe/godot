@@ -112,20 +112,25 @@ void LevelEditorScreen::_clip_apply() {
 		LevelBrush *target = clip_brush;
 		PackedVector3Array old_verts = target->get_vertices_data();
 		Array old_faces = target->get_faces_data();
+		Array old_mats = target->get_face_materials_data();
 
 		target->split_faces(plane);
-		_commit_brush_undo(TTR("Split Brush Faces"), target, old_verts, old_faces, Array());
+		_commit_brush_undo(TTR("Split Brush Faces"), target, old_verts, old_faces, old_mats);
 	} else {
 		LevelBrush *target = clip_brush;
 		PackedVector3Array old_verts = target->get_vertices_data();
 		Array old_faces = target->get_faces_data();
+		Array old_mats = target->get_face_materials_data();
 
 		target->clip(plane);
-		_commit_brush_undo(TTR("Clip Brush"), target, old_verts, old_faces, Array());
+		_commit_brush_undo(TTR("Clip Brush"), target, old_verts, old_faces, old_mats);
 	}
 
 	clip_active = false;
+	clip_drawing = false;
+	clip_drag_point = -1;
 	clip_brush = nullptr;
+	clip_viewport = nullptr;
 	_refresh_map();
 }
 

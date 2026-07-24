@@ -64,36 +64,58 @@ Bugs that cost real debugging time. Read before touching the module.
 
 ## Undo
 
-10. **`commit_action(false)` skips do-methods.** Used for live-applied changes
+11. **`commit_action(false)` skips do-methods.** Used for live-applied changes
     (gizmo drags). But if any do-method must actually RUN now (e.g.
     `add_child` for a split brush), use `commit_action(true)`. A split once
     silently dropped the second half because of this.
 
-11. **Per-plane/per-face undo entries are fragile.** Record whole serialized
+12. **Per-plane/per-face undo entries are fragile.** Record whole serialized
     properties (`vertices`, `faces`, `face_materials`) in one pair - safe
     across face-count changes and keeps the inspector in sync.
 
+13. **Node-creating undo actions need `add_do_reference`.** If the action
+    does `add_do_method(parent, "add_child", node)` +
+    `add_undo_method(parent, "remove_child", node)`, the node is freed on
+    undo and redo re-adds a dangling pointer. Add `add_do_reference(node)`
+    (node exists at commit time) or `add_undo_reference(node)` (node is
+    created by the do side). (`_ghost_commit` / `_bake_pressed` have it;
+    `_delete_selection` uses `add_undo_reference`.)
+
+14. **Face-index selections go stale after topology ops.** Any action that
+    adds/removes faces (subdivide, delete, clip) invalidates
+    `selected_faces`/`selected_edges` indices. Either clear the selection
+    after the op (subdivide/delete do this) or remap it (the gizmo extrude
+    updates selection to the new cap faces). EXCEPTION: `extrude_face`
+    replaces each source face with its cap in place, so a face selection
+    stays valid across extrudes (chained extrude relies on this).
+
+15. **`_set_mode` must interrupt active drags.** Mode shortcuts can fire
+    mid-drag; the drag's undo action commits against the old mode's
+    snapshots, so `_set_mode` ends gizmo/rotate/select-handle drags
+    (committing their undos) before switching. Any NEW drag state must be
+    added there too, or its edit becomes un-undoable.
+
 ## Rendering
 
-12. **Black tops on fresh brushes were NOT normals.** Winding was provably
+16. **Black tops on fresh brushes were NOT normals.** Winding was provably
     correct (Newell check printed correct normals). Culprits were (a) scene's
     own WorldEnvironment/light, (b) the level viewports' single directional
     light pointing the wrong way - set light direction with
     `look_at_from_position`, don't hand-tune Euler rotations. Also preview
     instance gets `SHADOW_CASTING_SETTING_OFF`.
 
-13. **Overlays bleed into other viewports** unless the SubViewportContainer
+17. **Overlays bleed into other viewports** unless the SubViewportContainer
     has `set_clip_contents(true)`.
 
-14. **SubViewports share the edited scene's World3D** (own_world_3d=false) -
+18. **SubViewports share the edited scene's World3D** (own_world_3d=false) -
     brush previews render because of this. Lights/cameras added under them
     live in the same world. (User explicitly chose separate lighting over
     sharing the 3D editor's world via `set_world_3d`.)
 
-15. **Preview refresh:** `LevelMap::refresh()` calls `_update_preview()`
+19. **Preview refresh:** `LevelMap::refresh()` calls `_update_preview()`
     immediately (not deferred) so gizmo drags stay in sync.
 
-22. **Undo/redo restores bypass the editing code paths.** `EditorUndoRedoManager`
+20. **Undo/redo restores bypass the editing code paths.** `EditorUndoRedoManager`
     sets serialized properties / `position` directly - the overlay outline
     (drawn live from brush data) updated, but the baked preview mesh stayed
     stale. FIX: `LevelBrush` notifies the parent map itself -
@@ -104,71 +126,71 @@ Bugs that cost real debugging time. Read before touching the module.
     scene load / before the brush is in the tree, and the 3 property restores
     coalesce into one rebuild.
 
-23. **`EditorNode::scene_changed` signal connection failed** at runtime
+21. **`EditorNode::scene_changed` signal connection failed** at runtime
     ("nonexistent signal") even though it's declared in `_bind_methods`.
     FIX: use the `EditorPlugin::edited_scene_changed()` virtual override
     instead - called via `EditorData::notify_edited_scene_changed()`.
 
-24. **Grid lines vanish when flying low** in the perspective view: projecting
+22. **Grid lines vanish when flying low** in the perspective view: projecting
     a segment with an endpoint behind the camera fails. FIX: clip segments
     against the camera near plane in camera space before projecting.
 
-25. **Module editor icons**: add `get_icons_path()` to `config.py` and drop
+23. **Module editor icons**: add `get_icons_path()` to `config.py` and drop
     SVGs in that folder - `editor/icons/SCsub` embeds them by filename into
     `EditorIcons`. Name one after a registered class (e.g. `LevelMap.svg`)
     and it becomes the scene-tree node icon automatically.
 
-26. **SubViewports sharing a World3D render EVERYTHING in that world.** All 4
+24. **SubViewports sharing a World3D render EVERYTHING in that world.** All 4
     level viewports share the scene's World3D, so `set_visible(false)` on one
     viewport's own MeshInstance3D doesn't keep it out of the other panes.
     Editor-only 3D content (the perspective grid mesh) must live on a render
     layer only the intended camera culls in (layer 20 + camera cull_mask).
 
-27. **Pick and draw must share screen-size math.** The rotate ring was picked
+25. **Pick and draw must share screen-size math.** The rotate ring was picked
     at unit world radius but drawn at a screen-constant radius - picking was
     offset at almost every zoom. Any gizmo with a pixel-constant size needs
     ONE world-size helper used by both paths (`_rotate_world_radius`).
 
-28. **Restore-from-snapshot, never restore-by-recompute.** The select-handle
+26. **Restore-from-snapshot, never restore-by-recompute.** The select-handle
     resize "restored" original geometry by remapping current verts into the
     original AABB; a degenerate intermediate drag (zero extent on an axis)
     destroyed vertex data and the restore baked the loss in. Snapshot the
     serialized array at drag start (`select_drag_original_verts`) and
     `set_vertices_data()` to restore - same pattern as gizmo drags.
 
-29. **Undo do/undo property lists must cover EVERY mutated property.**
+27. **Undo do/undo property lists must cover EVERY mutated property.**
     Extrude recorded `vertices`+`faces` but not `face_materials`, which
     `extrude_face` also mutates - undo left materials desynced from faces.
     When in doubt use `_add_brush_undo_pair` (records all three).
 
-30. **Don't bail the whole gizmo when one axis is camera-behind.** Early code
+28. **Don't bail the whole gizmo when one axis is camera-behind.** Early code
     returned GIZMO_NONE / skipped drawing entirely if ANY axis tip was behind
     the camera - the gizmo vanished at grazing angles. Skip per-axis
     (`axis_ok[]`), and gate plane handles on BOTH their axes being visible.
     Pick and draw must use the same plane-handle extent
     (`LevelEditorColors::GIZMO_PLANE_EXTENT`).
 
-31. **Plane keep-side semantics:** `Plane::distance_to(p) = normal.dot(p)-d`;
+29. **Plane keep-side semantics:** `Plane::distance_to(p) = normal.dot(p)-d`;
     `clip()` keeps `distance >= -eps`. A clip plane at +X normal, d=5 keeps
     only x>=5 (clips a unit box at origin AWAY) - the tests got this wrong
     once (no-op plane needs the brush fully on the keep side).
 
 ## Serialization
 
-16. **Runtime classes must not live under `editor/`.** `LevelBrush`/`LevelMap`
+30. **Runtime classes must not live under `editor/`.** `LevelBrush`/`LevelMap`
     register at SCENE level and exist in exported games; the module SCsub only
     builds `editor/*.cpp` for editor builds. They were moved back to module
     root after an export-breaking placement.
 
-17. **Brush persistence needs plain properties.** C++ members don't save;
+31. **Brush persistence needs plain properties.** C++ members don't save;
     `vertices`/`faces`/`face_materials`/`faces_flipped` are real properties.
     Old scenes saved before this have empty brushes - recreate them.
 
 ## SCons/module mechanics
 
-18. Module SCsub env flag is `env.editor_build`, not `env["tools"]`.
-19. `initialize_<foldername>_module` must match the folder name exactly
+32. Module SCsub env flag is `env.editor_build`, not `env["tools"]`.
+33. `initialize_<foldername>_module` must match the folder name exactly
     (module was renamed `leveleditor` → `level_editor` mid-project).
-20. Clean stale `__pycache__` in the module dir after renames.
-21. `Math::pow(2.0, step)` was "ambiguous" on MSVC - hardcoded a ladder array
+34. Clean stale `__pycache__` in the module dir after renames.
+35. `Math::pow(2.0, step)` was "ambiguous" on MSVC - hardcoded a ladder array
     instead (simpler anyway).

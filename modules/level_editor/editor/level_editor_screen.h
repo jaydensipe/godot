@@ -44,10 +44,8 @@
 class Button;
 class Camera3D;
 class DirectionalLight3D;
-class EditorResourcePicker;
 class LevelEditorDock;
 class OptionButton;
-class SpinBox;
 class WorldEnvironment;
 
 class LevelEditorScreen;
@@ -176,8 +174,6 @@ public:
 	};
 
 private:
-	EditorPlugin *plugin = nullptr;
-
 	LevelEditorViewport *viewports[4] = {};
 	SplitContainer *top_split = nullptr;
 	SplitContainer *bottom_split = nullptr;
@@ -199,8 +195,6 @@ private:
 
 	bool grid_2d_enabled = true;
 	bool grid_3d_enabled = true;
-
-	LevelEditorDock *dock = nullptr;
 
 	real_t grid_size = 1.0;
 	real_t extrude_amount = 1.0;
@@ -345,6 +339,7 @@ private:
 	GizmoPart gizmo_drag_part = GIZMO_NONE;
 	bool gizmo_dragging = false;
 	Vector3 gizmo_drag_start_origin; // World-space gizmo origin at drag start.
+	Vector3 gizmo_drag_grab_offset; // Closest point on the drag axis/plane to the grab click, minus the origin (kills first-frame jumps).
 	Vector2 gizmo_drag_mouse_start;
 	LevelEditorViewport *gizmo_drag_viewport = nullptr;
 	Vector3 gizmo_drag_plane_normal;
@@ -405,7 +400,6 @@ private:
 	void _update_mode_icons();
 	void _edit_brush_node(LevelBrush *p_brush);
 
-	void _extrude_pressed();
 	void _action_extrude_faces();
 	void _action_extrude_edges();
 	void _action_extrude_vertices();
@@ -421,7 +415,6 @@ private:
 	void _view_grid_toggled(int p_id);
 	void _action_bridge_edges();
 	void _grid_size_selected(int p_index);
-	void _extrude_amount_changed(double p_value);
 
 	int _grid_step_index() const;
 
@@ -469,7 +462,6 @@ protected:
 	virtual void input(const Ref<InputEvent> &p_event) override;
 
 public:
-	void set_plugin(EditorPlugin *p_plugin);
 	LevelMap *get_map() const { return current_map; }
 	real_t get_grid_size() const { return grid_size; }
 	bool is_grid_2d_enabled() const { return grid_2d_enabled; }

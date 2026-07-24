@@ -319,6 +319,10 @@ void LevelBrush::split_faces(const Plane &p_plane) {
 	LocalVector<LocalVector<int>> new_faces;
 	LocalVector<Ref<Material>> new_mats;
 
+	// Intersection verts created by THIS split; welding is only valid against
+	// these (welding to a pre-existing nearby vertex would corrupt topology).
+	const uint32_t first_new_vert = verts.size();
+
 	for (uint32_t f = 0; f < faces.size(); f++) {
 		const LocalVector<int> &loop = faces[f];
 		const uint32_t n = loop.size();
@@ -366,9 +370,9 @@ void LevelBrush::split_faces(const Plane &p_plane) {
 				if (in_a != in_b) {
 					real_t t = da / (da - db);
 					Vector3 hit = verts[ia] + (verts[ib] - verts[ia]) * t;
-					// Weld against existing intersection verts on this edge-cross.
+					// Weld against intersection verts created by this split.
 					int found = -1;
-					for (uint32_t vi = 0; vi < verts.size(); vi++) {
+					for (uint32_t vi = first_new_vert; vi < verts.size(); vi++) {
 						if (verts[vi].distance_to(hit) < eps * 4.0) {
 							found = (int)vi;
 							break;

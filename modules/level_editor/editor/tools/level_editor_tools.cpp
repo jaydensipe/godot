@@ -38,26 +38,6 @@
 #include "scene/gui/menu_button.h"
 #include "scene/gui/popup_menu.h"
 
-void LevelEditorScreen::_extrude_pressed() {
-	if (!current_map) {
-		return;
-	}
-
-	switch (mode) {
-		case MODE_FACE:
-			_action_extrude_faces();
-			break;
-		case MODE_EDGE:
-			_action_extrude_edges();
-			break;
-		case MODE_VERTEX:
-			_action_extrude_vertices();
-			break;
-		default:
-			break;
-	}
-}
-
 void LevelEditorScreen::_action_extrude_faces() {
 	if (!current_map || selected_faces.is_empty()) {
 		return;
@@ -433,6 +413,7 @@ void LevelEditorScreen::_bake_pressed() {
 		}
 	}
 	undo_redo->add_undo_method(root, "remove_child", baked);
+	undo_redo->add_do_reference(baked); // Keep the node alive across undo.
 	undo_redo->commit_action();
 
 	EditorInterface::get_singleton()->edit_node(baked);

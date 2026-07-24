@@ -29,14 +29,24 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
 - `move_vertices` isolation (only the moved vertex changes; incident faces tilt)
 - `ray_intersect` (entry face, distance, miss)
 - `extrude_face` (cap + side walls, counts)
-- `clip` (front kept + cap with correct outward normal)
+- `clip` (front kept + cap with correct outward normal; no-cap variant)
 - `split_faces` (subdivide in place, no clipping, no caps)
+- `subdivide_face` (quad -> 4 quads with material inheritance; n-gon ->
+  triangle fan; invalid-index rejection)
 - `flip_faces` / `faces_flipped` (flag-only; bake data inverts)
 - `bridge_edges` (quad span, winding, rejection cases)
 - `delete_faces` (materials stay aligned after removal)
 - `collapse_vertices` (neighbor-average weld)
+- `get_edges` (uniqueness, canonical a<b ordering)
+- `get_face_center` / `get_center` (unit-box geometry)
 - serialization round-trip (`vertices`/`faces`/`face_materials` properties)
 - bake/collision triangle counts
+
+**`test_level_helpers.h`** — pure drag/picking math, no tree needed:
+- `axis_drag_plane` (contains axis + point, faces camera, degenerate
+  fallbacks when the camera is on the axis, top-view vertical-drag case)
+- `closest_point_on_line_to_ray` (basic solve, near-axis-parallel ray,
+  parallel-line rejection)
 
 **`test_level_map.h`** — tagged `[SceneTree]` (needs the test harness's
 physics server for `StaticBody3D` construction — untagged cases crash):
