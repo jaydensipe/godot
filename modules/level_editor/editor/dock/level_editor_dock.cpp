@@ -47,7 +47,7 @@ void LevelEditorDock::_material_changed(const Ref<Resource> &p_resource) {
 	}
 }
 
-void LevelEditorDock::_apply_material_pressed() {
+void LevelEditorDock::_action_apply_material() {
 	apply_material_button->release_focus();
 	if (screen) {
 		screen->apply_material_from_dock();
@@ -70,7 +70,7 @@ LevelEditorDock::LevelEditorDock() {
 	apply_material_button = memnew(Button);
 	apply_material_button->set_text(TTRC("Apply to Face"));
 	apply_material_button->set_tooltip_text(TTRC("Apply the active material to the selected faces (or the whole selected brush)."));
-	apply_material_button->connect("pressed", callable_mp(this, &LevelEditorDock::_apply_material_pressed));
+	apply_material_button->connect("pressed", callable_mp(this, &LevelEditorDock::_action_apply_material));
 	add_child(apply_material_button);
 
 	add_child(memnew(HSeparator));

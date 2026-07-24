@@ -406,12 +406,12 @@ private:
 	void _edit_brush_node(LevelBrush *p_brush);
 
 	void _extrude_pressed();
-	void _extrude_faces();
-	void _extrude_edges();
-	void _extrude_vertices();
-	void _apply_material_pressed();
-	void _flip_faces_pressed();
-	void _subdivide_faces();
+	void _action_extrude_faces();
+	void _action_extrude_edges();
+	void _action_extrude_vertices();
+	void _action_apply_material();
+	void _action_flip_faces();
+	void _action_subdivide_faces();
 	void _bake_pressed();
 	void _tools_menu_selected(int p_id);
 	void _vertex_menu_selected(int p_id);
@@ -419,7 +419,7 @@ private:
 	void _face_menu_selected(int p_id);
 	void _view_display_selected(int p_id);
 	void _view_grid_toggled(int p_id);
-	void _join_edges();
+	void _action_bridge_edges();
 	void _grid_size_selected(int p_index);
 	void _extrude_amount_changed(double p_value);
 
@@ -436,9 +436,9 @@ private:
 	void _update_hover(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _clear_selection();
 	void _delete_selection();
-	void _delete_faces();
-	void _collapse_edges();
-	void _collapse_vertices();
+	void _action_delete_faces();
+	void _action_collapse_edges();
+	void _action_collapse_vertices();
 
 	// Undo helper: records the brush's current vertices/faces/materials as the
 	// "do" state against previously-snapshotted data, in one action.
@@ -477,7 +477,7 @@ public:
 
 	// Dock hooks (LevelEditorDock forwards its UI events here).
 	void _material_changed(const Ref<Resource> &p_resource);
-	void apply_material_from_dock() { _apply_material_pressed(); }
+	void apply_material_from_dock() { _action_apply_material(); }
 
 	// Sync the level-editor brush selection with the editor's node selection.
 	void set_selected_brush_from_editor(LevelBrush *p_brush);

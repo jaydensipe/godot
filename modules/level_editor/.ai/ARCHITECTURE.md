@@ -27,8 +27,12 @@ modules/level_editor/
                              #   AABB_FACE_DIRS/aabb_face_center box helpers, plus the
                              #   pure gizmo-drag math (axis_drag_plane, closest_point_on_line_to_ray)
     tools/
-      level_editor_tools.cpp     # LevelEditorScreen tool-action members (extrude, material,
-                                 # flip faces, tools/view menus, bridge, bake)
+      level_editor_tools.cpp     # LevelEditorScreen tool-action members (_action_*: extrude,
+                                 #   material, flip faces, subdivide, bridge, collapse; plus
+                                 #   menu handlers and bake)
+      clip/
+        level_editor_clip.cpp    # Clip tool state machine (begin/drag/cycle/apply/cancel)
+                                 #   + cut-line and edge-color preview drawing
     gizmos/
       level_editor_gizmos.cpp    # LevelEditorScreen gizmo members (translate/scale arrow
                                  #   gizmo, rotate rings, Shift+drag face extrude, undo commits)

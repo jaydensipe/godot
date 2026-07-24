@@ -47,7 +47,7 @@ class LevelEditorDock : public VBoxContainer {
 	Button *apply_material_button = nullptr;
 
 	void _material_changed(const Ref<Resource> &p_resource);
-	void _apply_material_pressed();
+	void _action_apply_material();
 
 protected:
 	static void _bind_methods();

@@ -45,20 +45,20 @@ void LevelEditorScreen::_extrude_pressed() {
 
 	switch (mode) {
 		case MODE_FACE:
-			_extrude_faces();
+			_action_extrude_faces();
 			break;
 		case MODE_EDGE:
-			_extrude_edges();
+			_action_extrude_edges();
 			break;
 		case MODE_VERTEX:
-			_extrude_vertices();
+			_action_extrude_vertices();
 			break;
 		default:
 			break;
 	}
 }
 
-void LevelEditorScreen::_extrude_faces() {
+void LevelEditorScreen::_action_extrude_faces() {
 	if (!current_map || selected_faces.is_empty()) {
 		return;
 	}
@@ -100,7 +100,7 @@ void LevelEditorScreen::_extrude_faces() {
 	_refresh_map();
 }
 
-void LevelEditorScreen::_extrude_edges() {
+void LevelEditorScreen::_action_extrude_edges() {
 	if (!current_map || selected_edges.is_empty()) {
 		return;
 	}
@@ -133,7 +133,7 @@ void LevelEditorScreen::_extrude_edges() {
 	_refresh_map();
 }
 
-void LevelEditorScreen::_extrude_vertices() {
+void LevelEditorScreen::_action_extrude_vertices() {
 	if (!current_map || selected_vertices.is_empty()) {
 		return;
 	}
@@ -164,7 +164,7 @@ void LevelEditorScreen::_extrude_vertices() {
 	_refresh_map();
 }
 
-void LevelEditorScreen::_apply_material_pressed() {
+void LevelEditorScreen::_action_apply_material() {
 	if (!current_map || current_material.is_null()) {
 		return;
 	}
@@ -203,7 +203,7 @@ void LevelEditorScreen::_apply_material_pressed() {
 	_refresh_map();
 }
 
-void LevelEditorScreen::_flip_faces_pressed() {
+void LevelEditorScreen::_action_flip_faces() {
 	if (!current_map || !selected_brush) {
 		return;
 	}
@@ -231,10 +231,10 @@ void LevelEditorScreen::_vertex_menu_selected(int p_id) {
 	vertex_menu->release_focus();
 	switch (p_id) {
 		case 0: // Extrude
-			_extrude_vertices();
+			_action_extrude_vertices();
 			break;
 		case 1: // Collapse (merge at neighbors' average, same as Delete in vertex mode)
-			_collapse_vertices();
+			_action_collapse_vertices();
 			break;
 	}
 }
@@ -243,18 +243,18 @@ void LevelEditorScreen::_edge_menu_selected(int p_id) {
 	edge_menu->release_focus();
 	switch (p_id) {
 		case 0: // Extrude
-			_extrude_edges();
+			_action_extrude_edges();
 			break;
 		case 1: // Bridge
-			_join_edges();
+			_action_bridge_edges();
 			break;
 		case 2: // Collapse
-			_collapse_edges();
+			_action_collapse_edges();
 			break;
 	}
 }
 
-void LevelEditorScreen::_subdivide_faces() {
+void LevelEditorScreen::_action_subdivide_faces() {
 	if (!current_map || selected_faces.is_empty()) {
 		return;
 	}
@@ -299,19 +299,19 @@ void LevelEditorScreen::_face_menu_selected(int p_id) {
 	face_menu->release_focus();
 	switch (p_id) {
 		case 0: // Extrude
-			_extrude_faces();
+			_action_extrude_faces();
 			break;
 		case 1: // Apply Material
-			_apply_material_pressed();
+			_action_apply_material();
 			break;
 		case 2: // Delete
-			_delete_faces();
+			_action_delete_faces();
 			break;
 		case 4: // Subdivide
-			_subdivide_faces();
+			_action_subdivide_faces();
 			break;
 		case 3: // Flip Faces (works on the selected brush, any mode)
-			_flip_faces_pressed();
+			_action_flip_faces();
 			break;
 	}
 }
@@ -320,7 +320,7 @@ void LevelEditorScreen::_tools_menu_selected(int p_id) {
 	tools_menu->release_focus();
 	switch (p_id) {
 		case 0:
-			_join_edges();
+			_action_bridge_edges();
 			break;
 	}
 }
@@ -371,7 +371,7 @@ void LevelEditorScreen::_view_display_selected(int p_id) {
 	EditorSettings::get_singleton()->set_project_metadata("level_editor", "viewport_display_modes", modes);
 }
 
-void LevelEditorScreen::_join_edges() {
+void LevelEditorScreen::_action_bridge_edges() {
 	if (!current_map || selected_edges.size() != 1) {
 		return; // Bridge needs exactly 2 edges on the SAME brush.
 	}
@@ -438,7 +438,7 @@ void LevelEditorScreen::_bake_pressed() {
 	EditorInterface::get_singleton()->edit_node(baked);
 }
 
-void LevelEditorScreen::_delete_faces() {
+void LevelEditorScreen::_action_delete_faces() {
 	if (!current_map || selected_faces.is_empty()) {
 		return;
 	}
@@ -464,7 +464,7 @@ void LevelEditorScreen::_delete_faces() {
 	_refresh_map();
 }
 
-void LevelEditorScreen::_collapse_edges() {
+void LevelEditorScreen::_action_collapse_edges() {
 	if (!current_map || selected_edges.is_empty()) {
 		return;
 	}
@@ -499,7 +499,7 @@ void LevelEditorScreen::_collapse_edges() {
 	_refresh_map();
 }
 
-void LevelEditorScreen::_collapse_vertices() {
+void LevelEditorScreen::_action_collapse_vertices() {
 	if (!current_map || selected_vertices.is_empty()) {
 		return;
 	}
