@@ -189,8 +189,6 @@ private:
 	Button *create_map_button = nullptr;
 	Button *mode_buttons[MODE_MAX] = {};
 	OptionButton *grid_size_option = nullptr;
-	SpinBox *extrude_spin = nullptr;
-	Button *extrude_button = nullptr;
 	Button *bake_button = nullptr;
 	MenuButton *tools_menu = nullptr;
 	MenuButton *vertex_menu = nullptr;

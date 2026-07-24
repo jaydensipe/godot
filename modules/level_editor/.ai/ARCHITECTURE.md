@@ -18,15 +18,20 @@ modules/level_editor/
   tests/                     # doctest headers (auto-globbed with tests=yes build)
     test_level_brush.h       # pure geometry, no tags needed
     test_level_map.h         # [SceneTree] tagged (needs physics server)
+    test_level_helpers.h     # pure drag/picking math, no tags needed
   .ai/                       # Project docs for AI/agent context handoff
   editor/
     level_editor_screen.{h,cpp}  # LevelEditorPlugin, LevelEditorScreen, LevelEditorViewport
     level_constants.h        # LevelEditorColors (+hot()) / LevelEditorGrid
     level_helpers.h          # LevelHelpers namespace - aabb_corners/AABB_EDGE_IDX/
-                             #   AABB_FACE_DIRS/aabb_face_center box helpers
+                             #   AABB_FACE_DIRS/aabb_face_center box helpers, plus the
+                             #   pure gizmo-drag math (axis_drag_plane, closest_point_on_line_to_ray)
     tools/
       level_editor_tools.cpp     # LevelEditorScreen tool-action members (extrude, material,
                                  # flip faces, tools/view menus, bridge, bake)
+    gizmos/
+      level_editor_gizmos.cpp    # LevelEditorScreen gizmo members (translate/scale arrow
+                                 #   gizmo, rotate rings, Shift+drag face extrude, undo commits)
     dock/
       level_editor_dock.{h,cpp}  # LevelEditorDock - right-side per-tool settings dock
                                  #   (active material picker + apply button)

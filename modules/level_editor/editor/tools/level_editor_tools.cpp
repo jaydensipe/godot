@@ -39,7 +39,6 @@
 #include "scene/gui/popup_menu.h"
 
 void LevelEditorScreen::_extrude_pressed() {
-	extrude_button->release_focus();
 	if (!current_map) {
 		return;
 	}

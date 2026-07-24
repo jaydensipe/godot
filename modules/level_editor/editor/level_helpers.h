@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/math/aabb.h"
+#include "core/math/plane.h"
 
 // Shared box helpers for the level editor (ghost block, select handles,
 // drag feedback). Corner indexing is a bitmask: x|y|z (bit 0/1/2).
@@ -62,6 +63,48 @@ inline Vector3 aabb_face_center(const AABB &p_aabb, int p_face) {
 	const Vector3 c = p_aabb.get_center();
 	const Vector3 hs = p_aabb.size * 0.5;
 	return c + AABB_FACE_DIRS[p_face] * Vector3(hs.x, hs.y, hs.z);
+}
+
+// Plane containing p_axis through p_point, oriented to face p_cam_pos as
+// directly as possible (most stable ray picking). Used by box-handle and
+// gizmo drags so movement works along axes parallel to the view plane (e.g.
+// dragging up/down in the top view). Falls back to any perpendicular normal
+// when the camera looks straight down the axis.
+inline Plane axis_drag_plane(const Vector3 &p_point, int p_axis, const Vector3 &p_cam_pos) {
+	Vector3 axis;
+	axis[p_axis] = 1.0;
+
+	Vector3 to_cam = p_cam_pos - p_point;
+	Vector3 n = axis.cross(axis.cross(to_cam));
+	if (n.length_squared() < CMP_EPSILON) {
+		n = axis.cross(Vector3(1, 0, 0));
+		if (n.length_squared() < CMP_EPSILON) {
+			n = axis.cross(Vector3(0, 1, 0));
+		}
+	}
+	n.normalize();
+	return Plane(n, n.dot(p_point));
+}
+
+// Closest point on the line (p_line_point, p_line_dir) to the ray
+// (p_ray_origin, p_ray_dir) - the gizmo axis-drag solver. Returns false when
+// the two are parallel (degenerate, no unique closest point).
+inline bool closest_point_on_line_to_ray(const Vector3 &p_line_point, const Vector3 &p_line_dir, const Vector3 &p_ray_origin, const Vector3 &p_ray_dir, Vector3 &r_point) {
+	const Vector3 &d1 = p_line_dir;
+	const Vector3 &d2 = p_ray_dir;
+	Vector3 r = p_line_point - p_ray_origin;
+	real_t a = d1.dot(d1);
+	real_t b = d1.dot(d2);
+	real_t c = d2.dot(d2);
+	real_t d = d1.dot(r);
+	real_t e = d2.dot(r);
+	real_t denom = a * c - b * b;
+	if (Math::is_zero_approx(denom)) {
+		return false;
+	}
+	real_t t = (b * e - c * d) / denom;
+	r_point = p_line_point + d1 * t;
+	return true;
 }
 
 } // namespace LevelHelpers

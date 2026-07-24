@@ -3,6 +3,7 @@
 ## Code health (last audit)
 
 Cleaned up in the latest pass:
+
 - Consolidated triplicated AABB corner/edge/face tables into anonymous-namespace
   helpers (`aabb_corners`, `AABB_EDGE_IDX`, `aabb_face_center`) in
   level_editor_screen.cpp.
@@ -15,7 +16,7 @@ Cleaned up in the latest pass:
   dead `gizmo_drag_original_rotation`, no-op branches/unused locals.
 
 Watch next: `level_editor_screen.cpp` is ~3.4k lines - candidates for future
-splits: ghost block, clip tool, gizmos (same treatment as tools/).
+splits: ghost block, clip tool.
 
 ## Known placeholders & limitations
 
@@ -110,3 +111,7 @@ splits: ghost block, clip tool, gizmos (same treatment as tools/).
 - Perspective viewport on `View3DController` (freelook + wheel zoom fixed).
 - Delete key with editor-shortcut hijack workaround (`input()` phase).
 - Grid ladder on brackets, ghost dimension labels, last-block height reuse.
+- Gizmo overhaul: translate/scale arrow gizmo + rotate rings work in all four
+  viewports (axis-plane drags allow vertical moves in top view), Face-mode
+  Shift+drag extrudes along face normals. Gizmo code split into
+  `editor/gizmos/level_editor_gizmos.cpp`.
