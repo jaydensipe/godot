@@ -120,7 +120,10 @@ Vector3 LevelBrush::get_face_normal(int p_face) const {
 		n.y += (a.z - b.z) * (a.x + b.x);
 		n.z += (a.x - b.x) * (a.y + b.y);
 	}
-	if (n.length_squared() < CMP_EPSILON) {
+	// Newell's area vector scales with face area, so test degeneracy with a
+	// squared threshold - CMP_EPSILON would false-trigger on tiny but
+	// legitimate faces (micro bevel strips, welded slivers).
+	if (n.length_squared() < CMP_EPSILON * CMP_EPSILON) {
 		return Vector3(0, 1, 0);
 	}
 	return n.normalized();

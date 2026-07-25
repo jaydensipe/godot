@@ -30,8 +30,8 @@
 
 #include "level_editor_screen.h"
 
+#include "../level_constants.h"
 #include "dock/level_editor_dock.h"
-#include "level_constants.h"
 #include "level_helpers.h"
 
 using namespace LevelHelpers;
@@ -1004,8 +1004,6 @@ void LevelEditorScreen::_edit_brush_node(LevelBrush *p_brush) {
 	call_deferred("grab_focus");
 }
 
-
-
 void LevelEditorScreen::set_selected_brush_from_editor(LevelBrush *p_brush) {
 	if (!p_brush || p_brush == selected_brush) {
 		return;
@@ -1166,8 +1164,23 @@ void LevelEditorScreen::_set_mode(Mode p_mode) {
 	if (select_handle_drag != GHOST_NONE) {
 		_select_handle_end_drag();
 	}
-	select_moving = false;
-	select_move_viewport = nullptr;
+	if (select_moving) {
+		// End the whole-brush move like an LMB release: commit the position
+		// undo, or a mid-move mode shortcut makes the move un-undoable.
+		select_moving = false;
+		if (selected_brush) {
+			Vector3 new_pos = selected_brush->get_position();
+			if (!new_pos.is_equal_approx(select_move_original_position)) {
+				LevelBrush *target = selected_brush;
+				Vector3 old_pos = select_move_original_position;
+				EditorUndoRedoManager::get_singleton()->create_action(TTR("Move Brush"));
+				EditorUndoRedoManager::get_singleton()->add_do_property(target, "position", new_pos);
+				EditorUndoRedoManager::get_singleton()->add_undo_property(target, "position", old_pos);
+				EditorUndoRedoManager::get_singleton()->commit_action(false);
+			}
+		}
+		select_move_viewport = nullptr;
+	}
 
 	mode = p_mode;
 	for (int i = 0; i < MODE_MAX; i++) {
@@ -1240,12 +1253,20 @@ void LevelEditorScreen::_bevel_preview_rebuild() {
 	const real_t shape = get_armed_value(StringName("shape"), 0.5);
 	const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E = *selected_edges.begin();
 
-	// Cache key: everything the preview depends on.
+	// Cache key: everything the preview depends on (brush, selection,
+	// armed values, AND current geometry - gizmo edits while armed must
+	// invalidate).
 	uint32_t h = hash_murmur3_one_64((uint64_t)E.key);
 	h = hash_murmur3_one_32((uint64_t)E.value.size(), h);
 	for (const LevelBrush::EdgeKey &e : E.value) {
 		h = hash_murmur3_one_32((uint32_t)e.a, h);
 		h = hash_murmur3_one_32((uint32_t)e.b, h);
+	}
+	const PackedVector3Array cur_verts = E.key->get_vertices_data();
+	for (const Vector3 &v : cur_verts) {
+		h = hash_murmur3_one_real(v.x, h);
+		h = hash_murmur3_one_real(v.y, h);
+		h = hash_murmur3_one_real(v.z, h);
 	}
 	h = hash_murmur3_one_real((double)width, h);
 	h = hash_murmur3_one_32((uint32_t)steps, h);
@@ -2375,7 +2396,6 @@ void LevelEditorScreen::_draw_select_handles(LevelEditorViewport *p_vp, Control 
 		}
 	}
 }
-
 
 void LevelEditorScreen::_notification(int p_what) {
 	switch (p_what) {

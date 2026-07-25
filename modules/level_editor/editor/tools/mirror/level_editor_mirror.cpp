@@ -30,7 +30,7 @@
 // (Hammer Ctrl+M semantics - no welding into the original).
 // These are LevelEditorScreen member functions, split out for organization.
 
-#include "../../level_constants.h"
+#include "../../../level_constants.h"
 #include "../../level_editor_screen.h"
 
 #include "editor/editor_interface.h"
@@ -52,24 +52,7 @@ void LevelEditorScreen::_mirror_begin(LevelBrush *p_brush, const Vector3 &p_poin
 }
 
 Plane LevelEditorScreen::_mirror_plane() const {
-	// Same construction as the clip plane: through both points, containing
-	// the captured view direction. In mirror_brush local space.
-	Vector3 along = mirror_points[1] - mirror_points[0];
-	if (along.length() < CMP_EPSILON) {
-		return Plane();
-	}
-	Vector3 n = along.cross(mirror_view_dir);
-	if (n.length_squared() < CMP_EPSILON) {
-		return Plane();
-	}
-	n.normalize();
-
-	Plane world_plane(n, n.dot(mirror_points[0]));
-	Transform3D gt = mirror_brush->get_global_transform();
-	Transform3D inv = gt.affine_inverse();
-	Vector3 local_n = inv.basis.xform(world_plane.normal).normalized();
-	Vector3 local_point = inv.xform(mirror_points[0]);
-	return Plane(local_n, local_n.dot(local_point));
+	return _two_point_plane(mirror_points, mirror_view_dir, mirror_brush);
 }
 
 void LevelEditorScreen::_mirror_apply() {

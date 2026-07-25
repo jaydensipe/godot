@@ -22,8 +22,8 @@ Bugs that cost real debugging time. Read before touching the module.
    after mode changes.
 
 4. **SpinBox `step` rounds `set_value()`.** A step of 0.25 destroyed the
-   1/64..64 grid ladder (values rounded to 0). Match step to the smallest
-   ladder value.
+   grid ladder (values rounded to 0). Match step to the smallest
+   ladder value (currently 1/8, `LevelEditorGrid::STEPS`).
 
 ## Geometry / math
 
@@ -216,11 +216,20 @@ Bugs that cost real debugging time. Read before touching the module.
     face whose loop contains that boundary run consecutively. The n-gon
     fan path adds no boundary verts, so it needs no such fix.
 
+34. **Clip seam dedup: near-plane kept verts must SNAP into the cap's
+    weld set.** `clip()` classified verts within epsilon as "inside" and
+    emitted the ORIGINAL vert, while crossing edges produced a WELDED
+    intersection vert - two distinct seam verts within WELD_DIST of each
+    other (one drives the kept face, the other the cap; dragging showed
+    exactly that split). FIX: kept verts within WELD_DIST of the plane
+    are projected onto it and routed through the same weld lambda, plus
+    a consecutive-duplicate cleanup per loop.
+
 ## SCons/module mechanics
 
-34. Module SCsub env flag is `env.editor_build`, not `env["tools"]`.
-35. `initialize_<foldername>_module` must match the folder name exactly
+36. Module SCsub env flag is `env.editor_build`, not `env["tools"]`.
+37. `initialize_<foldername>_module` must match the folder name exactly
     (module was renamed `leveleditor` → `level_editor` mid-project).
-36. Clean stale `__pycache__` in the module dir after renames.
-37. `Math::pow(2.0, step)` was "ambiguous" on MSVC - hardcoded a ladder array
+38. Clean stale `__pycache__` in the module dir after renames.
+39. `Math::pow(2.0, step)` was "ambiguous" on MSVC - hardcoded a ladder array
     instead (simpler anyway).

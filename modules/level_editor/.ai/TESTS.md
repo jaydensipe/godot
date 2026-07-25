@@ -57,6 +57,13 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
   corner), 1 = original face segments (bulge back to the corner))
 - `mirror` (verts reflected across the plane, winding reversed so normals
   stay outward - reflection flips chirality)
+- `compact_vertices` (clip without cap leaves zero unreferenced verts)
+- `get_edge_chain` invalid-edge tolerance (default EdgeKey is UB-safe)
+- `delete_faces` duplicate-index dedup
+- `split_faces` weld regression (intersections near existing verts must
+  create new verts, not weld to them)
+- `bevel_edges_profiled` collinear chain with steps>=1 (bounds sanity -
+  guards the bowtie regression)
 - `get_face_center` / `get_center` (unit-box geometry)
 - serialization round-trip (`vertices`/`faces`/`face_materials` properties)
 - bake/collision triangle counts
@@ -90,10 +97,12 @@ physics server for `StaticBody3D` construction — untagged cases crash):
   physics server for those tags. Otherwise you get a SIGSEGV in
   `PhysicsBody3D::PhysicsBody3D`.
 - ~~`clip()` leaves orphaned vertices in the array~~ (fixed) and bevel
-  consumed-edge endpoints (fixed): both now call `compact_vertices()`
-  which drops unreferenced verts and remaps face indices. CONSEQUENCE
-  for tests: never assert on raw vertex INDICES after these ops -
-  compaction reuses indices; compare positions instead.
+  consumed-edge endpoints (fixed): clip/bevel/weld/collapse all call
+  `compact_vertices()`. CONSEQUENCE for tests: never assert on raw vertex
+  INDICES after these ops - compaction reuses indices; compare positions.
+- Geometry tolerances live in `LevelBrushConstants` (level_constants.h,
+  module root): `PLANE_EPSILON` 0.0005, `WELD_DIST` = 4x that,
+  `PARALLEL_DOT` 0.999.
 - `LevelMap::bake()` falls back to local transforms when detached from the
   tree, but in `[SceneTree]` tests the map/brushes are in-tree and use
   globals — write assertions accordingly.

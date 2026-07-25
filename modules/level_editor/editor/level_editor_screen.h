@@ -270,6 +270,10 @@ private:
 	void _clip_cycle_side();
 	void _draw_clip(LevelEditorViewport *p_vp, Control *p_canvas);
 
+	// Shared by clip + mirror: plane through two world points containing
+	// the captured view direction, converted to p_brush local space.
+	static Plane _two_point_plane(const Vector3 p_points[2], const Vector3 &p_view_dir, const LevelBrush *p_brush);
+
 	// --- Mirror tool state (clip-style 2-point plane, previews the ---
 	// mirrored copy; Enter creates it as a NEW brush node).
 	LevelBrush *mirror_brush = nullptr;

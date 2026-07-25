@@ -74,8 +74,8 @@ scons platform=windows target=editor dev_build=yes accesskit=no d3d12=no angle=n
   explicit calls + brush-side `_notify_map_changed()` from the serialized
   setters and `NOTIFICATION_LOCAL_TRANSFORM_CHANGED` (covers all undo/redo
   paths - see GOTCHAS #22).
-- **Overlay colors centralized** in `editor/level_constants.h`
-  (`LevelEditorColors` + `hot()` hover-lerp helper, `LevelEditorGrid` ladder/
+- **Overlay colors centralized** in `level_constants.h` (module root;
+  `LevelEditorColors` + `hot()` hover-lerp helper, `LevelEditorGrid` ladder/
   3D-grid extents) - the single source for viewport overlay styling.
 - **Per-viewport display modes** (Normal/Wireframe/Overdraw/Lighting/Unshaded)
   and 2D/3D grid toggles in the View menu, persisted per-project.
@@ -83,7 +83,7 @@ scons platform=windows target=editor dev_build=yes accesskit=no d3d12=no angle=n
 ## User preferences / workflow notes
 
 - Wants Hammer fidelity: ghost block stays editable after draw (Enter commits,
-  Esc cancels), `[`/`]` grid ladder (power-of-two, 1/64..64), last-block
+  Esc cancels), `[`/`]` grid ladder (power-of-two, 1/8..512), last-block
   height reuse for walls, clip cycling on the Clip toolbar button (Tab is
   eaten by GUI focus nav).
 - Compares vertex editing to Blender, expects free-form deformation.

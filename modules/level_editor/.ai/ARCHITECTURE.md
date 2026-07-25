@@ -11,6 +11,9 @@ modules/level_editor/
                              #   EDITOR level: GDREGISTER_CLASS(LevelEditorPlugin) + EditorPlugins::add_by_type
   level_brush.{h,cpp}        # LevelBrush : Node3D - brush topology + geometry ops (runtime + editor)
   level_map.{h,cpp}          # LevelMap : Node3D - brush container, live preview, bake (runtime + editor)
+  level_constants.h          # LevelBrushConstants (geometry tolerances, runtime-safe)
+                             #   + LevelEditorColors/LevelEditorGrid (editor overlay styling) - at
+                             #   module ROOT so runtime code can include it (must stay editor-free)
   icons/                     # Editor icons (LevelMap.svg = node icon, Subdivision.svg = plugin tab)
   doc_classes/
     LevelBrush.xml
@@ -22,7 +25,6 @@ modules/level_editor/
   .ai/                       # Project docs for AI/agent context handoff
   editor/
     level_editor_screen.{h,cpp}  # LevelEditorPlugin, LevelEditorScreen, LevelEditorViewport
-    level_constants.h        # LevelEditorColors (+hot()) / LevelEditorGrid
     level_helpers.h          # LevelHelpers namespace - aabb_corners/AABB_EDGE_IDX/
                              #   AABB_FACE_DIRS/aabb_face_center box helpers, plus the
                              #   pure gizmo-drag math (axis_drag_plane, closest_point_on_line_to_ray)
@@ -139,7 +141,7 @@ SubViewportContainer
 - `Mode` enum order: SELECT, ROTATE, SCALE, BLOCK, CLIP, MIRROR, VERTEX,
   EDGE, FACE.
   Toolbar indices iterate `mode_buttons[MODE_MAX]`; mode buttons live in three
-  button-group panels (SELECT..SCALE, BLOCK..CLIP, then VERTEX..FACE).
+  button-group panels (SELECT..SCALE, BLOCK..MIRROR, then VERTEX..FACE).
 - **No-map gate**: if the edited scene has no `LevelMap`, the quad viewports
   are hidden and a warning panel ("Create LevelMap" button) shows instead.
   `_update_map_ui()` resolves/adopts a map found in the scene (never
@@ -183,12 +185,12 @@ SubViewportContainer
   brushes in ONE action, `commit_action(false)`.
 - Keys (handled in `LevelEditorScreen::input()`, `_vp_input` phase, swallowed
   via `set_input_as_handled`): Delete (per-mode delete/collapse), `[`/`]`
-  grid ladder (hardcoded steps 1/64..64), Enter/Esc (ghost/clip commit/cancel,
-  drag cancel). `shortcut_input` on screen+viewport also accepts them as a
+  grid ladder (`LevelEditorGrid::STEPS`, 1/8..512), Enter/Esc (ghost/clip/
+  mirror/armed commit/cancel, drag cancel). `shortcut_input` on screen+viewport also accepts them as a
   fallback. Brackets in `forward_input` are intentionally skipped to avoid
   double-handling.
-- **All overlay colors** live in `editor/level_constants.h`
-  (`LevelEditorColors` namespace) - never hardcode `Color(...)` literals in
+- **All overlay colors** live in `level_constants.h` (module root,
+  `LevelEditorColors` namespace) - never hardcode `Color(...)` literals in
   drawing code.
 
 ## Viewport details

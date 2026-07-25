@@ -35,7 +35,7 @@
 
 #include "../../level_editor_screen.h"
 
-#include "../../level_constants.h"
+#include "../../../level_constants.h"
 #include "../../level_helpers.h"
 
 #include "editor/editor_interface.h"

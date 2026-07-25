@@ -269,6 +269,9 @@ void LevelEditorScreen::_action_bevel_edges() {
 	undo_redo->add_undo_method(current_map, "refresh");
 	undo_redo->commit_action();
 
+	// compact_vertices() remaps vert indices, so the EdgeKey selection is
+	// stale - clear it (same rule as subdivide/delete, GOTCHAS #14).
+	selected_edges.clear();
 	_refresh_map();
 }
 

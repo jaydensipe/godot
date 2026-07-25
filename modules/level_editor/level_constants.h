@@ -32,6 +32,18 @@
 
 #include "core/math/color.h"
 
+// Shared geometry tolerances for brush ops (runtime side - used by
+// level_modifiers.cpp, which must build in export templates; keep this
+// header free of editor-only includes).
+namespace LevelBrushConstants {
+// Plane-side test epsilon for clip/split/weld decisions (brush units).
+inline constexpr real_t PLANE_EPSILON = 0.0005;
+// Max distance for welding two positions into one vertex.
+inline constexpr real_t WELD_DIST = PLANE_EPSILON * 4.0;
+// |dot| threshold for treating two edges as parallel/collinear.
+inline constexpr real_t PARALLEL_DOT = 0.999;
+} // namespace LevelBrushConstants
+
 // Shared grid ladder (power-of-two steps) used by the toolbar dropdown and
 // the [ ] keys.
 namespace LevelEditorGrid {

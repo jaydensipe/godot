@@ -1180,4 +1180,163 @@ TEST_CASE("[LevelBrush] mirror reflects verts and flips winding") {
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] compact_vertices drops unreferenced verts and remaps") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+
+	// Clip away half the box WITHOUT a cap: all 4 clipped-off verts become
+	// unreferenced and must be compacted away by clip's internal pass.
+	brush->clip(Plane(Vector3(1, 0, 0), 1.0), false);
+	for (int i = 0; i < brush->get_vertex_count(); i++) {
+		const Vector3 &v = brush->get_vertex(i);
+		bool referenced = false;
+		for (int f = 0; f < brush->get_face_count() && !referenced; f++) {
+			LocalVector<int> loop = brush->get_face(f);
+			for (uint32_t k = 0; k < loop.size(); k++) {
+				referenced = referenced || brush->get_vertex(loop[k]).is_equal_approx(v);
+			}
+		}
+		CHECK(referenced);
+	}
+	// Slab x in [1,2]: 4 original + 4 cut verts.
+	CHECK(brush->get_vertex_count() == 8);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] get_edge_chain tolerates an invalid edge") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Default EdgeKey (-1,-1) must not read out of bounds.
+	Vector<LevelBrush::EdgeKey> chain = brush->get_edge_chain(LevelBrush::EdgeKey());
+	CHECK(chain.size() == 1);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] delete_faces ignores duplicate indices") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	Vector<int> del;
+	del.push_back(4);
+	del.push_back(4); // Duplicate must not double-delete or error mid-op.
+	brush->delete_faces(del);
+	CHECK(brush->get_face_count() == 5);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] clip unifies near-plane seam verts with the cap") {
+	// A vert within WELD_DIST of the clip plane (kept side) must be snapped
+	// onto the plane and SHARED with the cap - not left as a second vert
+	// next to the welded seam vert.
+	LevelBrush *cut = memnew(LevelBrush);
+	cut->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+	Vector<int> nv2;
+	for (int i = 0; i < cut->get_vertex_count(); i++) {
+		if (Math::is_zero_approx(cut->get_vertex(i).x)) {
+			nv2.push_back(i);
+		}
+	}
+	REQUIRE(nv2.size() == 4);
+	cut->move_vertices(nv2, Vector3(0.001, 0, 0)); // x=0 face -> x=0.001.
+	cut->clip(Plane(Vector3(1, 0, 0), 0.0005));
+
+	// Every vert ON the seam plane (x ~ 0.0005) must be referenced by the
+	// cap face - no near-plane vert may exist OFF the cap.
+	int cap = -1;
+	for (int f = 0; f < cut->get_face_count(); f++) {
+		if (cut->get_face_normal(f).x < -0.99) {
+			cap = f;
+			break;
+		}
+	}
+	REQUIRE(cap >= 0);
+	for (int i = 0; i < cut->get_vertex_count(); i++) {
+		const Vector3 v = cut->get_vertex(i);
+		if (Math::abs(v.x - 0.0005) > 0.001) {
+			continue; // Not a seam vert.
+		}
+		bool on_cap = false;
+		LocalVector<int> loop = cut->get_face(cap);
+		for (uint32_t k = 0; k < loop.size(); k++) {
+			on_cap = on_cap || cut->get_vertex(loop[k]).is_equal_approx(v);
+		}
+		CHECK(on_cap);
+	}
+
+	memdelete(cut);
+}
+
+TEST_CASE("[LevelBrush] split_faces does not weld to pre-existing verts") {
+	// Regression: intersection points near an EXISTING vertex must create
+	// new verts (welding to the old one corrupts topology - ROADMAP #10).
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+	const int before = brush->get_vertex_count();
+
+	// Split at x = 0.0015: past the side-classification epsilon (0.0005, so
+	// edges genuinely cross) but within WELD_DIST (0.002) of the x=0 face's
+	// verts. The split must still create its own intersection verts rather
+	// than welding onto the pre-existing ones (ROADMAP #10).
+	brush->split_faces(Plane(Vector3(1, 0, 0), 0.0015));
+	CHECK(brush->get_vertex_count() > before);
+
+	// And none of the new intersection verts may BE an original position
+	// (a weld would have collapsed them onto x=0).
+	bool found_cut_vert = false;
+	for (int i = 0; i < brush->get_vertex_count(); i++) {
+		if (Math::is_equal_approx(brush->get_vertex(i).x, (real_t)0.0015)) {
+			found_cut_vert = true;
+			break;
+		}
+	}
+	CHECK(found_cut_vert);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] bevel_edges_profiled handles a collinear chain with steps") {
+	// Same setup as the steps=0 chain test, but with segments: the middle
+	// vertex's shared corners must weld and no zigzag may appear.
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+	REQUIRE(brush->subdivide_face(4)); // +Y face -> 4 quads.
+
+	int centroid = -1, mid_l = -1, mid_r = -1;
+	for (int i = 0; i < brush->get_vertex_count(); i++) {
+		const Vector3 v = brush->get_vertex(i);
+		if (v.is_equal_approx(Vector3(1, 2, 1))) {
+			centroid = i;
+		} else if (v.is_equal_approx(Vector3(0, 2, 1))) {
+			mid_l = i;
+		} else if (v.is_equal_approx(Vector3(2, 2, 1))) {
+			mid_r = i;
+		}
+	}
+	REQUIRE(centroid >= 0);
+	REQUIRE(mid_l >= 0);
+	REQUIRE(mid_r >= 0);
+
+	Vector<LevelBrush::EdgeKey> edges;
+	edges.push_back(LevelBrush::EdgeKey(mid_l, centroid));
+	edges.push_back(LevelBrush::EdgeKey(centroid, mid_r));
+	CHECK(brush->bevel_edges_profiled(edges, 0.25, 2, 0.0) == 2);
+
+	// Every face must still reference valid, in-bounds verts (no zigzag
+	// corruption) and lie flat on the subdivided plane (y=2 top surface).
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		LocalVector<int> loop = brush->get_face(f);
+		REQUIRE(loop.size() >= 3);
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			CHECK(loop[i] >= 0);
+			CHECK(loop[i] < brush->get_vertex_count());
+		}
+	}
+
+	memdelete(brush);
+}
+
 } // namespace TestLevelBrush

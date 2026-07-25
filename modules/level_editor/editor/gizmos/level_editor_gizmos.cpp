@@ -30,9 +30,9 @@
 // the Face-mode Shift+drag extrude). These are LevelEditorScreen member
 // functions, split out of level_editor_screen.cpp for organization.
 
-#include "../level_constants.h"
-#include "../level_editor_screen.h"
+#include "../../level_constants.h"
 #include "../level_helpers.h"
+#include "../level_editor_screen.h"
 
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/themes/editor_scale.h"
@@ -902,8 +902,8 @@ void LevelEditorScreen::_gizmo_end_drag() {
 }
 
 void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas) {
-	if (mode == MODE_BLOCK || mode == MODE_CLIP || mode == MODE_ROTATE || !_has_selection()) {
-		return; // No arrow gizmo in Block/Clip/Rotate mode.
+	if (mode == MODE_BLOCK || mode == MODE_CLIP || mode == MODE_MIRROR || mode == MODE_ROTATE || !_has_selection()) {
+		return; // No arrow gizmo in Block/Clip/Mirror/Rotate mode.
 	}
 	Vector3 origin = _get_gizmo_origin();
 	Vector2 so;

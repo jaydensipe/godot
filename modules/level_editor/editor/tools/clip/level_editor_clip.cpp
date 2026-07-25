@@ -32,7 +32,7 @@
 // cycle keep-side, apply/cancel) plus the cut-line + edge-color preview.
 // These are LevelEditorScreen member functions, split out for organization.
 
-#include "../../level_constants.h"
+#include "../../../level_constants.h"
 #include "../../level_editor_screen.h"
 
 #include "editor/themes/editor_scale.h"
@@ -69,15 +69,14 @@ int LevelEditorScreen::_pick_clip_point(LevelEditorViewport *p_vp, const Vector2
 	return -1;
 }
 
-Plane LevelEditorScreen::_clip_plane() const {
-	// Plane through both clip points, containing the view direction. The
-	// normal points to the LEFT of the line as drawn on screen (verified:
-	// along x view_dir), so "keep left/right" matches Hammer's clip tool.
-	Vector3 along = clip_points[1] - clip_points[0];
+Plane LevelEditorScreen::_two_point_plane(const Vector3 p_points[2], const Vector3 &p_view_dir, const LevelBrush *p_brush) {
+	// Plane through both points, containing the view direction. The normal
+	// points to the LEFT of the line as drawn on screen (along x view_dir).
+	Vector3 along = p_points[1] - p_points[0];
 	if (along.length() < CMP_EPSILON) {
 		return Plane();
 	}
-	Vector3 n = along.cross(clip_view_dir);
+	Vector3 n = along.cross(p_view_dir);
 	if (n.length_squared() < CMP_EPSILON) {
 		// Line parallel to view dir - degenerate.
 		return Plane();
@@ -85,12 +84,16 @@ Plane LevelEditorScreen::_clip_plane() const {
 	n.normalize();
 
 	// World plane -> brush-local plane.
-	Plane world_plane(n, n.dot(clip_points[0]));
-	Transform3D gt = clip_brush->get_global_transform();
+	Plane world_plane(n, n.dot(p_points[0]));
+	Transform3D gt = p_brush->get_global_transform();
 	Transform3D inv = gt.affine_inverse();
 	Vector3 local_n = inv.basis.xform(world_plane.normal).normalized();
-	Vector3 local_point = inv.xform(clip_points[0]);
+	Vector3 local_point = inv.xform(p_points[0]);
 	return Plane(local_n, local_n.dot(local_point));
+}
+
+Plane LevelEditorScreen::_clip_plane() const {
+	return _two_point_plane(clip_points, clip_view_dir, clip_brush);
 }
 
 void LevelEditorScreen::_clip_apply() {

@@ -50,9 +50,39 @@ gizmo axis-projection in pick/draw (must stay in sync visually),
 `clip(p_add_cap=false)` param, key-swallow lists.
 
 Remaining smells: `_draw_drag_feedback` memnews a full LevelBrush per
-overlay draw; weld-by-epsilon loop still duplicated in clip/collapse
-(extract candidate); verts array grows monotonically (orphan verts are
-never compacted - affects `get_center` centroid after welds).
+overlay draw. (Fixed since: weld epsilon + parallel-dot constants live in
+`LevelBrushConstants`; orphan verts compacted by clip/bevel/weld/collapse.)
+
+### Audit (2026-07, pass 2): fixed
+
+- Bevel apply left `selected_edges` stale across `compact_vertices()` -
+  now cleared (GOTCHAS #14 rule).
+- `_set_mode` dropped `select_moving` without committing its undo -
+  mid-move mode shortcut made the move un-undoable; now commits.
+- `get_edge_chain` read `verts[-1]` on a default/invalid EdgeKey (UB) -
+  bounds-checked.
+- `delete_faces` duplicate indices half-applied the op - now deduped.
+- `get_face_normal` degenerate test false-triggered on tiny faces -
+  threshold squared.
+- Bevel preview cache omitted brush geometry (stale after gizmo edits
+  while armed) - vertex data folded into the hash.
+- `_clip_plane`/`_mirror_plane` were line-identical - shared
+  `_two_point_plane()`.
+- Newell normal inlined twice in bevel - uses `get_face_normal()`.
+- Magic 0.0005/0.999 -> `LevelBrushConstants::{PLANE_EPSILON, WELD_DIST,
+  PARALLEL_DOT}` in level_brush.h.
+
+### Audit (2026-07, pass 2): known, deferred
+
+- Esc does not cancel gizmo/rotate/select-handle/whole-brush drags
+  (would need snapshot-revert semantics - design decision, not a bug fix).
+- `on_scene_changed` leaves in-flight drag snapshot maps; guards prevent
+  crashes, but redoing undo actions mid scene-teardown is riskier than
+  the stale state.
+- `current_material`/`_action_apply_material`/`_material_changed` hooks
+  are dead (dock picker removed) - pending the material system rework.
+- clip/mirror "pick target brush" blocks duplicate ~20 lines; merging
+  churns two working tools for modest gain.
 
 Watch next: select-mode box handles (~170 lines) could follow the tools/
 split (`tools/select/`); mode-specific input handling still lives in
@@ -87,32 +117,23 @@ split (`tools/select/`); mode-specific input handling still lives in
   (wasted work) and material grouping is O(m²) - both known, deferred until a
   benchmark proves it matters on real levels. `bake()` returns nullptr when
   there's no renderable geometry (all faces deleted).
-- **Brush vert compaction**: clip/bevel/weld/collapse call
-  `compact_vertices()` (drops unreferenced verts, remaps loops) - vert
-  indices shift afterward, so no caller may hold indices across these
-  ops (editor selections are cleared; undo stores serialized arrays).
-  Remaining orphans: none known from editor paths.
 - **Clip cap is a possibly non-convex n-gon** fan-triangulated downstream;
   non-convex cuts can produce overlapping tris (accepted, matches the
   no-convexity-guarantee data model).
-- **All geometry ops self-notify the parent map** (`_notify_map_changed`,
-  deferred refresh) - direct C++ edits update the preview without the caller
-  remembering `_refresh_map()`; the editor's explicit refresh calls coalesce
-  into the same deferred rebuild.
 
 ## Discussed but not built yet
 
 - **Per-action settings panels in the dock** (DONE for Bevel): arming an
   action (Edge > Bevel) shows its options in `LevelEditorDock`; Enter
   applies, Esc cancels. Bevel options: width (defaults to grid size),
-  steps (0 = single cut, edge consumed; >=1 = band quads per side, edge
-  retained as centerline), shape 0..1 - all wired through
-  `LevelBrush::bevel_edges_profiled` (Blender profile schedule). A live
-  wireframe preview of the armed bevel draws in the viewports and updates
-  on every dock edit (cached on brush/selection/values). The dock's
-  old active-material picker was removed; material logic pending rework
-  (`_action_apply_material` still reachable from the Face menu but
-  `current_material` is never set).
+  steps (0 = single cut; >=1 = 2N band quads across the cross-section),
+  shape 0..1 (0 = flat chamfer, 0.5 = quadratic-Bezier round-over,
+  1 = full bulge back to the original corner) - all wired through
+  `LevelBrush::bevel_edges_profiled`. A live wireframe preview of the
+  armed bevel draws in the viewports and updates on every dock edit
+  (`ToolPreview`, hash-cached). The dock's old active-material picker was
+  removed; material logic pending rework (`_action_apply_material` still
+  reachable from the Face menu but `current_material` is never set).
 - Proper Hammer extrude semantics for edges/vertices.
 - Blender-style dissolve (vs current collapse) for edge/vertex delete.
 - Vertex merge/weld tool (weld_vertices exists in LevelBrush, no UI yet).
@@ -148,7 +169,7 @@ split (`tools/select/`); mode-specific input handling still lives in
 - Cross-brush element selection (per-brush sets, hover highlight, persistent
   highlight on selected brushes, selection clears on tool switch).
 - Perspective-view ground grid with near-plane segment clipping.
-- Overlay colors centralized in `editor/level_constants.h`.
+- Overlay colors centralized in `level_constants.h` (module root).
 - Preview auto-refresh on undo/redo (brush-side `_notify_map_changed` from
   serialized setters + local-transform notification).
 - Module icons via `config.py get_icons_path()` (`LevelMap.svg` node icon,

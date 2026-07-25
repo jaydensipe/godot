@@ -28,10 +28,12 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-// Topology modifiers for LevelBrush (clip, split, extrude, subdivide, weld,
-// collapse, bridge, move). Implementations split out of level_brush.cpp.
+// Topology modifiers for LevelBrush: clip, split, extrude, subdivide,
+// weld, collapse, bridge, mirror, compact, bevel, edge loop/chain walks,
+// delete. Implementations split out of level_brush.cpp.
 
 #include "level_brush.h"
+#include "level_constants.h"
 
 #include "core/math/math_defs.h"
 #include "core/templates/hash_map.h"
@@ -125,10 +127,14 @@ Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_loop(const EdgeKey &p_edge) con
 
 Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_chain(const EdgeKey &p_edge) const {
 	Vector<EdgeKey> chain;
+	if (p_edge.a < 0 || p_edge.a >= (int)verts.size() || p_edge.b < 0 || p_edge.b >= (int)verts.size()) {
+		chain.push_back(p_edge);
+		return chain;
+	}
 	chain.push_back(p_edge);
 
 	const Vector3 dir = (verts[p_edge.b] - verts[p_edge.a]).normalized();
-	const real_t PARALLEL_DOT = 0.999;
+	const real_t PARALLEL_DOT = LevelBrushConstants::PARALLEL_DOT;
 
 	// All edges touching a vertex.
 	auto edges_at = [&](int p_vert, Vector<EdgeKey> &r_out) {
@@ -247,7 +253,7 @@ void LevelBrush::compact_vertices() {
 
 void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 	// Solid clip: keep only the front side, capping the cut.
-	const real_t eps = 0.0005;
+	const real_t eps = LevelBrushConstants::PLANE_EPSILON;
 
 	LocalVector<LocalVector<int>> new_faces;
 	LocalVector<Ref<Material>> new_mats;
@@ -255,7 +261,7 @@ void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 
 	auto weld = [&](const Vector3 &p) -> int {
 		for (int idx : cap_verts) {
-			if (verts[idx].distance_to(p) < eps * 4.0) {
+			if (verts[idx].distance_to(p) < LevelBrushConstants::WELD_DIST) {
 				return idx;
 			}
 		}
@@ -280,7 +286,15 @@ void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 			bool in_b = db >= -eps;
 
 			if (in_a) {
-				out.push_back(ia);
+				if (da < LevelBrushConstants::WELD_DIST) {
+					// On/near the plane: snap onto it and share the seam vert
+					// with the cap - otherwise this original vert and the
+					// welded intersection vert from a crossing edge coexist
+					// within epsilon as two distinct seam verts.
+					out.push_back(weld(a - p_plane.normal * da));
+				} else {
+					out.push_back(ia);
+				}
 			}
 			if (in_a != in_b) {
 				real_t t = da / (da - db);
@@ -288,8 +302,19 @@ void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 				out.push_back(weld(hit));
 			}
 		}
-		if (out.size() >= 3) {
-			new_faces.push_back(LocalVector<int>(out));
+		// Drop consecutive duplicates (two near-plane corners can snap to
+		// the same seam vert) and the wrap-around duplicate.
+		LocalVector<int> clean;
+		for (uint32_t i = 0; i < out.size(); i++) {
+			if (clean.is_empty() || clean[clean.size() - 1] != out[i]) {
+				clean.push_back(out[i]);
+			}
+		}
+		if (clean.size() > 1 && clean[0] == clean[clean.size() - 1]) {
+			clean.remove_at(clean.size() - 1);
+		}
+		if (clean.size() >= 3) {
+			new_faces.push_back(LocalVector<int>(clean));
 			new_mats.push_back(f < face_materials.size() ? face_materials[f] : Ref<Material>());
 		}
 	}
@@ -334,6 +359,13 @@ void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 void LevelBrush::delete_faces(const Vector<int> &p_faces) {
 	Vector<int> sorted = p_faces;
 	sorted.sort();
+	// Dedup: a repeated index would shift after the first removal and
+	// either delete the wrong face or trip the bounds check mid-op.
+	for (int i = sorted.size() - 2; i >= 0; i--) {
+		if (sorted[i] == sorted[i + 1]) {
+			sorted.remove_at(i + 1);
+		}
+	}
 	for (int i = sorted.size() - 1; i >= 0; i--) {
 		int f = sorted[i];
 		ERR_FAIL_INDEX(f, (int)faces.size());
@@ -485,7 +517,6 @@ void LevelBrush::collapse_vertices(const Vector<int> &p_vertices) {
 
 	// Weld duplicates: remap face indices of collapsed verts to their
 	// position-matching survivors.
-	const real_t eps = 0.0005;
 	for (uint32_t f = 0; f < faces.size(); f++) {
 		LocalVector<int> &loop = faces[f];
 		for (uint32_t i = 0; i < loop.size(); i++) {
@@ -497,7 +528,7 @@ void LevelBrush::collapse_vertices(const Vector<int> &p_vertices) {
 				if (targets.has((int)vi) || (int)vi == loop[i]) {
 					continue;
 				}
-				if (verts[vi].distance_to(verts[loop[i]]) < eps * 4.0) {
+				if (verts[vi].distance_to(verts[loop[i]]) < LevelBrushConstants::WELD_DIST) {
 					loop[i] = (int)vi;
 					break;
 				}
@@ -527,7 +558,7 @@ void LevelBrush::split_faces(const Plane &p_plane) {
 	// untouched; crossing faces become two faces sharing the cut edge. The
 	// solid is not clipped and no caps are created - both halves remain part
 	// of this brush.
-	const real_t eps = 0.0005;
+	const real_t eps = LevelBrushConstants::PLANE_EPSILON;
 
 	LocalVector<LocalVector<int>> new_faces;
 	LocalVector<Ref<Material>> new_mats;
@@ -586,7 +617,7 @@ void LevelBrush::split_faces(const Plane &p_plane) {
 					// Weld against intersection verts created by this split.
 					int found = -1;
 					for (uint32_t vi = first_new_vert; vi < verts.size(); vi++) {
-						if (verts[vi].distance_to(hit) < eps * 4.0) {
+						if (verts[vi].distance_to(hit) < LevelBrushConstants::WELD_DIST) {
 							found = (int)vi;
 							break;
 						}
@@ -625,6 +656,7 @@ LevelBrush *LevelBrush::clip_split(const Plane &p_plane) {
 	clip(p_plane);
 	return back;
 }
+
 void LevelBrush::move_vertices(const Vector<int> &p_vertices, const Vector3 &p_delta) {
 	if (p_delta.is_zero_approx()) {
 		return;
@@ -885,7 +917,7 @@ int LevelBrush::bevel_edges_profiled(const Vector<EdgeKey> &p_edges, real_t p_wi
 		// recorded at this corner.
 		auto run_beveled = [&](const Vector3 &p_run) {
 			for (uint32_t k = 0; k < dirs.size(); k++) {
-				if (Math::abs(p_run.dot(dirs[k])) > 0.999) {
+				if (Math::abs(p_run.dot(dirs[k])) > LevelBrushConstants::PARALLEL_DOT) {
 					return true;
 				}
 			}
@@ -899,7 +931,7 @@ int LevelBrush::bevel_edges_profiled(const Vector<EdgeKey> &p_edges, real_t p_wi
 			// BOTH boundary runs beveled (two beveled edges meet here, or a
 			// collinear chain passing through): the corner point is the
 			// intersection of the two offset lines - on the angle bisector at
-			// distance p_distance from each edge line. t = d / sin(angle
+			// distance p_width from each edge line. t = w / sin(angle
 			// between bisector and edge).
 			Vector3 bisector = to_prev + to_next;
 			if (bisector.length_squared() < CMP_EPSILON) {
@@ -907,15 +939,7 @@ int LevelBrush::bevel_edges_profiled(const Vector<EdgeKey> &p_edges, real_t p_wi
 				// midpoint in a subdivided face): no geometric bisector, but
 				// both offset lines are the SAME line - slide perpendicular
 				// to the edge within the face plane (face normal x edge).
-				Vector3 fn;
-				for (uint32_t i = 0; i < n; i++) {
-					const Vector3 &c = verts[l[i]];
-					const Vector3 &nx = verts[l[(i + 1) % n]];
-					fn.x += (c.y - nx.y) * (c.z + nx.z);
-					fn.y += (c.z - nx.z) * (c.x + nx.x);
-					fn.z += (c.x - nx.x) * (c.y + nx.y);
-				}
-				bisector = fn.normalized().cross(dirs[0]);
+				bisector = get_face_normal(face).cross(dirs[0]);
 				if (bisector.length_squared() < CMP_EPSILON) {
 					corner_ok[corner_key(vert, face)] = false;
 					continue;
@@ -1083,9 +1107,9 @@ int LevelBrush::bevel_edges_profiled(const Vector<EdgeKey> &p_edges, real_t p_wi
 		// Trim the END faces: every non-adjacent face touching an endpoint
 		// of the beveled edge must also lose that corner - otherwise its
 		// original corner vert sticks through the chamfer as a fin. The
-		// corner is replaced by the two offset verts (one per adjacent
-		// face), ordered to match the end face's winding; with steps >= 1
-		// the endpoint is retained (centerline), so it stays between them.
+		// corner is replaced by the strip's end polyline (outer vert, iso
+		// verts, outer vert - one per profile point), ordered to match the
+		// end face's winding.
 		for (int e = 0; e < 2; e++) {
 			const int orig[2] = { edge.a, edge.b };
 			const int v = orig[e];
@@ -1185,15 +1209,7 @@ int LevelBrush::bevel_edges_profiled(const Vector<EdgeKey> &p_edges, real_t p_wi
 		// (iso 0 = outer line A, iso 2*bands = outer line B); the original
 		// edge is consumed from the adjacent faces - the profile CURVE is
 		// what approaches or reaches the corner, not a retained centerline.
-		const LocalVector<int> &src = faces[einfo[ei].adj[0]];
-		Vector3 src_normal;
-		for (uint32_t i = 0; i < src.size(); i++) {
-			const Vector3 &c = verts[src[i]];
-			const Vector3 &nx = verts[src[(i + 1) % src.size()]];
-			src_normal.x += (c.y - nx.y) * (c.z + nx.z);
-			src_normal.y += (c.z - nx.z) * (c.x + nx.x);
-			src_normal.z += (c.x - nx.x) * (c.y + nx.y);
-		}
+		const Vector3 src_normal = get_face_normal(einfo[ei].adj[0]);
 
 		LocalVector<LocalVector<int>> strip_faces;
 		if (single_cut) {
