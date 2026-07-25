@@ -44,9 +44,11 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
   so closed rings meet in the middle instead of duplicating)
 - `get_edge_chain` (collinear segments through shared verts, e.g. the two
   halves of a subdivided straight edge - double-click in Edge mode)
-- `bevel_edges` (chamfer: edge replaced by a new face; verts slide along
-  the boundary angle bisector by distance/cos(half-angle), winding flipped
-  to point out of the original volume)
+- `bevel_edges` (Blender-style: edge consumed, one strip quad bridging
+  lines offset p_distance into each adjacent face, measured along the
+  boundary edges; corners shared/mitred between meeting edges; collinear
+  chains produce one continuous strip with shared corner verts; rejection
+  of open edges and zero/negative distance)
 - `get_face_center` / `get_center` (unit-box geometry)
 - serialization round-trip (`vertices`/`faces`/`face_materials` properties)
 - bake/collision triangle counts

@@ -79,7 +79,11 @@ SubViewportContainer
 - Geometry ops: `setup_box`, `move_vertices`, `extrude_face` (cap + walls),
   `clip(plane)` (solid clip + cap), `split_faces(plane)` (subdivide in place),
   `clip_split`, `delete_faces`, `collapse_vertices`, `weld_vertices`,
-  `bridge_edges`, `flip_faces`/`set_faces_flipped`.
+  `bridge_edges`, `bevel_edges` (Blender-style bevel: edge consumed, one
+  strip quad per edge bridging offset lines p_distance into each adjacent
+  face; meeting edges mitred to shared corner verts; collinear chains
+  share verts into one continuous strip),
+  `flip_faces`/`set_faces_flipped`.
 - `EdgeKey {int a,b; ordered}` + `EdgeKeyHasher` used for edge identity.
 - Bake helpers: `get_bake_surface_data` (fan tris + planar UV, uv_scale 0.25),
   `get_collision_faces`. Stored loops are CCW-outward, but Vulkan/Godot

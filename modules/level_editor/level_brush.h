@@ -157,9 +157,13 @@ public:
 	// of a subdivided straight edge). Returns all chain edges, incl. p_edge.
 	Vector<EdgeKey> get_edge_chain(const EdgeKey &p_edge) const;
 
-	// Bevel (chamfer) the given edges: each edge is replaced by a new face
-	// spanning two verts slid p_distance into each adjacent face. Returns
-	// the number of edges successfully beveled.
+	// Bevel the given edges (Blender-style, width = p_distance, 1 segment):
+	// each edge is consumed and replaced by one strip face bridging two
+	// lines offset p_distance into each adjacent face (measured along the
+	// boundary edges at the corners). Where multiple beveled edges meet at
+	// a vertex, their offset lines are mitred into one shared corner point
+	// per face; collinear chains (e.g. both halves of a subdivided edge)
+	// produce one continuous strip. Returns the number of edges beveled.
 	int bevel_edges(const Vector<EdgeKey> &p_edges, real_t p_distance);
 
 	// Collapse vertices: moves each to the average position of its edge

@@ -186,11 +186,28 @@ Bugs that cost real debugging time. Read before touching the module.
     `vertices`/`faces`/`face_materials`/`faces_flipped` are real properties.
     Old scenes saved before this have empty brushes - recreate them.
 
+32. **Bevel: edge CONSUMED, offset lines mitred at shared corners.** After
+    three wrong models (bisector-scaled chamfer, perpendicular chamfer,
+    retained-centerline strip), the working model is Blender's: each
+    beveled edge is consumed; every adjacent face gets an offset line
+    parallel to the edge at distance d (measured ALONG the boundary edges
+    at the corners - the corner point sits on the unbeveled boundary ray
+    at distance d); one strip quad bridges the two offset lines. Where
+    several beveled edges meet at a vertex, the corner point is the
+    intersection of their offset lines (on the angle bisector at
+    d/sin(angle-to-edge)) - ONE shared vert per (vertex, face), so strips
+    join cleanly. Collinear chains share via the same mechanism. Two
+    failure modes this avoids: (a) corner offsets computed from MUTATED
+    loops poison later edges in the same action - all positions must come
+    from original topology (two-pass: gather, then apply); (b) keeping
+    the original edge as a raised ridge overlaps coplanar neighbors and
+    crosses at shared verts (the dark X-fins screenshot).
+
 ## SCons/module mechanics
 
-32. Module SCsub env flag is `env.editor_build`, not `env["tools"]`.
-33. `initialize_<foldername>_module` must match the folder name exactly
+33. Module SCsub env flag is `env.editor_build`, not `env["tools"]`.
+34. `initialize_<foldername>_module` must match the folder name exactly
     (module was renamed `leveleditor` → `level_editor` mid-project).
-34. Clean stale `__pycache__` in the module dir after renames.
-35. `Math::pow(2.0, step)` was "ambiguous" on MSVC - hardcoded a ladder array
+35. Clean stale `__pycache__` in the module dir after renames.
+36. `Math::pow(2.0, step)` was "ambiguous" on MSVC - hardcoded a ladder array
     instead (simpler anyway).

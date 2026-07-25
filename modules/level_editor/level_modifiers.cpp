@@ -33,6 +33,8 @@
 
 #include "level_brush.h"
 
+#include "core/templates/hash_map.h"
+
 #include "scene/resources/material.h"
 
 Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_loop(const EdgeKey &p_edge) const {
@@ -702,12 +704,44 @@ int LevelBrush::bevel_edges(const Vector<EdgeKey> &p_edges, real_t p_distance) {
 		return 0;
 	}
 
-	int beveled = 0;
-	for (const EdgeKey &edge : p_edges) {
-		// Find the (up to) 2 faces adjacent to this edge.
+	// Blender-style bevel (width = p_distance, 1 segment):
+	//  - Each beveled edge is CONSUMED. In every adjacent face, the edge's
+	//    boundary run is replaced by an offset line parallel to the edge at
+	//    distance p_distance (measured perpendicular within the face).
+	//  - The gap between the two offset lines is bridged by ONE strip face
+	//    per edge.
+	//  - Where several beveled edges meet at a vertex, their offset lines
+	//    in a shared face are intersected (mitred) into ONE corner point,
+	//    so strips join cleanly instead of crossing. Collinear
+	//    continuations share the point naturally.
+	//
+	// Pass 1 gathers topology (all reads on the ORIGINAL loops), pass 2
+	// creates corner verts, pass 3 rewrites loops and emits strips. All
+	// corner positions are computed from pre-mutation data, so multi-edge
+	// selections can't poison each other.
+
+	struct EdgeInfo {
 		int adj[2] = { -1, -1 };
-		int adj_pos[2] = { -1, -1 }; // Loop index of the edge's FIRST vert.
-		bool adj_rev[2] = { false, false }; // Edge runs backward in the loop.
+	};
+	struct CornerInfo {
+		Vector3 pos;
+		int new_vert = -1;
+	};
+
+	auto corner_key = [](int p_vert, int p_face) {
+		return ((int64_t)p_vert << 32) | (uint32_t)p_face;
+	};
+
+	// --- Pass 1: gather.
+	LocalVector<EdgeInfo> einfo;
+	einfo.resize(p_edges.size());
+	// corner key -> list of beveled-edge directions (unit, along each edge,
+	// arbitrary sign) incident at that (vertex, face) corner.
+	HashMap<int64_t, LocalVector<Vector3>> corner_dirs;
+	HashMap<int64_t, bool> corner_ok; // false = unbevelable corner seen.
+
+	for (int ei = 0; ei < p_edges.size(); ei++) {
+		const EdgeKey &edge = p_edges[ei];
 		int adj_count = 0;
 		for (uint32_t f = 0; f < faces.size() && adj_count < 2; f++) {
 			const LocalVector<int> &l = faces[f];
@@ -715,18 +749,8 @@ int LevelBrush::bevel_edges(const Vector<EdgeKey> &p_edges, real_t p_distance) {
 			for (uint32_t i = 0; i < n; i++) {
 				int ia = l[i];
 				int ib = l[(i + 1) % n];
-				if (ia == edge.a && ib == edge.b) {
-					adj[adj_count] = (int)f;
-					adj_pos[adj_count] = (int)i;
-					adj_rev[adj_count] = false;
-					adj_count++;
-					break;
-				}
-				if (ia == edge.b && ib == edge.a) {
-					adj[adj_count] = (int)f;
-					adj_pos[adj_count] = (int)i;
-					adj_rev[adj_count] = true;
-					adj_count++;
+				if ((ia == edge.a && ib == edge.b) || (ia == edge.b && ib == edge.a)) {
+					einfo[ei].adj[adj_count++] = (int)f;
 					break;
 				}
 			}
@@ -734,108 +758,227 @@ int LevelBrush::bevel_edges(const Vector<EdgeKey> &p_edges, real_t p_distance) {
 		if (adj_count != 2) {
 			continue; // Open boundary or degenerate - can't bevel.
 		}
+		const Vector3 dir = (verts[edge.b] - verts[edge.a]).normalized();
+		for (int s = 0; s < 2; s++) {
+			corner_dirs[corner_key(edge.a, einfo[ei].adj[s])].push_back(dir);
+			corner_dirs[corner_key(edge.b, einfo[ei].adj[s])].push_back(dir);
+		}
+	}
 
-		// For each adjacent face: create a new vert per endpoint, slid
-		// p_distance into the face along its boundary edges at that endpoint.
-		// new_vert[face_slot][endpoint(0=a,1=b)]
-		int nv[2][2] = { { -1, -1 }, { -1, -1 } };
+	// --- Pass 2: resolve one offset position per corner.
+	HashMap<int64_t, CornerInfo> corners;
+	for (KeyValue<int64_t, LocalVector<Vector3>> &kv : corner_dirs) {
+		const int vert = (int)(kv.key >> 32);
+		const int face = (int)(uint32_t)(kv.key & 0xFFFFFFFF);
+		const LocalVector<int> &l = faces[face];
+		const uint32_t n = l.size();
+		// Locate the vertex in the loop (first occurrence is fine: a face
+		// visits a boundary vertex once in sane topology).
+		int pos = -1;
+		for (uint32_t i = 0; i < n; i++) {
+			if (l[i] == vert) {
+				pos = (int)i;
+				break;
+			}
+		}
+		if (pos < 0) {
+			continue;
+		}
+		const Vector3 &vp = verts[vert];
+		const Vector3 to_prev = (verts[l[(pos + n - 1) % n]] - vp).normalized();
+		const Vector3 to_next = (verts[l[(pos + 1) % n]] - vp).normalized();
+		const LocalVector<Vector3> &dirs = kv.value;
+
+		// Which of the corner's two boundary runs are beveled? A run is
+		// beveled if its direction is parallel to any beveled-edge direction
+		// recorded at this corner.
+		auto run_beveled = [&](const Vector3 &p_run) {
+			for (uint32_t k = 0; k < dirs.size(); k++) {
+				if (Math::abs(p_run.dot(dirs[k])) > 0.999) {
+					return true;
+				}
+			}
+			return false;
+		};
+		const bool prev_beveled = run_beveled(to_prev);
+		const bool next_beveled = run_beveled(to_next);
+
+		Vector3 offset;
+		if (prev_beveled && next_beveled) {
+			// BOTH boundary runs beveled (two beveled edges meet here, or a
+			// collinear chain passing through): the corner point is the
+			// intersection of the two offset lines - on the angle bisector at
+			// distance p_distance from each edge line. t = d / sin(angle
+			// between bisector and edge). Flat 180-degree "corner" (collinear
+			// chain midpoint): bisector is perpendicular, sin = 1, t = d.
+			Vector3 bisector = to_prev + to_next;
+			if (bisector.length_squared() < CMP_EPSILON) {
+				corner_ok[corner_key(vert, face)] = false;
+				continue;
+			}
+			bisector.normalize();
+			real_t along = Math::abs(bisector.dot(dirs[0]));
+			real_t denom = Math::sqrt(MAX(1.0 - along * along, 0.0));
+			if (denom < 0.05) {
+				corner_ok[corner_key(vert, face)] = false; // Nearly parallel.
+				continue;
+			}
+			offset = bisector * (p_distance / denom);
+		} else {
+			// ONE boundary run beveled: the new corner point sits ON the
+			// other (unbeveled) boundary ray at exactly p_distance from the
+			// vertex (Blender measures the offset along the boundary edge).
+			// That point lies on the offset line parallel to the beveled
+			// edge at perpendicular distance p_distance * sin(corner)...
+			// NO - it anchors the offset polyline end at the corner, which
+			// is what Hammer/Blender show: the cut runs from boundary point
+			// to boundary point, parallel to the edge at distance d.
+			const Vector3 &ray = prev_beveled ? to_next : to_prev;
+			offset = ray * p_distance;
+		}
+		CornerInfo ci;
+		ci.pos = vp + offset;
+		corners[corner_key(vert, face)] = ci;
+	}
+
+	// Weld corners that resolved to the SAME position: coplanar adjacent
+	// faces of a beveled edge (e.g. sub-quads of a subdivided face sharing
+	// a chain-midpoint corner) each compute their own corner key, but the
+	// strip should share ONE vert there - otherwise coincident duplicates
+	// pile up.
+	{
+		LocalVector<int64_t> keys;
+		for (KeyValue<int64_t, CornerInfo> &kv : corners) {
+			keys.push_back(kv.key);
+		}
+		for (uint32_t i = 0; i < keys.size(); i++) {
+			CornerInfo *a = corners.getptr(keys[i]);
+			if (!a) {
+				continue;
+			}
+			for (uint32_t j = i + 1; j < keys.size(); j++) {
+				CornerInfo *b = corners.getptr(keys[j]);
+				if (!b) {
+					continue;
+				}
+				if (a->pos.is_equal_approx(b->pos)) {
+					// Alias b's key to a's entry: mark b as aliased by giving
+					// it a's (future) vert via a shared canonical pointer -
+					// simplest: pre-assign the vert now on first weld group.
+					if (a->new_vert < 0) {
+						a->new_vert = (int)verts.size();
+						verts.push_back(a->pos);
+					}
+					b->new_vert = a->new_vert;
+				}
+			}
+		}
+	}
+
+	// --- Pass 3: apply.
+	int beveled = 0;
+	for (int ei = 0; ei < p_edges.size(); ei++) {
+		const EdgeKey &edge = p_edges[ei];
+		if (einfo[ei].adj[1] < 0) {
+			continue; // Not bevelable.
+		}
+		// Resolve/create the 4 corner verts.
+		int nv[2][2]; // [face slot][endpoint 0=a,1=b]
 		bool ok = true;
 		for (int s = 0; s < 2 && ok; s++) {
-			LocalVector<int> &l = faces[adj[s]];
-			const uint32_t n = l.size();
-			// Loop positions of endpoints a and b within this face.
-			int pa, pb;
-			if (!adj_rev[s]) {
-				pa = adj_pos[s];
-				pb = (adj_pos[s] + 1) % n;
-			} else {
-				pb = adj_pos[s];
-				pa = (adj_pos[s] + 1) % n;
-			}
-			const int endpoints[2] = { pa, pb };
-			const int orig_verts[2] = { edge.a, edge.b };
+			const int orig[2] = { edge.a, edge.b };
 			for (int e = 0; e < 2; e++) {
-				int pos = endpoints[e];
-				int prev = l[(pos + n - 1) % n];
-				int next = l[(pos + 1) % n];
-				const Vector3 &vp = verts[orig_verts[e]];
-				// Slide along the angle bisector of the two boundary edges. To
-				// recede exactly p_distance along each boundary edge, the bisector
-				// slide is p_distance / cos(half the corner angle).
-				Vector3 to_prev = (verts[prev] - vp).normalized();
-				Vector3 to_next = (verts[next] - vp).normalized();
-				Vector3 slide = to_prev + to_next;
-				if (slide.length_squared() < CMP_EPSILON) {
+				int64_t key = corner_key(orig[e], einfo[ei].adj[s]);
+				const bool *cok = corner_ok.getptr(key);
+				if (cok && !*cok) {
 					ok = false;
 					break;
 				}
-				slide.normalize();
-				real_t cos_half = slide.dot(to_next);
-				if (cos_half < 0.01) {
-					ok = false; // Degenerate 180-degree corner.
+				CornerInfo *ci = corners.getptr(key);
+				if (!ci) {
+					ok = false;
 					break;
 				}
-				nv[s][e] = (int)verts.size();
-				verts.push_back(vp + slide * (p_distance / cos_half));
+				if (ci->new_vert < 0) {
+					ci->new_vert = (int)verts.size();
+					verts.push_back(ci->pos);
+				}
+				nv[s][e] = ci->new_vert;
 			}
 		}
 		if (!ok) {
 			continue;
 		}
 
-		// Replace the edge's endpoints in each adjacent face: the face loop
-		// gains the new vert where the old corner was (loop: ...prev, OLD,
-		// next... becomes ...prev, NEW, next... with OLD removed). Since the
-		// edge itself spanned a->b, both endpoints get replaced in the loop.
+		// Cut the edge out of each adjacent face: ...prev, a, b, next...
+		// becomes ...prev, a_offset, b_offset, next... . If a corner vert is
+		// shared with an already-processed edge, the loop may already
+		// contain it - skip duplicates.
 		Ref<Material> bevel_mat;
 		for (int s = 0; s < 2; s++) {
-			LocalVector<int> &l = faces[adj[s]];
+			LocalVector<int> &l = faces[einfo[ei].adj[s]];
 			const uint32_t n = l.size();
 			LocalVector<int> nl;
 			for (uint32_t i = 0; i < n; i++) {
 				if (l[i] == edge.a) {
-					nl.push_back(nv[s][0]);
+					if (nl.is_empty() || nl[nl.size() - 1] != nv[s][0]) {
+						nl.push_back(nv[s][0]);
+					}
 				} else if (l[i] == edge.b) {
-					nl.push_back(nv[s][1]);
+					if (nl.is_empty() || nl[nl.size() - 1] != nv[s][1]) {
+						nl.push_back(nv[s][1]);
+					}
 				} else {
 					nl.push_back(l[i]);
 				}
 			}
 			l = nl;
-			if (adj[s] < (int)face_materials.size() && bevel_mat.is_null()) {
-				bevel_mat = face_materials[adj[s]];
+			if (einfo[ei].adj[s] < (int)face_materials.size() && bevel_mat.is_null()) {
+				bevel_mat = face_materials[einfo[ei].adj[s]];
 			}
 		}
 
-		// New bevel face spanning the slid verts, wound to match the original
-		// edge orientation: (a_in_F1, a_in_F2, b_in_F2, b_in_F1).
-		LocalVector<int> bevel;
-		bevel.push_back(nv[0][0]);
-		bevel.push_back(nv[1][0]);
-		bevel.push_back(nv[1][1]);
-		bevel.push_back(nv[0][1]);
-		faces.push_back(LocalVector<int>(bevel));
-		face_materials.push_back(bevel_mat);
-
-		// Verify the bevel face normal points OUT of the brush. The slid verts
-		// are INSIDE the original volume, so edge_mid -> bevel_center points
-		// inward; the face normal must oppose it.
-		Vector3 edge_mid = (verts[edge.a] + verts[edge.b]) * 0.5;
-		Vector3 bevel_center;
-		for (uint32_t i = 0; i < 4; i++) {
-			bevel_center += verts[bevel[i]];
-		}
-		bevel_center *= 0.25;
-		Vector3 in_dir = bevel_center - edge_mid;
-		Vector3 e1 = verts[bevel[1]] - verts[bevel[0]];
-		Vector3 e2 = verts[bevel[3]] - verts[bevel[0]];
-		if (e1.cross(e2).dot(in_dir) > 0.0) {
-			// Reverse winding.
-			LocalVector<int> rev;
-			for (int i = 3; i >= 0; i--) {
-				rev.push_back(bevel[i]);
+		// One strip face bridging the two offset lines, wound to continue
+		// the original surface (normal matched against face slot 0's Newell
+		// normal, which is the same side of the surface).
+		LocalVector<int> strip;
+		strip.push_back(nv[0][0]);
+		strip.push_back(nv[0][1]);
+		strip.push_back(nv[1][1]);
+		strip.push_back(nv[1][0]);
+		// Degenerate guard: fully-shared corners (closed ring bevel) can
+		// collapse the strip to < 3 distinct verts.
+		{
+			int distinct = 1;
+			for (uint32_t i = 1; i < 4; i++) {
+				bool seen = false;
+				for (uint32_t j = 0; j < i; j++) {
+					seen = seen || strip[j] == strip[i];
+				}
+				distinct += seen ? 0 : 1;
 			}
-			faces[faces.size() - 1] = rev;
+			if (distinct >= 3) {
+				const LocalVector<int> &src = faces[einfo[ei].adj[0]];
+				Vector3 src_normal;
+				for (uint32_t i = 0; i < src.size(); i++) {
+					const Vector3 &c = verts[src[i]];
+					const Vector3 &nx = verts[src[(i + 1) % src.size()]];
+					src_normal.x += (c.y - nx.y) * (c.z + nx.z);
+					src_normal.y += (c.z - nx.z) * (c.x + nx.x);
+					src_normal.z += (c.x - nx.x) * (c.y + nx.y);
+				}
+				Vector3 e1 = verts[strip[1]] - verts[strip[0]];
+				Vector3 e2 = verts[strip[strip.size() - 1]] - verts[strip[0]];
+				if (e1.cross(e2).dot(src_normal) < 0.0) {
+					LocalVector<int> rev;
+					for (int i = (int)strip.size() - 1; i >= 0; i--) {
+						rev.push_back(strip[i]);
+					}
+					strip = rev;
+				}
+				faces.push_back(LocalVector<int>(strip));
+				face_materials.push_back(bevel_mat);
+			}
 		}
 
 		beveled++;

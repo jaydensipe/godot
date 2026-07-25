@@ -724,10 +724,58 @@ TEST_CASE("[LevelBrush] get_edge_loop stops at n-gon boundaries") {
 	LevelBrush::EdgeKey top_front(3, 2); // (0,1,0) -> (1,1,0)
 	CHECK(brush->get_edge_loop(top_front).size() == 4);
 
-	// Subdivide the top into a triangle fan: the edge now borders a triangle,
-	// which has no well-defined opposite - the loop dies immediately.
-	REQUIRE(brush->subdivide_face(4)); // +Y face -> 4 triangles.
-	CHECK(brush->get_edge_loop(top_front).size() == 1);
+	// Nick the (1,1,1) corner: keep the side x+y+z <= ~2.3 (clip keeps the
+	// side the normal points to, so flip the normal to keep the origin
+	// side). The +Y face loses one corner and becomes a pentagon.
+	const Vector3 clip_n = Vector3(-1, -1, -1).normalized();
+	brush->clip(Plane(clip_n, clip_n.dot(Vector3(1, 1, 1)) + 0.4));
+
+	// Subdividing that pentagon makes a TRIANGLE FAN; any edge bordering a
+	// triangle has no well-defined opposite, so the loop dies immediately.
+	int pentagon = -1;
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		if (brush->get_face(f).size() == 5) {
+			pentagon = f;
+			break;
+		}
+	}
+	REQUIRE(pentagon >= 0);
+	const int faces_before = brush->get_face_count();
+	REQUIRE(brush->subdivide_face(pentagon)); // Pentagon -> 5 triangles.
+
+	// An edge between two triangles has no well-defined opposite on either
+	// side, so the loop dies immediately (opposite_edge() returns -1 for
+	// any non-quad). The fan's CENTROID edges are triangle-on-both-sides:
+	// find the centroid as the vert appearing in EVERY fan triangle (the
+	// subdivided face at `pentagon` plus the appended ones).
+	const int fan_faces = brush->get_face_count() - faces_before + 1;
+	REQUIRE(fan_faces == 5);
+	int centroid = -1;
+	for (int v = 0; v < brush->get_vertex_count() && centroid < 0; v++) {
+		int count = 0;
+		// Fan triangles: face `pentagon` (replaced in place) plus the
+		// (fan_faces - 1) faces appended at the end.
+		for (int k = 0; k < fan_faces; k++) {
+			int f = (k == 0) ? pentagon : brush->get_face_count() - k;
+			LocalVector<int> t = brush->get_face(f);
+			for (uint32_t j = 0; j < t.size(); j++) {
+				if (t[j] == v) {
+					count++;
+					break;
+				}
+			}
+		}
+		if (count == fan_faces) {
+			centroid = v;
+		}
+	}
+	REQUIRE(centroid >= 0);
+	// Any other vert of the first fan triangle forms a centroid edge.
+	LocalVector<int> tri = brush->get_face(pentagon);
+	REQUIRE(tri.size() == 3);
+	int other = tri[0] == centroid ? tri[1] : tri[0];
+	Vector<LevelBrush::EdgeKey> loop = brush->get_edge_loop(LevelBrush::EdgeKey(centroid, other));
+	CHECK(loop.size() == 1);
 
 	memdelete(brush);
 }
@@ -771,7 +819,10 @@ TEST_CASE("[LevelBrush] get_edge_chain follows collinear segments") {
 	memdelete(brush);
 }
 
-TEST_CASE("[LevelBrush] bevel_edges replaces an edge with a chamfer face") {
+TEST_CASE("[LevelBrush] bevel_edges consumes the edge into a strip face") {
+	// Blender/Hammer-style bevel on a 90-degree corner: the original edge
+	// is consumed; one new quad bridges two lines offset p_distance into
+	// each adjacent face.
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
 
@@ -780,24 +831,140 @@ TEST_CASE("[LevelBrush] bevel_edges replaces an edge with a chamfer face") {
 	edges.push_back(LevelBrush::EdgeKey(3, 2));
 	CHECK(brush->bevel_edges(edges, 0.5) == 1);
 
-	// 6 + 1 faces; 8 + 4 verts (2 per adjacent face).
+	// 6 + 1 faces (one strip quad); 8 + 4 verts (2 offset points per face).
 	CHECK(brush->get_face_count() == 7);
 	CHECK(brush->get_vertex_count() == 12);
 
-	// The new bevel face (last) is a quad whose normal points outward -
-	// up-and-backward (+Y, -Z): the 45-degree chamfer of the top-back edge.
-	LocalVector<int> bevel = brush->get_face(6);
-	CHECK(bevel.size() == 4);
+	// The original endpoint verts are no longer referenced by the two
+	// faces adjacent to the beveled edge (top=4, front=?): find the two
+	// faces that USED to contain both verts - they no longer do. (Side
+	// faces keep the verts as ordinary corners - that's correct.)
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		LocalVector<int> loop = brush->get_face(f);
+		bool has_a = false, has_b = false;
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			has_a = has_a || loop[i] == 3;
+			has_b = has_b || loop[i] == 2;
+		}
+		// No face may still contain BOTH original endpoints (that would be
+		// the consumed edge still existing).
+		CHECK(!(has_a && has_b));
+	}
+
+	// The strip face (last) is a quad whose normal points outward -
+	// up-and-backward (+Y, -Z): the 45-degree chamfer of the corner.
+	LocalVector<int> strip = brush->get_face(6);
+	CHECK(strip.size() == 4);
 	Vector3 n = brush->get_face_normal(6);
 	CHECK(n.y > 0.5);
 	CHECK(n.z < -0.5);
 	CHECK(Math::abs(n.x) < 0.001);
 
-	// All four bevel verts sit on the chamfer plane y - z = 1.5.
-	for (int idx : bevel) {
-		const Vector3 &v = brush->get_vertex(idx);
-		CHECK(Math::abs((v.y - v.z) - 1.5) < 0.01);
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] bevel_edges offsets exactly p_distance into each face") {
+	// The slide verts must sit exactly p_distance from the original edge,
+	// perpendicular to it within each adjacent face (NOT 2*d as a
+	// boundary-edge slide would produce at 90-degree corners).
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+
+	// Top-front edge (0,2,0) -> (2,2,0), adjacent faces: top (y=2), front (z=0).
+	Vector<LevelBrush::EdgeKey> edges;
+	edges.push_back(LevelBrush::EdgeKey(3, 2));
+	REQUIRE(brush->bevel_edges(edges, 0.5) == 1);
+
+	// Expect new verts at (0, 1.5, 0) / (2, 1.5, 0) on the top face and
+	// (0, 2, 0.5) / (2, 2, 0.5) on the front face.
+	int found = 0;
+	for (int i = 0; i < brush->get_vertex_count(); i++) {
+		const Vector3 v = brush->get_vertex(i);
+		if (v.is_equal_approx(Vector3(0, 1.5, 0)) || v.is_equal_approx(Vector3(2, 1.5, 0)) ||
+				v.is_equal_approx(Vector3(0, 2, 0.5)) || v.is_equal_approx(Vector3(2, 2, 0.5))) {
+			found++;
+		}
 	}
+	CHECK(found == 4);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] bevel_edges makes one continuous strip across a collinear chain") {
+	// Subdivide the top face, then bevel BOTH collinear edges of the middle
+	// line in one action: the strips must share slide verts at the middle
+	// vertex (no doubled/overlapping verts) and the middle vertex survives
+	// as the strip centerline.
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+	REQUIRE(brush->subdivide_face(4)); // +Y face -> 4 quads via midpoints+centroid.
+
+	// Find the centroid (1,2,1) and the top face's two front-edge midpoint
+	// verts: front edge (0,2,0)-(2,2,0) midpoint (1,2,0). The middle line
+	// along X is (0,2,1)->(1,2,1)->(2,2,1): centroid + two side midpoints.
+	int centroid = -1, mid_l = -1, mid_r = -1;
+	for (int i = 0; i < brush->get_vertex_count(); i++) {
+		const Vector3 v = brush->get_vertex(i);
+		if (v.is_equal_approx(Vector3(1, 2, 1))) {
+			centroid = i;
+		} else if (v.is_equal_approx(Vector3(0, 2, 1))) {
+			mid_l = i;
+		} else if (v.is_equal_approx(Vector3(2, 2, 1))) {
+			mid_r = i;
+		}
+	}
+	REQUIRE(centroid >= 0);
+	REQUIRE(mid_l >= 0);
+	REQUIRE(mid_r >= 0);
+
+	Vector<LevelBrush::EdgeKey> edges;
+	edges.push_back(LevelBrush::EdgeKey(mid_l, centroid));
+	edges.push_back(LevelBrush::EdgeKey(centroid, mid_r));
+	CHECK(brush->bevel_edges(edges, 0.25) == 2);
+
+	// Both adjacent faces of the chain are coplanar (all on y=2), so each
+	// edge shares its slide verts between its two sides - 2 new verts per
+	// endpoint region: the 3 distinct endpoints (mid_l, centroid, mid_r)
+	// each get 2 (one per side of the line), with the centroid's shared by
+	// both edges: 3 * 2 = 6 new verts total.
+	CHECK(brush->get_vertex_count() == 13 + 6); // 8 box + 5 subdiv + 6.
+
+	// New verts: (x, 2, 0.75) and (x, 2, 1.25) for x in {0, 1, 2}.
+	int found = 0;
+	for (int i = 0; i < brush->get_vertex_count(); i++) {
+		const Vector3 v = brush->get_vertex(i);
+		if (!Math::is_equal_approx(v.y, (real_t)2.0)) {
+			continue;
+		}
+		if (Math::is_equal_approx(v.z, (real_t)0.75) || Math::is_equal_approx(v.z, (real_t)1.25)) {
+			if (Math::is_equal_approx(v.x, (real_t)0.0) || Math::is_equal_approx(v.x, (real_t)1.0) || Math::is_equal_approx(v.x, (real_t)2.0)) {
+				found++;
+			}
+		}
+	}
+	CHECK(found == 6);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] bevel_edges rejects open edges and zero distance") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Zero/negative distance is a no-op.
+	Vector<LevelBrush::EdgeKey> edges;
+	edges.push_back(LevelBrush::EdgeKey(3, 2));
+	CHECK(brush->bevel_edges(edges, 0.0) == 0);
+	CHECK(brush->bevel_edges(edges, -1.0) == 0);
+	CHECK(brush->get_face_count() == 6);
+
+	// Delete a face so its edges are open (only one adjacent face): those
+	// cannot be beveled.
+	Vector<int> del;
+	del.push_back(4); // +Y face.
+	brush->delete_faces(del);
+	REQUIRE(brush->get_face_count() == 5);
+	CHECK(brush->bevel_edges(edges, 0.25) == 0);
 
 	memdelete(brush);
 }
