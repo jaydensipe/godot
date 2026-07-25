@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  level_editor_brush.cpp                                               */
+/*  level_editor_brush.cpp                                                */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -33,9 +33,8 @@
 // select-mode resize handles. These are LevelEditorScreen member functions,
 // split out of level_editor_screen.cpp for organization.
 
-#include "../../level_editor_screen.h"
-
 #include "../../../level_constants.h"
+#include "../../level_editor_screen.h"
 #include "../../level_helpers.h"
 
 #include "editor/editor_interface.h"
@@ -390,7 +389,7 @@ void LevelEditorScreen::_compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) con
 // ---------------------------------------------------------------------------
 
 bool LevelEditorScreen::_brush_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
-	if (mode != MODE_BLOCK) {
+	if (tool != TOOL_BLOCK) {
 		return false;
 	}
 	Ref<InputEventMouseButton> mb = p_event;

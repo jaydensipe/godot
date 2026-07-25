@@ -161,17 +161,28 @@ class LevelEditorScreen : public VBoxContainer {
 	GDCLASS(LevelEditorScreen, VBoxContainer);
 
 public:
-	enum Mode {
-		MODE_SELECT,
-		MODE_ROTATE,
-		MODE_SCALE,
-		MODE_BLOCK,
-		MODE_CLIP,
-		MODE_MIRROR,
-		MODE_VERTEX,
-		MODE_EDGE,
-		MODE_FACE,
-		MODE_MAX
+	// Two orthogonal state axes (Hammer 2 style):
+	// - Tool: what the left mouse button does (move/rotate/scale gizmo, or a
+	//   modal drawing tool). BLOCK/CLIP/MIRROR suspend the transform tool and
+	//   restore it (and the selection target) afterwards.
+	// - Target: what gets selected/transformed - the whole brush ("Mesh") or
+	//   its vertices/edges/faces.
+	enum Tool {
+		TOOL_SELECT,
+		TOOL_ROTATE,
+		TOOL_SCALE,
+		TOOL_BLOCK,
+		TOOL_CLIP,
+		TOOL_MIRROR,
+		TOOL_MAX
+	};
+
+	enum SelectionTarget {
+		TARGET_VERTEX,
+		TARGET_EDGE,
+		TARGET_FACE,
+		TARGET_MESH,
+		TARGET_MAX
 	};
 
 private:
@@ -184,7 +195,8 @@ private:
 	Control *no_map_panel = nullptr;
 	Label *no_map_label = nullptr;
 	Button *create_map_button = nullptr;
-	Button *mode_buttons[MODE_MAX] = {};
+	Button *tool_buttons[TOOL_MAX] = {};
+	Button *target_buttons[TARGET_MAX] = {};
 	OptionButton *grid_size_option = nullptr;
 	Button *bake_button = nullptr;
 	MenuButton *tools_menu = nullptr;
@@ -201,7 +213,15 @@ private:
 	real_t grid_size = 1.0;
 	real_t extrude_amount = 1.0;
 
-	Mode mode = MODE_SELECT;
+	Tool tool = TOOL_SELECT;
+	Tool last_transform_tool = TOOL_SELECT; // Restored after BLOCK/CLIP/MIRROR.
+	SelectionTarget selection_target = TARGET_MESH;
+	SelectionTarget last_target = TARGET_MESH; // Restored after BLOCK/CLIP/MIRROR.
+
+	// True when the active tool is one of the modal drawing tools.
+	bool _is_drawing_tool() const { return tool == TOOL_BLOCK || tool == TOOL_CLIP || tool == TOOL_MIRROR; }
+	// True when selection/transformation acts on brush elements.
+	bool _is_element_target() const { return selection_target != TARGET_MESH; }
 
 	LevelMap *current_map = nullptr;
 
@@ -482,8 +502,10 @@ private:
 		return !dead.is_empty();
 	}
 
-	void _mode_changed(int p_mode);
-	void _set_mode(Mode p_mode);
+	void _tool_changed(int p_tool);
+	void _target_changed(int p_target);
+	void _set_tool(Tool p_tool);
+	void _set_target(SelectionTarget p_target);
 	void _update_mode_icons();
 	void _edit_brush_node(LevelBrush *p_brush);
 

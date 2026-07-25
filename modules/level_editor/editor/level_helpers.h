@@ -47,16 +47,28 @@ inline void aabb_corners(const AABB &p_aabb, Vector3 r_corners[8]) {
 
 // The 12 edges of a box as index pairs into aabb_corners().
 inline constexpr int AABB_EDGE_IDX[12][2] = {
-	{ 0, 1 }, { 1, 3 }, { 3, 2 }, { 2, 0 },
-	{ 4, 5 }, { 5, 7 }, { 7, 6 }, { 6, 4 },
-	{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 },
+	{ 0, 1 },
+	{ 1, 3 },
+	{ 3, 2 },
+	{ 2, 0 },
+	{ 4, 5 },
+	{ 5, 7 },
+	{ 7, 6 },
+	{ 6, 4 },
+	{ 0, 4 },
+	{ 1, 5 },
+	{ 2, 6 },
+	{ 3, 7 },
 };
 
 // Outward direction per face handle index (0..5: -x, +x, -y, +y, -z, +z).
 inline const Vector3 AABB_FACE_DIRS[6] = {
-	Vector3(-1, 0, 0), Vector3(1, 0, 0),
-	Vector3(0, -1, 0), Vector3(0, 1, 0),
-	Vector3(0, 0, -1), Vector3(0, 0, 1),
+	Vector3(-1, 0, 0),
+	Vector3(1, 0, 0),
+	Vector3(0, -1, 0),
+	Vector3(0, 1, 0),
+	Vector3(0, 0, -1),
+	Vector3(0, 0, 1),
 };
 
 inline Vector3 aabb_face_center(const AABB &p_aabb, int p_face) {

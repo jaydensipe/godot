@@ -16,6 +16,9 @@
 /* permit persons to whom the Software is furnished to do so, subject to  */
 /* the following conditions:                                              */
 /*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
 /* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
 /* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
 /* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
@@ -103,7 +106,7 @@ void LevelEditorScreen::_mirror_cancel() {
 }
 
 void LevelEditorScreen::_draw_mirror(LevelEditorViewport *p_vp, Control *p_canvas) {
-	if (mode != MODE_MIRROR || !mirror_active || !mirror_brush) {
+	if (tool != TOOL_MIRROR || !mirror_active || !mirror_brush) {
 		return;
 	}
 
@@ -151,7 +154,7 @@ void LevelEditorScreen::_draw_mirror(LevelEditorViewport *p_vp, Control *p_canva
 // ---------------------------------------------------------------------------
 
 bool LevelEditorScreen::_mirror_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
-	if (mode != MODE_MIRROR) {
+	if (tool != TOOL_MIRROR) {
 		return false;
 	}
 	Ref<InputEventMouseButton> mb = p_event;

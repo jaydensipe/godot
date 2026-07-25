@@ -637,14 +637,14 @@ LevelEditorScreen::LevelEditorScreen() {
 	HBoxContainer *tool_hbox = memnew(HBoxContainer);
 	tool_panel->add_child(tool_hbox);
 
-	for (int i = MODE_SELECT; i <= MODE_SCALE; i++) {
+	for (int i = TOOL_SELECT; i <= TOOL_SCALE; i++) {
 		Button *b = memnew(Button);
 		b->set_toggle_mode(true);
 		b->set_pressed(i == 0);
-		b->connect("pressed", callable_mp(this, &LevelEditorScreen::_mode_changed).bind(i));
+		b->connect("pressed", callable_mp(this, &LevelEditorScreen::_tool_changed).bind(i));
 		b->set_theme_type_variation(SceneStringName(FlatButton));
 		tool_hbox->add_child(b);
-		mode_buttons[i] = b;
+		tool_buttons[i] = b;
 	}
 
 	toolbar->add_child(memnew(VSeparator));
@@ -656,19 +656,20 @@ LevelEditorScreen::LevelEditorScreen() {
 	HBoxContainer *draw_hbox = memnew(HBoxContainer);
 	draw_panel->add_child(draw_hbox);
 
-	for (int i = MODE_BLOCK; i <= MODE_MIRROR; i++) {
+	for (int i = TOOL_BLOCK; i <= TOOL_MIRROR; i++) {
 		Button *b = memnew(Button);
 		b->set_toggle_mode(true);
 		b->set_pressed(false);
-		b->connect("pressed", callable_mp(this, &LevelEditorScreen::_mode_changed).bind(i));
+		b->connect("pressed", callable_mp(this, &LevelEditorScreen::_tool_changed).bind(i));
 		b->set_theme_type_variation(SceneStringName(FlatButton));
 		draw_hbox->add_child(b);
-		mode_buttons[i] = b;
+		tool_buttons[i] = b;
 	}
 
 	toolbar->add_child(memnew(VSeparator));
 
-	// ...and element modes in a second panel (Vertex, Edge, Face).
+	// ...and the selection target in a second panel (Mesh, Vertex, Edge, Face).
+	// Orthogonal to the tool: any transform tool can act on any target.
 	PanelContainer *element_panel = memnew(PanelContainer);
 	element_panel->set_theme_type_variation("PanelContainerButtonGroup");
 	toolbar->add_child(element_panel);
@@ -676,36 +677,38 @@ LevelEditorScreen::LevelEditorScreen() {
 	HBoxContainer *element_hbox = memnew(HBoxContainer);
 	element_panel->add_child(element_hbox);
 
-	for (int i = MODE_VERTEX; i <= MODE_FACE; i++) {
+	for (int i = 0; i < TARGET_MAX; i++) {
 		Button *b = memnew(Button);
 		b->set_toggle_mode(true);
-		b->set_pressed(false);
-		b->connect("pressed", callable_mp(this, &LevelEditorScreen::_mode_changed).bind(i));
+		b->set_pressed(i == TARGET_MESH);
+		b->connect("pressed", callable_mp(this, &LevelEditorScreen::_target_changed).bind(i));
 		b->set_theme_type_variation(SceneStringName(FlatButton));
 		element_hbox->add_child(b);
-		mode_buttons[i] = b;
+		target_buttons[i] = b;
 	}
 
 	// Icons are (re)assigned in NOTIFICATION_THEME_CHANGED. Text labels are
 	// fallbacks for buttons without icons.
-	mode_buttons[MODE_BLOCK]->set_tooltip_text(TTRC("Block"));
-	mode_buttons[MODE_CLIP]->set_tooltip_text(TTRC("Clip"));
-	mode_buttons[MODE_MIRROR]->set_tooltip_text(TTRC("Mirror (draw a plane to duplicate the brush reflected across it)"));
-	mode_buttons[MODE_VERTEX]->set_tooltip_text(TTRC("Vertex"));
-	mode_buttons[MODE_EDGE]->set_tooltip_text(TTRC("Edge (double-click: select straight chain, Alt+double-click: select loop)"));
-	mode_buttons[MODE_FACE]->set_tooltip_text(TTRC("Shift: Hold while dragging to extrude."));
+	tool_buttons[TOOL_BLOCK]->set_tooltip_text(TTRC("Block"));
+	tool_buttons[TOOL_CLIP]->set_tooltip_text(TTRC("Clip"));
+	tool_buttons[TOOL_MIRROR]->set_tooltip_text(TTRC("Mirror (draw a plane to duplicate the brush reflected across it)"));
+	target_buttons[TARGET_VERTEX]->set_tooltip_text(TTRC("Vertex"));
+	target_buttons[TARGET_EDGE]->set_tooltip_text(TTRC("Edge (double-click: select straight chain, Alt+double-click: select loop)"));
+	target_buttons[TARGET_FACE]->set_tooltip_text(TTRC("Face (Shift: hold while dragging to extrude)"));
+	target_buttons[TARGET_MESH]->set_tooltip_text(TTRC("Mesh (whole-brush selection)"));
 
 	// Set shortcuts for buttons
-	mode_buttons[MODE_SELECT]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_transform", TTRC("Select / Move Mode"), Key::Q, true));
-	mode_buttons[MODE_ROTATE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_rotate", TTRC("Rotate Mode"), Key::E, true));
-	mode_buttons[MODE_SCALE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_scale", TTRC("Scale Mode"), Key::R, true));
+	tool_buttons[TOOL_SELECT]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_transform", TTRC("Select / Move Mode"), Key::Q, true));
+	tool_buttons[TOOL_ROTATE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_rotate", TTRC("Rotate Mode"), Key::E, true));
+	tool_buttons[TOOL_SCALE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_scale", TTRC("Scale Mode"), Key::R, true));
 
-	mode_buttons[MODE_BLOCK]->set_shortcut(ED_SHORTCUT("level_editor/tool_block", TTRC("Block Mode"), Key::B, true));
-	mode_buttons[MODE_CLIP]->set_shortcut(ED_SHORTCUT("level_editor/tool_clip", TTRC("Clip Mode"), Key::C, true));
+	tool_buttons[TOOL_BLOCK]->set_shortcut(ED_SHORTCUT("level_editor/tool_block", TTRC("Block Mode"), Key::B, true));
+	tool_buttons[TOOL_CLIP]->set_shortcut(ED_SHORTCUT("level_editor/tool_clip", TTRC("Clip Mode"), Key::C, true));
 
-	mode_buttons[MODE_VERTEX]->set_shortcut(ED_SHORTCUT("level_editor/tool_vertex", TTRC("Vertex Mode"), Key::KEY_1, true));
-	mode_buttons[MODE_EDGE]->set_shortcut(ED_SHORTCUT("level_editor/tool_edge", TTRC("Edge Mode"), Key::KEY_2, true));
-	mode_buttons[MODE_FACE]->set_shortcut(ED_SHORTCUT("level_editor/tool_face", TTRC("Face Mode"), Key::KEY_3, true));
+	target_buttons[TARGET_VERTEX]->set_shortcut(ED_SHORTCUT("level_editor/tool_vertex", TTRC("Vertex Selection"), Key::KEY_1, true));
+	target_buttons[TARGET_EDGE]->set_shortcut(ED_SHORTCUT("level_editor/tool_edge", TTRC("Edge Selection"), Key::KEY_2, true));
+	target_buttons[TARGET_FACE]->set_shortcut(ED_SHORTCUT("level_editor/tool_face", TTRC("Face Selection"), Key::KEY_3, true));
+	target_buttons[TARGET_MESH]->set_shortcut(ED_SHORTCUT("level_editor/target_mesh", TTRC("Mesh Selection"), Key::KEY_4, true));
 
 	toolbar->add_child(memnew(VSeparator));
 
@@ -1122,38 +1125,46 @@ LevelMap *LevelEditorScreen::_get_or_create_map() {
 }
 
 void LevelEditorScreen::_update_mode_icons() {
-	if (mode_buttons[MODE_SELECT]) {
-		mode_buttons[MODE_SELECT]->set_button_icon(get_editor_theme_icon(SNAME("ToolSelect")));
-		mode_buttons[MODE_ROTATE]->set_button_icon(get_editor_theme_icon(SNAME("ToolRotate")));
-		mode_buttons[MODE_SCALE]->set_button_icon(get_editor_theme_icon(SNAME("ToolScale")));
-		mode_buttons[MODE_BLOCK]->set_button_icon(get_editor_theme_icon(SNAME("Brush")));
-		mode_buttons[MODE_CLIP]->set_button_icon(get_editor_theme_icon(SNAME("Clip")));
-		mode_buttons[MODE_MIRROR]->set_button_icon(get_editor_theme_icon(SNAME("MirrorX")));
-		mode_buttons[MODE_VERTEX]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignCenterLeft")));
-		mode_buttons[MODE_EDGE]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignRightWide")));
-		mode_buttons[MODE_FACE]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignFullRect")));
+	if (tool_buttons[TOOL_SELECT]) {
+		tool_buttons[TOOL_SELECT]->set_button_icon(get_editor_theme_icon(SNAME("ToolSelect")));
+		tool_buttons[TOOL_ROTATE]->set_button_icon(get_editor_theme_icon(SNAME("ToolRotate")));
+		tool_buttons[TOOL_SCALE]->set_button_icon(get_editor_theme_icon(SNAME("ToolScale")));
+		tool_buttons[TOOL_BLOCK]->set_button_icon(get_editor_theme_icon(SNAME("Brush")));
+		tool_buttons[TOOL_CLIP]->set_button_icon(get_editor_theme_icon(SNAME("Clip")));
+		tool_buttons[TOOL_MIRROR]->set_button_icon(get_editor_theme_icon(SNAME("Mirror")));
+		target_buttons[TARGET_VERTEX]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignCenterLeft")));
+		target_buttons[TARGET_EDGE]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignRightWide")));
+		target_buttons[TARGET_FACE]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignFullRect")));
+		target_buttons[TARGET_MESH]->set_button_icon(get_editor_theme_icon(SNAME("MeshTool")));
 	}
 }
 
-void LevelEditorScreen::_mode_changed(int p_mode) {
+void LevelEditorScreen::_tool_changed(int p_tool) {
 	// Clicking the Clip button again while a clip is active cycles
 	// keep-left / keep-right / keep-both (like Hammer's clip tool).
-	if ((Mode)p_mode == MODE_CLIP && mode == MODE_CLIP && clip_active) {
+	if ((Tool)p_tool == TOOL_CLIP && tool == TOOL_CLIP && clip_active) {
 		_clip_cycle_side();
-		mode_buttons[MODE_CLIP]->set_pressed(true);
+		tool_buttons[TOOL_CLIP]->set_pressed(true);
 	} else {
-		_set_mode((Mode)p_mode);
+		_set_tool((Tool)p_tool);
 	}
 	// Don't leave keyboard focus on the toolbar buttons, so Enter/Esc/etc.
 	// go to the viewports instead of re-triggering the button.
-	for (int i = 0; i < MODE_MAX; i++) {
-		mode_buttons[i]->release_focus();
+	for (int i = 0; i < TOOL_MAX; i++) {
+		tool_buttons[i]->release_focus();
 	}
 }
 
-void LevelEditorScreen::_set_mode(Mode p_mode) {
+void LevelEditorScreen::_target_changed(int p_target) {
+	_set_target((SelectionTarget)p_target);
+	for (int i = 0; i < TARGET_MAX; i++) {
+		target_buttons[i]->release_focus();
+	}
+}
+
+void LevelEditorScreen::_set_tool(Tool p_tool) {
 	// Interrupt any in-progress drag first - the drag's undo action commits
-	// against the OLD mode's snapshots, so ending it cleanly is required
+	// against the OLD tool's snapshots, so ending it cleanly is required
 	// before switching (a dropped extrude drag would be un-undoable).
 	if (gizmo_dragging) {
 		_gizmo_end_drag();
@@ -1166,16 +1177,16 @@ void LevelEditorScreen::_set_mode(Mode p_mode) {
 	}
 	if (select_moving) {
 		// End the whole-brush move like an LMB release: commit the position
-		// undo, or a mid-move mode shortcut makes the move un-undoable.
+		// undo, or a mid-move shortcut makes the move un-undoable.
 		select_moving = false;
 		if (selected_brush) {
 			Vector3 new_pos = selected_brush->get_position();
 			if (!new_pos.is_equal_approx(select_move_original_position)) {
-				LevelBrush *target = selected_brush;
+				LevelBrush *target_brush = selected_brush;
 				Vector3 old_pos = select_move_original_position;
 				EditorUndoRedoManager::get_singleton()->create_action(TTR("Move Brush"));
-				EditorUndoRedoManager::get_singleton()->add_do_property(target, "position", new_pos);
-				EditorUndoRedoManager::get_singleton()->add_undo_property(target, "position", old_pos);
+				EditorUndoRedoManager::get_singleton()->add_do_property(target_brush, "position", new_pos);
+				EditorUndoRedoManager::get_singleton()->add_undo_property(target_brush, "position", old_pos);
 				EditorUndoRedoManager::get_singleton()->commit_action(false);
 			}
 		}
@@ -1184,22 +1195,64 @@ void LevelEditorScreen::_set_mode(Mode p_mode) {
 	paint_select_active = false;
 	paint_select_viewport = nullptr;
 
-	mode = p_mode;
-	for (int i = 0; i < MODE_MAX; i++) {
-		mode_buttons[i]->set_pressed(i == (int)mode);
+	const bool was_drawing = _is_drawing_tool();
+	const bool to_drawing = (p_tool == TOOL_BLOCK || p_tool == TOOL_CLIP || p_tool == TOOL_MIRROR);
+
+	// Entering a drawing tool suspends the transform tool + selection target;
+	// leaving one restores them (Hammer remembers).
+	if (to_drawing && !was_drawing) {
+		last_transform_tool = tool;
+		last_target = selection_target;
+	} else if (!to_drawing && was_drawing) {
+		selection_target = last_target;
 	}
-	// Drop element selection whenever the mode changes - each tool owns its
-	// own selection type.
-	_clear_element_selection();
-	if (mode != MODE_BLOCK && ghost_active) {
+
+	tool = p_tool;
+	if (!to_drawing) {
+		last_transform_tool = tool;
+	}
+	for (int i = 0; i < TOOL_MAX; i++) {
+		tool_buttons[i]->set_pressed(i == (int)tool);
+	}
+	for (int i = 0; i < TARGET_MAX; i++) {
+		target_buttons[i]->set_pressed(i == (int)selection_target);
+	}
+	// The drawing tools don't transform the selection - drop it.
+	if (to_drawing) {
+		_clear_selection();
+	}
+	if (tool != TOOL_BLOCK && ghost_active) {
 		_ghost_cancel();
 	}
-	if (mode != MODE_CLIP && clip_active) {
+	if (tool != TOOL_CLIP && clip_active) {
 		_clip_cancel();
 	}
-	if (mode != MODE_MIRROR && mirror_active) {
+	if (tool != TOOL_MIRROR && mirror_active) {
 		_mirror_cancel();
 	}
+	_action_cancel_armed();
+	_update_overlays();
+}
+
+void LevelEditorScreen::_set_target(SelectionTarget p_target) {
+	if (p_target == selection_target) {
+		return;
+	}
+	if (gizmo_dragging) {
+		_gizmo_end_drag();
+	}
+	if (rotate_drag_axis >= 0) {
+		_rotate_end_drag();
+	}
+	paint_select_active = false;
+	paint_select_viewport = nullptr;
+
+	selection_target = p_target;
+	for (int i = 0; i < TARGET_MAX; i++) {
+		target_buttons[i]->set_pressed(i == (int)selection_target);
+	}
+	// Each target owns its own selection type.
+	_clear_selection();
 	_action_cancel_armed();
 	_update_overlays();
 }
@@ -1394,8 +1447,8 @@ void LevelEditorScreen::_delete_selection() {
 		return;
 	}
 
-	switch (mode) {
-		case MODE_SELECT: {
+	switch (selection_target) {
+		case TARGET_MESH: {
 			if (!selected_brush) {
 				return;
 			}
@@ -1416,13 +1469,13 @@ void LevelEditorScreen::_delete_selection() {
 			undo_redo->commit_action();
 			_refresh_map();
 		} break;
-		case MODE_FACE:
+		case TARGET_FACE:
 			_action_delete_faces();
 			break;
-		case MODE_EDGE:
+		case TARGET_EDGE:
 			_action_collapse_edges();
 			break;
-		case MODE_VERTEX:
+		case TARGET_VERTEX:
 			_action_collapse_vertices();
 			break;
 		default:
@@ -1626,17 +1679,17 @@ void LevelEditorScreen::_update_hover(LevelEditorViewport *p_vp, const Vector2 &
 	has_hover_vertex = false;
 
 	Camera3D *cam = p_vp->get_camera();
-	switch (mode) {
-		case MODE_SELECT: {
+	switch (selection_target) {
+		case TARGET_MESH: {
 			Vector3 hit;
 			int f;
 			_pick_face(cam, p_mouse, hover_brush, f, hit);
 		} break;
-		case MODE_FACE: {
+		case TARGET_FACE: {
 			Vector3 hit;
 			_pick_face(cam, p_mouse, hover_brush, hover_face, hit);
 		} break;
-		case MODE_VERTEX: {
+		case TARGET_VERTEX: {
 			has_hover_vertex = _pick_vertex(cam, p_mouse, hover_brush, hover_vertex);
 			// Also resolve which brush is under the cursor (face pick) so all of
 			// its vertices can be shown even when not directly over one.
@@ -1649,7 +1702,7 @@ void LevelEditorScreen::_update_hover(LevelEditorViewport *p_vp, const Vector2 &
 				}
 			}
 		} break;
-		case MODE_EDGE: {
+		case TARGET_EDGE: {
 			has_hover_edge = _pick_edge(cam, p_mouse, hover_brush, hover_edge);
 			if (!has_hover_edge) {
 				Vector3 hit;
@@ -1721,22 +1774,22 @@ void LevelEditorScreen::_paint_select_at(Camera3D *p_camera, const Vector2 &p_sc
 	// Add (never remove) the element under the cursor, per mode. Called on the
 	// initial click and on every mouse-motion while the button is held, so
 	// dragging paints a trail of selected elements.
-	switch (mode) {
-		case MODE_VERTEX: {
+	switch (selection_target) {
+		case TARGET_VERTEX: {
 			LevelBrush *brush = nullptr;
 			int v;
 			if (_pick_vertex(p_camera, p_screen, brush, v)) {
 				_vertex_set(brush).insert(v);
 			}
 		} break;
-		case MODE_EDGE: {
+		case TARGET_EDGE: {
 			LevelBrush *brush = nullptr;
 			LevelBrush::EdgeKey e;
 			if (_pick_edge(p_camera, p_screen, brush, e)) {
 				_edge_set(brush).insert(e);
 			}
 		} break;
-		case MODE_FACE: {
+		case TARGET_FACE: {
 			Vector3 hit;
 			LevelBrush *brush = nullptr;
 			int f;
@@ -1872,7 +1925,7 @@ void LevelEditorScreen::_select_handle_end_drag() {
 }
 
 void LevelEditorScreen::_draw_select_handles(LevelEditorViewport *p_vp, Control *p_canvas) {
-	if (mode != MODE_SELECT || !selected_brush) {
+	if (tool != TOOL_SELECT || selection_target != TARGET_MESH || !selected_brush) {
 		return;
 	}
 
@@ -1955,7 +2008,7 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 	for (LevelBrush *b : brushes) {
 		_draw_brush_outline(p_vp, p_canvas, b, b == selected_brush);
 	}
-	if (mode == MODE_SELECT && hover_brush && hover_brush != selected_brush) {
+	if (selection_target == TARGET_MESH && tool == TOOL_SELECT && hover_brush && hover_brush != selected_brush) {
 		// Hover highlight (thin white).
 		Transform3D gt = hover_brush->get_global_transform();
 		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = hover_brush->get_edges();
@@ -1966,9 +2019,9 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 			}
 		}
 	}
-	// Element modes: the hovered brush - and any brush with selected elements
-	// of the current mode - gets a light-blue outline and green vertices.
-	if (mode == MODE_VERTEX || mode == MODE_EDGE || mode == MODE_FACE) {
+	// Element targets: the hovered brush - and any brush with selected elements
+	// of the current target - gets a light-blue outline and green vertices.
+	if (_is_element_target()) {
 		// Collect the brushes to highlight: hovered + those with a selection.
 		LocalVector<LevelBrush *> highlight;
 		if (hover_brush) {
@@ -1988,14 +2041,14 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 				}
 			}
 		};
-		switch (mode) {
-			case MODE_VERTEX:
+		switch (selection_target) {
+			case TARGET_VERTEX:
 				add_selected_brushes(selected_vertices);
 				break;
-			case MODE_FACE:
+			case TARGET_FACE:
 				add_selected_brushes(selected_faces);
 				break;
-			case MODE_EDGE:
+			case TARGET_EDGE:
 				add_selected_brushes(selected_edges);
 				break;
 			default:
@@ -2012,16 +2065,16 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 				if (!p_vp->project(gt.xform(brush->get_vertex(e.a)), a) || !p_vp->project(gt.xform(brush->get_vertex(e.b)), b)) {
 					continue;
 				}
-				if (mode == MODE_EDGE) {
+				if (selection_target == TARGET_EDGE) {
 					// Edges stay light-blue; only the hovered edge turns green.
 					bool hot = (brush == hover_brush && has_hover_edge && e == hover_edge);
 					p_canvas->draw_line(a, b, hot ? LevelEditorColors::HOVER_ELEMENT : LevelEditorColors::HOVER_BRUSH_OUTLINE, hot ? 2.5 : 1.5);
 				} else {
-					// Vertex/Face modes: light-blue outline only.
+					// Vertex/Face targets: light-blue outline only.
 					p_canvas->draw_line(a, b, LevelEditorColors::HOVER_BRUSH_OUTLINE, 1.5);
 				}
 			}
-			if (mode == MODE_FACE && brush == hover_brush && hover_face >= 0) {
+			if (selection_target == TARGET_FACE && brush == hover_brush && hover_face >= 0) {
 				// Hovered face: green fill + outline.
 				LocalVector<int> poly = brush->get_face(hover_face);
 				if (poly.size() >= 3) {
@@ -2043,8 +2096,8 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 					}
 				}
 			}
-			if (mode != MODE_VERTEX) {
-				continue; // Only vertex mode shows vertex markers.
+			if (selection_target != TARGET_VERTEX) {
+				continue; // Only the vertex target shows vertex markers.
 			}
 			// All vertices in bright green; the vertex under the cursor is
 			// slightly larger.
@@ -2076,9 +2129,9 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 void LevelEditorScreen::_draw_brush_outline(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, bool p_selected) {
 	Transform3D gt = p_brush->get_global_transform();
 
-	// In element modes there is no whole-brush selection - draw all brushes
+	// In element targets there is no whole-brush selection - draw all brushes
 	// with the plain outline (hovered brush gets its own highlight).
-	bool element_mode = (mode == MODE_VERTEX || mode == MODE_EDGE || mode == MODE_FACE);
+	bool element_mode = _is_element_target();
 	Color col = (p_selected && !element_mode) ? LevelEditorColors::BRUSH_OUTLINE_SELECTED : LevelEditorColors::BRUSH_OUTLINE;
 	real_t width = (p_selected && !element_mode) ? 2.0 : 1.0;
 

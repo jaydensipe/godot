@@ -196,7 +196,7 @@ Bugs that cost real debugging time. Read before touching the module.
     it), 1 = the original face segments (full bulge, no visual bevel).
     The per-side "retained centerline" model was geometrically flat on
     the original faces (invisible bevel) - the strip must span the gap.
-    Corners where beveled edges meet mitre to ONE shared vert per
+    Corners where beveled edges meet miter to ONE shared vert per
     (vertex, face); collinear chains share via the same mechanism.
     Faces touching an endpoint are trimmed along the profile polyline
     (skip faces bordering another selected edge at that vertex - the

@@ -16,6 +16,9 @@
 /* permit persons to whom the Software is furnished to do so, subject to  */
 /* the following conditions:                                              */
 /*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
 /* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
 /* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
 /* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
@@ -31,8 +34,8 @@
 // functions, split out of level_editor_screen.cpp for organization.
 
 #include "../../level_constants.h"
-#include "../level_helpers.h"
 #include "../level_editor_screen.h"
+#include "../level_helpers.h"
 
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/themes/editor_scale.h"
@@ -42,16 +45,14 @@ using LevelEditorColors::GIZMO_PLANE_EXTENT;
 // ---- Manipulation gizmo ---------------------------------------------------
 
 bool LevelEditorScreen::_has_selection() const {
-	switch (mode) {
-		case MODE_SELECT:
-		case MODE_ROTATE:
-		case MODE_SCALE:
+	switch (selection_target) {
+		case TARGET_MESH:
 			return selected_brush != nullptr; // Whole brush is the selection.
-		case MODE_FACE:
+		case TARGET_FACE:
 			return !selected_faces.is_empty();
-		case MODE_EDGE:
+		case TARGET_EDGE:
 			return !selected_edges.is_empty();
-		case MODE_VERTEX:
+		case TARGET_VERTEX:
 			return !selected_vertices.is_empty();
 		default:
 			return false;
@@ -59,7 +60,7 @@ bool LevelEditorScreen::_has_selection() const {
 }
 
 Vector3 LevelEditorScreen::_get_gizmo_origin() const {
-	if (mode == MODE_SELECT || mode == MODE_ROTATE || mode == MODE_SCALE) {
+	if (selection_target == TARGET_MESH) {
 		if (!selected_brush) {
 			return Vector3();
 		}
@@ -70,8 +71,8 @@ Vector3 LevelEditorScreen::_get_gizmo_origin() const {
 	Vector3 sum;
 	int count = 0;
 
-	switch (mode) {
-		case MODE_FACE: {
+	switch (selection_target) {
+		case TARGET_FACE: {
 			for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
 				Transform3D gt = E.key->get_global_transform();
 				for (int f : E.value) {
@@ -83,7 +84,7 @@ Vector3 LevelEditorScreen::_get_gizmo_origin() const {
 				}
 			}
 		} break;
-		case MODE_EDGE: {
+		case TARGET_EDGE: {
 			for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
 				Transform3D gt = E.key->get_global_transform();
 				for (const LevelBrush::EdgeKey &e : E.value) {
@@ -93,7 +94,7 @@ Vector3 LevelEditorScreen::_get_gizmo_origin() const {
 				}
 			}
 		} break;
-		case MODE_VERTEX: {
+		case TARGET_VERTEX: {
 			for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_vertices) {
 				Transform3D gt = E.key->get_global_transform();
 				for (int v : E.value) {
@@ -120,8 +121,8 @@ Vector<int> LevelEditorScreen::_get_gizmo_vertex_indices(LevelBrush *p_brush) co
 			out.push_back(idx);
 		}
 	};
-	switch (mode) {
-		case MODE_FACE: {
+	switch (selection_target) {
+		case TARGET_FACE: {
 			const HashSet<int> *set = selected_faces.getptr(p_brush);
 			if (set) {
 				for (int f : *set) {
@@ -132,7 +133,7 @@ Vector<int> LevelEditorScreen::_get_gizmo_vertex_indices(LevelBrush *p_brush) co
 				}
 			}
 		} break;
-		case MODE_EDGE: {
+		case TARGET_EDGE: {
 			const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> *set = selected_edges.getptr(p_brush);
 			if (set) {
 				for (const LevelBrush::EdgeKey &e : *set) {
@@ -141,7 +142,7 @@ Vector<int> LevelEditorScreen::_get_gizmo_vertex_indices(LevelBrush *p_brush) co
 				}
 			}
 		} break;
-		case MODE_VERTEX: {
+		case TARGET_VERTEX: {
 			const HashSet<int> *set = selected_vertices.getptr(p_brush);
 			if (set) {
 				for (int v : *set) {
@@ -248,24 +249,24 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 
 	// Snapshot brush vertices for absolute drags + undo.
 	gizmo_drag_brush_verts.clear();
-	if (mode == MODE_SELECT || mode == MODE_ROTATE || mode == MODE_SCALE) {
+	if (selection_target == TARGET_MESH) {
 		gizmo_drag_original_verts = selected_brush->get_vertices_data();
 		gizmo_drag_original_position = selected_brush->get_position();
 	} else {
-		// Element modes: one snapshot per selected brush.
+		// Element targets: one snapshot per selected brush.
 		HashSet<LevelBrush *> brushes;
-		switch (mode) {
-			case MODE_FACE:
+		switch (selection_target) {
+			case TARGET_FACE:
 				for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
 					brushes.insert(E.key);
 				}
 				break;
-			case MODE_EDGE:
+			case TARGET_EDGE:
 				for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
 					brushes.insert(E.key);
 				}
 				break;
-			case MODE_VERTEX:
+			case TARGET_VERTEX:
 				for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_vertices) {
 					brushes.insert(E.key);
 				}
@@ -389,7 +390,7 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 		}
 		// Scale mode wants the raw (unsnapped) delta; it snaps the resulting
 		// brush SIZE to the grid instead, which avoids start-of-drag jitter.
-		if (mode == MODE_SCALE) {
+		if (tool == TOOL_SCALE) {
 			delta = axis_point - gizmo_drag_start_origin - gizmo_drag_grab_offset;
 		} else {
 			delta = _snap(axis_point - gizmo_drag_grab_offset) - _snap(gizmo_drag_start_origin);
@@ -405,7 +406,7 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 		if (!plane.intersects_ray(ro, rd, &hit)) {
 			return;
 		}
-		if (mode == MODE_SCALE) {
+		if (tool == TOOL_SCALE) {
 			delta = hit - gizmo_drag_start_origin - gizmo_drag_grab_offset;
 		} else {
 			delta = _snap(hit - gizmo_drag_grab_offset) - _snap(gizmo_drag_start_origin);
@@ -427,7 +428,7 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 	}
 
 	// Scale mode: axis drag distance -> scale factor along that axis.
-	if (mode == MODE_SCALE) {
+	if (tool == TOOL_SCALE) {
 		if (gizmo_drag_uniform_scale) {
 			// Click-anywhere uniform drag (started off-gizmo): use mouse X.
 			// 400px of drag = 2x scale (100px = 2x felt twitchy).
@@ -478,7 +479,7 @@ int LevelEditorScreen::_rotate_allowed_axis(LevelEditorViewport::ViewType p_type
 }
 
 int LevelEditorScreen::_pick_rotate_ring(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
-	if (!selected_brush) {
+	if (!_has_selection()) {
 		return -1;
 	}
 	Vector3 origin = _get_gizmo_origin();
@@ -551,7 +552,7 @@ real_t LevelEditorScreen::_rotate_screen_angle(LevelEditorViewport *p_vp, const 
 }
 
 void LevelEditorScreen::_draw_rotate_gizmo(LevelEditorViewport *p_vp, Control *p_canvas) {
-	if (mode != MODE_ROTATE || !selected_brush) {
+	if (tool != TOOL_ROTATE || !_has_selection()) {
 		return;
 	}
 	Vector3 origin = _get_gizmo_origin();
@@ -603,48 +604,116 @@ void LevelEditorScreen::_draw_rotate_gizmo(LevelEditorViewport *p_vp, Control *p
 }
 
 void LevelEditorScreen::_rotate_end_drag() {
-	if (rotate_drag_axis < 0 || !selected_brush) {
-		rotate_drag_axis = -1;
+	if (rotate_drag_axis < 0) {
 		return;
 	}
 	rotate_drag_axis = -1;
 
-	// Commit as undo: vertices before vs after.
-	LevelBrush *target = selected_brush;
+	if (selection_target == TARGET_MESH) {
+		if (!selected_brush) {
+			return;
+		}
+		// Commit as undo: vertices before vs after.
+		LevelBrush *target_brush = selected_brush;
 
-	PackedVector3Array new_verts = target->get_vertices_data();
-	if (new_verts == gizmo_drag_original_verts) {
+		PackedVector3Array new_verts = target_brush->get_vertices_data();
+		if (new_verts == gizmo_drag_original_verts) {
+			return;
+		}
+
+		Array cur_faces = target_brush->get_faces_data();
+		Array cur_mats = target_brush->get_face_materials_data();
+		_commit_brush_undo(TTR("Rotate Brush"), target_brush, gizmo_drag_original_verts, cur_faces, cur_mats);
+
+		gizmo_drag_original_verts.clear();
 		return;
 	}
 
-	Array cur_faces = target->get_faces_data();
-	Array cur_mats = target->get_face_materials_data();
-	_commit_brush_undo(TTR("Rotate Brush"), target, gizmo_drag_original_verts, cur_faces, cur_mats);
-
-	gizmo_drag_original_verts.clear();
+	// Element targets: one undo action across all rotated brushes.
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	undo_redo->create_action(TTR("Rotate Brush Elements"));
+	bool any_moved = false;
+	for (const KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
+		LevelBrush *target_brush = E.key;
+		PackedVector3Array new_verts = target_brush->get_vertices_data();
+		if (new_verts == E.value) {
+			continue;
+		}
+		any_moved = true;
+		_add_brush_undo_pair(undo_redo, target_brush, E.value, target_brush->get_faces_data(), target_brush->get_face_materials_data());
+	}
+	if (any_moved) {
+		undo_redo->add_do_method(current_map, "refresh");
+		undo_redo->add_undo_method(current_map, "refresh");
+		undo_redo->commit_action(false);
+	}
+	gizmo_drag_brush_verts.clear();
 }
 
 void LevelEditorScreen::_apply_gizmo_rotate(int p_axis, real_t p_angle) {
-	if (!selected_brush) {
-		return;
-	}
-	// Rotate original vertices around the brush center, absolute per drag.
-	selected_brush->set_vertices_data(gizmo_drag_original_verts);
-
-	Vector3 center = selected_brush->get_center();
 	Vector3 axis;
 	axis[p_axis] = 1.0;
-	Basis rot(axis, p_angle);
 
-	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
-		Vector3 v = selected_brush->get_vertex(i);
-		v = center + rot.xform(v - center);
-		selected_brush->set_vertex(i, v);
+	if (selection_target == TARGET_MESH) {
+		if (!selected_brush) {
+			return;
+		}
+		// Rotate original vertices around the brush center, absolute per drag.
+		selected_brush->set_vertices_data(gizmo_drag_original_verts);
+
+		Vector3 center = selected_brush->get_center();
+		Basis rot(axis, p_angle);
+
+		for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
+			Vector3 v = selected_brush->get_vertex(i);
+			v = center + rot.xform(v - center);
+			selected_brush->set_vertex(i, v);
+		}
+		_refresh_map();
+		return;
+	}
+
+	// Element targets: rotate each selected brush's vertex subset around the
+	// shared selection pivot (world axis through the gizmo origin).
+	Vector3 pivot = gizmo_drag_start_origin;
+	Basis world_rot(axis, p_angle);
+	for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
+		LevelBrush *brush = E.key;
+		Transform3D gt = brush->get_global_transform();
+		Transform3D inv = gt.affine_inverse();
+
+		brush->set_vertices_data(E.value);
+		Vector<int> indices = _get_gizmo_vertex_indices(brush);
+		for (int idx : indices) {
+			Vector3 v = gt.xform(brush->get_vertex(idx));
+			v = pivot + world_rot.xform(v - pivot);
+			brush->set_vertex(idx, inv.xform(v));
+		}
 	}
 	_refresh_map();
 }
 
 void LevelEditorScreen::_apply_gizmo_scale_uniform(real_t p_factor) {
+	if (selection_target != TARGET_MESH) {
+		// Element targets: uniform scale of the selected vertices around the
+		// drag-start selection pivot.
+		real_t f = MAX(p_factor, 0.01);
+		Vector3 pivot = gizmo_drag_start_origin;
+		for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
+			LevelBrush *brush = E.key;
+			Transform3D gt = brush->get_global_transform();
+			Transform3D inv = gt.affine_inverse();
+			brush->set_vertices_data(E.value);
+			Vector<int> indices = _get_gizmo_vertex_indices(brush);
+			for (int idx : indices) {
+				Vector3 v = gt.xform(brush->get_vertex(idx));
+				v = pivot + (v - pivot) * f;
+				brush->set_vertex(idx, inv.xform(v));
+			}
+		}
+		_refresh_map();
+		return;
+	}
 	if (!selected_brush) {
 		return;
 	}
@@ -685,6 +754,40 @@ void LevelEditorScreen::_apply_gizmo_scale_uniform(real_t p_factor) {
 }
 
 void LevelEditorScreen::_apply_gizmo_scale(const Vector3 &p_world_delta) {
+	if (selection_target != TARGET_MESH) {
+		// Element targets: per-axis scale of the selected vertices around the
+		// drag-start selection pivot (no grid snapping - freeform deform, same
+		// spirit as moving vertices).
+		const real_t SCALE_RATE = 0.25; // 4 world units of drag = 2x scale.
+		Vector3 factors(1, 1, 1);
+		if (gizmo_drag_part == GIZMO_XY || gizmo_drag_part == GIZMO_XZ || gizmo_drag_part == GIZMO_YZ) {
+			// Center/plane drag: uniform scale by the largest dragged component.
+			real_t f = 1.0 + MAX(p_world_delta.x, MAX(p_world_delta.y, p_world_delta.z)) * SCALE_RATE;
+			factors = Vector3(f, f, f);
+		} else if (gizmo_drag_part >= GIZMO_X && gizmo_drag_part <= GIZMO_Z) {
+			factors[gizmo_drag_part] = 1.0 + p_world_delta[gizmo_drag_part] * SCALE_RATE;
+		}
+		factors.x = MAX(factors.x, 0.01);
+		factors.y = MAX(factors.y, 0.01);
+		factors.z = MAX(factors.z, 0.01);
+
+		Vector3 pivot = gizmo_drag_start_origin;
+		for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
+			LevelBrush *brush = E.key;
+			Transform3D gt = brush->get_global_transform();
+			Transform3D inv = gt.affine_inverse();
+			brush->set_vertices_data(E.value);
+			Vector<int> indices = _get_gizmo_vertex_indices(brush);
+			for (int idx : indices) {
+				Vector3 v = gt.xform(brush->get_vertex(idx));
+				Vector3 rel = v - pivot;
+				v = pivot + Vector3(rel.x * factors.x, rel.y * factors.y, rel.z * factors.z);
+				brush->set_vertex(idx, inv.xform(v));
+			}
+		}
+		_refresh_map();
+		return;
+	}
 	if (!selected_brush) {
 		return;
 	}
@@ -752,7 +855,7 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 		return;
 	}
 
-	if (mode == MODE_SELECT) {
+	if (selection_target == TARGET_MESH && tool == TOOL_SELECT) {
 		// Move the whole brush node. Delta is world; convert into the parent
 		// (map) space and apply on top of the drag-start position.
 		Node3D *parent = Object::cast_to<Node3D>(selected_brush->get_parent());
@@ -818,8 +921,8 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		return;
 	}
 
-	// Select mode: undoable node move.
-	if (mode == MODE_SELECT) {
+	// Select tool + Mesh target: undoable node move.
+	if (selection_target == TARGET_MESH && tool == TOOL_SELECT) {
 		Vector3 new_pos = selected_brush->get_position();
 		if (!new_pos.is_equal_approx(gizmo_drag_original_position)) {
 			LevelBrush *target = selected_brush;
@@ -833,9 +936,9 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		return;
 	}
 
-	// Scale mode: commit against the drag-start vertex snapshot (the shared
-	// element-path map is unused in this mode).
-	if (mode == MODE_SCALE) {
+	// Scale tool + Mesh target: commit against the drag-start vertex snapshot
+	// (the shared element-path map is unused in this case).
+	if (tool == TOOL_SCALE && selection_target == TARGET_MESH) {
 		LevelBrush *target = selected_brush;
 		PackedVector3Array old_verts = gizmo_drag_original_verts;
 		PackedVector3Array new_verts = target->get_vertices_data();
@@ -878,10 +981,10 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		return;
 	}
 
-	// Commit the move as one undo action across all dragged brushes.
-	// (Rotate never reaches here - it has its own ring-gizmo drag path.)
+	// Commit the element transform as one undo action across all dragged
+	// brushes. (Rotate has its own ring-gizmo drag path and never reaches here.)
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	undo_redo->create_action(mode == MODE_SCALE ? TTR("Scale Brush") : TTR("Move Brush Element"));
+	undo_redo->create_action(tool == TOOL_SCALE ? TTR("Scale Brush Elements") : TTR("Move Brush Element"));
 	bool any_moved = false;
 	for (const KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
 		LevelBrush *target = E.key;
@@ -902,8 +1005,8 @@ void LevelEditorScreen::_gizmo_end_drag() {
 }
 
 void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas) {
-	if (mode == MODE_BLOCK || mode == MODE_CLIP || mode == MODE_MIRROR || mode == MODE_ROTATE || !_has_selection()) {
-		return; // No arrow gizmo in Block/Clip/Mirror/Rotate mode.
+	if (_is_drawing_tool() || tool == TOOL_ROTATE || !_has_selection()) {
+		return; // No arrow gizmo in the drawing tools or Rotate tool.
 	}
 	Vector3 origin = _get_gizmo_origin();
 	Vector2 so;
@@ -963,7 +1066,7 @@ void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas
 		bool active = (gizmo_hover == (GizmoPart)i || gizmo_drag_part == (GizmoPart)i);
 		Color c = active ? LevelEditorColors::hot(axis_col[i]) : axis_col[i];
 		p_canvas->draw_line(so, axis_end[i], c, (active ? 3.0 : 2.0) * EDSCALE);
-		if (mode == MODE_SCALE) {
+		if (tool == TOOL_SCALE) {
 			real_t hs = 5.0 * EDSCALE;
 			p_canvas->draw_rect(Rect2(axis_end[i] - Vector2(hs, hs), Size2(hs * 2, hs * 2)), c);
 		} else {
@@ -988,7 +1091,7 @@ void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas
 
 bool LevelEditorScreen::_rotate_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
 	// Rotate-mode ring gizmo.
-	if (mode != MODE_ROTATE || !selected_brush) {
+	if (tool != TOOL_ROTATE || !_has_selection()) {
 		return false;
 	}
 	Ref<InputEventMouseButton> mb = p_event;
@@ -1016,7 +1119,37 @@ bool LevelEditorScreen::_rotate_input(LevelEditorViewport *p_vp, Camera3D *p_cam
 				rotate_drag_axis = axis;
 				rotate_drag_viewport = p_vp;
 				rotate_drag_start_angle = _rotate_screen_angle(p_vp, mb->get_position(), axis);
-				gizmo_drag_original_verts = selected_brush->get_vertices_data();
+				if (selection_target == TARGET_MESH) {
+					gizmo_drag_original_verts = selected_brush->get_vertices_data();
+				} else {
+					// Element targets: snapshot every selected brush, and the drag
+					// pivot (selection center) for world-axis rotation.
+					gizmo_drag_start_origin = _get_gizmo_origin();
+					gizmo_drag_brush_verts.clear();
+					HashSet<LevelBrush *> brushes;
+					switch (selection_target) {
+						case TARGET_FACE:
+							for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
+								brushes.insert(E.key);
+							}
+							break;
+						case TARGET_EDGE:
+							for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
+								brushes.insert(E.key);
+							}
+							break;
+						case TARGET_VERTEX:
+							for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_vertices) {
+								brushes.insert(E.key);
+							}
+							break;
+						default:
+							break;
+					}
+					for (LevelBrush *b : brushes) {
+						gizmo_drag_brush_verts[b] = b->get_vertices_data();
+					}
+				}
 				return true;
 			}
 		} else if (rotate_drag_axis >= 0) {
@@ -1043,8 +1176,8 @@ bool LevelEditorScreen::_rotate_input(LevelEditorViewport *p_vp, Camera3D *p_cam
 }
 
 bool LevelEditorScreen::_gizmo_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
-	// Translate/scale gizmo (Select and element modes).
-	if (mode == MODE_BLOCK || mode == MODE_CLIP || mode == MODE_MIRROR || mode == MODE_ROTATE || !_has_selection()) {
+	// Translate/scale gizmo (Select/Scale tools, any selection target).
+	if (_is_drawing_tool() || tool == TOOL_ROTATE || !_has_selection()) {
 		return false;
 	}
 	Ref<InputEventMouseButton> mb = p_event;
@@ -1055,11 +1188,11 @@ bool LevelEditorScreen::_gizmo_input(LevelEditorViewport *p_vp, Camera3D *p_came
 			if (part != GIZMO_NONE) {
 				gizmo_drag_uniform_scale = false;
 				gizmo_drag_part = (GizmoPart)part;
-				gizmo_extrude_drag = (mode == MODE_FACE && mb->is_shift_pressed());
+				gizmo_extrude_drag = (selection_target == TARGET_FACE && mb->is_shift_pressed());
 				_gizmo_begin_drag(p_vp, mb->get_position());
 				return true; // Consumed by gizmo.
 			}
-			if (mode == MODE_SCALE) {
+			if (tool == TOOL_SCALE) {
 				// Off-gizmo click in Scale mode: drag anywhere to scale
 				// uniformly via mouse X.
 				gizmo_drag_uniform_scale = true;

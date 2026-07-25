@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  level_editor_clip.cpp                                               */
+/*  level_editor_clip.cpp                                                 */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -152,7 +152,7 @@ void LevelEditorScreen::_clip_cycle_side() {
 }
 
 void LevelEditorScreen::_draw_clip(LevelEditorViewport *p_vp, Control *p_canvas) {
-	if (mode != MODE_CLIP || !clip_active || !clip_brush) {
+	if (tool != TOOL_CLIP || !clip_active || !clip_brush) {
 		return;
 	}
 
@@ -260,7 +260,7 @@ void LevelEditorScreen::_draw_clip(LevelEditorViewport *p_vp, Control *p_canvas)
 // ---------------------------------------------------------------------------
 
 bool LevelEditorScreen::_clip_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
-	if (mode != MODE_CLIP) {
+	if (tool != TOOL_CLIP) {
 		return false;
 	}
 	Ref<InputEventMouseButton> mb = p_event;

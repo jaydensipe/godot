@@ -16,6 +16,9 @@
 /* permit persons to whom the Software is furnished to do so, subject to  */
 /* the following conditions:                                              */
 /*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
 /* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
 /* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
 /* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
@@ -571,8 +574,9 @@ void LevelEditorScreen::_action_collapse_vertices() {
 // ---------------------------------------------------------------------------
 
 bool LevelEditorScreen::_select_handles_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
-	// Select-mode box handles take priority over the move gizmo.
-	if (mode != MODE_SELECT || !selected_brush) {
+	// Select-tool box handles take priority over the move gizmo (Mesh target
+	// only - element targets transform via the gizmo).
+	if (tool != TOOL_SELECT || selection_target != TARGET_MESH || !selected_brush) {
 		return false;
 	}
 	Ref<InputEventMouseButton> mb = p_event;
@@ -606,8 +610,9 @@ bool LevelEditorScreen::_select_handles_input(LevelEditorViewport *p_vp, Camera3
 }
 
 bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
-	// Select + element modes only, and never while the gizmo owns the drag.
-	if (gizmo_dragging) {
+	// Transform tools only (the drawing tools consume their own input), and
+	// never while the gizmo owns the drag.
+	if (_is_drawing_tool() || gizmo_dragging) {
 		return false;
 	}
 	Ref<InputEventMouseButton> mb = p_event;
@@ -664,15 +669,16 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 
 	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT && mb->is_pressed()) {
 		bool add = mb->is_shift_pressed();
-		switch (mode) {
-			case MODE_SELECT: {
+		switch (selection_target) {
+			case TARGET_MESH: {
 				// Click a brush to select it; re-clicking the already-selected
-				// brush starts a whole-brush drag (like the ghost move).
+				// brush in the Select tool starts a whole-brush drag (like the
+				// ghost move).
 				Vector3 hit;
 				LevelBrush *brush = nullptr;
 				int f;
 				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
-					if (brush == selected_brush) {
+					if (brush == selected_brush && tool == TOOL_SELECT) {
 						// Begin drag on the edit plane at the grab depth.
 						select_moving = true;
 						select_move_viewport = p_vp;
@@ -691,7 +697,7 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 					_clear_selection();
 				}
 			} break;
-			case MODE_FACE: {
+			case TARGET_FACE: {
 				Vector3 hit;
 				LevelBrush *brush = nullptr;
 				int f;
@@ -718,7 +724,7 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 					_clear_selection();
 				}
 			} break;
-			case MODE_EDGE: {
+			case TARGET_EDGE: {
 				LevelBrush *brush = nullptr;
 				LevelBrush::EdgeKey e;
 				if (_pick_edge(p_camera, mb->get_position(), brush, e)) {
@@ -762,7 +768,7 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 					}
 				}
 			} break;
-			case MODE_VERTEX: {
+			case TARGET_VERTEX: {
 				LevelBrush *brush = nullptr;
 				int v;
 				if (_pick_vertex(p_camera, mb->get_position(), brush, v)) {
