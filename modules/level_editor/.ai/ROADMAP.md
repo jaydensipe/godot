@@ -84,10 +84,6 @@ overlay draw. (Fixed since: weld epsilon + parallel-dot constants live in
 - clip/mirror "pick target brush" blocks duplicate ~20 lines; merging
   churns two working tools for modest gain.
 
-Watch next: select-mode box handles (~170 lines) could follow the tools/
-split (`tools/select/`); mode-specific input handling still lives in
-`forward_input` (~490 lines) while draw/apply logic moved to tools/.
-
 ## Known placeholders & limitations
 
 - **Edge/vertex "Extrude"** toolbar button just moves the selection +Y by the

@@ -981,3 +981,106 @@ void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas
 	real_t cs = 4.0 * EDSCALE;
 	p_canvas->draw_rect(Rect2(so - Vector2(cs, cs), Size2(cs * 2, cs * 2)), LevelEditorColors::GIZMO_CENTER);
 }
+
+// ---------------------------------------------------------------------------
+// Input handlers (dispatched from LevelEditorScreen::forward_input).
+// ---------------------------------------------------------------------------
+
+bool LevelEditorScreen::_rotate_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
+	// Rotate-mode ring gizmo.
+	if (mode != MODE_ROTATE || !selected_brush) {
+		return false;
+	}
+	Ref<InputEventMouseButton> mb = p_event;
+	Ref<InputEventMouseMotion> mm = p_event;
+	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
+		if (mb->is_pressed()) {
+			int axis = _pick_rotate_ring(p_vp, mb->get_position());
+			if (axis < 0 && p_vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE) {
+				// Ortho views: click anywhere to rotate around the view axis.
+				switch (p_vp->get_view_type()) {
+					case LevelEditorViewport::VIEW_TOP:
+						axis = 1;
+						break;
+					case LevelEditorViewport::VIEW_FRONT:
+						axis = 2;
+						break;
+					case LevelEditorViewport::VIEW_SIDE:
+						axis = 0;
+						break;
+					default:
+						break;
+				}
+			}
+			if (axis >= 0) {
+				rotate_drag_axis = axis;
+				rotate_drag_viewport = p_vp;
+				rotate_drag_start_angle = _rotate_screen_angle(p_vp, mb->get_position(), axis);
+				gizmo_drag_original_verts = selected_brush->get_vertices_data();
+				return true;
+			}
+		} else if (rotate_drag_axis >= 0) {
+			_rotate_end_drag();
+			return true;
+		}
+	} else if (mm.is_valid()) {
+		if (rotate_drag_axis >= 0 && rotate_drag_viewport == p_vp) {
+			real_t cur = _rotate_screen_angle(p_vp, mm->get_position(), rotate_drag_axis);
+			real_t delta = cur - rotate_drag_start_angle;
+			// Snap to 15 degrees.
+			delta = Math::snapped(delta, Math::deg_to_rad(15.0));
+			_apply_gizmo_rotate(rotate_drag_axis, delta);
+			_update_overlays();
+			return true;
+		}
+		int prev = rotate_hover_axis;
+		rotate_hover_axis = _pick_rotate_ring(p_vp, mm->get_position());
+		if (prev != rotate_hover_axis) {
+			_update_overlays();
+		}
+	}
+	return false;
+}
+
+bool LevelEditorScreen::_gizmo_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
+	// Translate/scale gizmo (Select and element modes).
+	if (mode == MODE_BLOCK || mode == MODE_CLIP || mode == MODE_MIRROR || mode == MODE_ROTATE || !_has_selection()) {
+		return false;
+	}
+	Ref<InputEventMouseButton> mb = p_event;
+	Ref<InputEventMouseMotion> mm = p_event;
+	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
+		if (mb->is_pressed()) {
+			int part = _pick_gizmo(p_camera, mb->get_position());
+			if (part != GIZMO_NONE) {
+				gizmo_drag_uniform_scale = false;
+				gizmo_drag_part = (GizmoPart)part;
+				gizmo_extrude_drag = (mode == MODE_FACE && mb->is_shift_pressed());
+				_gizmo_begin_drag(p_vp, mb->get_position());
+				return true; // Consumed by gizmo.
+			}
+			if (mode == MODE_SCALE) {
+				// Off-gizmo click in Scale mode: drag anywhere to scale
+				// uniformly via mouse X.
+				gizmo_drag_uniform_scale = true;
+				gizmo_drag_part = GIZMO_NONE;
+				_gizmo_begin_drag(p_vp, mb->get_position());
+				return true;
+			}
+		} else if (gizmo_dragging) {
+			_gizmo_end_drag();
+			return true;
+		}
+	} else if (mm.is_valid()) {
+		if (gizmo_dragging) {
+			_gizmo_drag_to(p_vp, mm->get_position());
+			return true;
+		}
+		GizmoPart prev = gizmo_hover;
+		gizmo_hover = (GizmoPart)_pick_gizmo(p_camera, mm->get_position());
+		if (prev != gizmo_hover) {
+			_update_overlays();
+		}
+	}
+	return false;
+}

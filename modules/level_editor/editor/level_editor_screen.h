@@ -351,6 +351,12 @@ private:
 	LevelEditorViewport *select_move_viewport = nullptr;
 	Vector3 select_move_original_position;
 
+	// Paint selection: holding LMB and dragging in an element mode selects
+	// each element the cursor passes over (no toggle-off while painting).
+	bool paint_select_active = false;
+	LevelEditorViewport *paint_select_viewport = nullptr;
+	void _paint_select_at(Camera3D *p_camera, const Vector2 &p_screen);
+
 	bool _select_ray_to_edit_plane(LevelEditorViewport *p_vp, const Vector2 &p_screen, Vector3 &r_hit) const;
 
 	// Rotate gizmo: 3 axis rings around the selection pivot.
@@ -372,6 +378,16 @@ private:
 	void _select_handle_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _select_handle_end_drag();
 	void _draw_select_handles(LevelEditorViewport *p_vp, Control *p_canvas);
+
+	// Per-tool input handlers, called by forward_input in priority order;
+	// each returns true when the event was consumed.
+	bool _select_handles_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event);
+	bool _rotate_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event);
+	bool _gizmo_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event);
+	bool _brush_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event);
+	bool _clip_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event);
+	bool _mirror_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event);
+	bool _selection_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event);
 
 	// Selection state. Whole-brush: selected_brush. Element modes select
 	// across brushes: each set is keyed by the owning brush.

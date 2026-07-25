@@ -254,3 +254,93 @@ void LevelEditorScreen::_draw_clip(LevelEditorViewport *p_vp, Control *p_canvas)
 	}
 	p_canvas->draw_string(get_theme_font(SNAME("font"), SNAME("Label")), Vector2(8, 18), side_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, LevelEditorColors::TEXT_DIM);
 }
+
+// ---------------------------------------------------------------------------
+// Input handler (dispatched from LevelEditorScreen::forward_input).
+// ---------------------------------------------------------------------------
+
+bool LevelEditorScreen::_clip_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
+	if (mode != MODE_CLIP) {
+		return false;
+	}
+	Ref<InputEventMouseButton> mb = p_event;
+	Ref<InputEventMouseMotion> mm = p_event;
+	LevelEditorViewport *vp = p_vp;
+
+	// Keys: Enter applies, Esc cancels. (Side cycling is on the Clip
+	// toolbar button - Tab is eaten by GUI focus navigation.)
+	Ref<InputEventKey> k = p_event;
+	if (k.is_valid() && k->is_pressed() && clip_active) {
+		if (k->get_keycode() == Key::ENTER || k->get_keycode() == Key::KP_ENTER) {
+			_clip_apply();
+			return true;
+		}
+		if (k->get_keycode() == Key::ESCAPE) {
+			_clip_cancel();
+			return true;
+		}
+	}
+
+	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
+		if (mb->is_pressed()) {
+			if (clip_active && !clip_drawing) {
+				// Grab a clip point to adjust.
+				int pi = _pick_clip_point(vp, mb->get_position());
+				if (pi >= 0) {
+					clip_drag_point = pi;
+					clip_viewport = vp;
+					return true;
+				}
+			}
+			// Otherwise start a new clip on the clicked brush.
+			Vector3 hit;
+			LevelBrush *brush = nullptr;
+			int f;
+			if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
+				_clip_begin(brush, hit, vp);
+			} else if (vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE) {
+				// Ortho views: click anywhere - use the selected brush (or the
+				// most recent one) and place the point on the edit plane.
+				LevelBrush *target = selected_brush;
+				if (!target) {
+					Vector<LevelBrush *> brushes = current_map->get_brushes();
+					if (!brushes.is_empty()) {
+						target = brushes[brushes.size() - 1];
+					}
+				}
+				if (target) {
+					// Place the point on the edit plane at the brush's depth.
+					Vector3 center = target->get_global_transform().xform(target->get_center());
+					if (vp->ray_to_view_plane(mb->get_position(), center, hit)) {
+						_clip_begin(target, hit, vp);
+					}
+				}
+			}
+		} else {
+			if (clip_drawing && clip_viewport == vp) {
+				clip_drawing = false;
+				clip_drag_point = -1;
+			} else if (clip_drag_point >= 0 && clip_viewport == vp) {
+				clip_drag_point = -1;
+			}
+		}
+		return true;
+	}
+	if (mm.is_valid()) {
+		if ((clip_drawing || clip_drag_point >= 0) && clip_viewport == vp) {
+			// Move the active point on the edit plane THROUGH THE FIRST clip
+			// point, so both points stay coplanar (same Y in top view, etc).
+			Vector3 hit;
+			if (vp->ray_to_view_plane(mm->get_position(), clip_points[0], hit)) {
+				if (clip_drawing) {
+					_clip_update_second(hit);
+				} else if (clip_drag_point >= 0) {
+					clip_points[clip_drag_point] = _snap(hit);
+					_update_overlays();
+				}
+			}
+		}
+		return true;
+	}
+	return true;
+}

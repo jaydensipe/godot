@@ -1181,6 +1181,8 @@ void LevelEditorScreen::_set_mode(Mode p_mode) {
 		}
 		select_move_viewport = nullptr;
 	}
+	paint_select_active = false;
+	paint_select_viewport = nullptr;
 
 	mode = p_mode;
 	for (int i = 0; i < MODE_MAX; i++) {
@@ -1445,6 +1447,8 @@ void LevelEditorScreen::_clear_selection() {
 	select_handle_drag = GHOST_NONE;
 	select_moving = false;
 	select_move_viewport = nullptr;
+	paint_select_active = false;
+	paint_select_viewport = nullptr;
 	rotate_hover_axis = -1;
 	rotate_drag_axis = -1;
 	_clear_element_selection();
@@ -1677,9 +1681,6 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 		return;
 	}
 
-	Ref<InputEventMouseButton> mb = p_event;
-	Ref<InputEventMouseMotion> mm = p_event;
-
 	// Delete/brackets are handled by LevelEditorScreen::shortcut_input (so
 	// the scene dock can't hijack them); skip them here to avoid double-
 	// handling when this viewport has focus.
@@ -1689,545 +1690,62 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 		return;
 	}
 
-	// --- Select-mode box handles take priority over the move gizmo ---
-	if (mode == MODE_SELECT && selected_brush) {
-		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
-			if (mb->is_pressed()) {
-				int h = _pick_select_handle(vp, mb->get_position());
-				if (h != GHOST_NONE) {
-					select_handle_drag = h;
-					select_drag_viewport = vp;
-					select_drag_original_aabb = _get_brush_local_aabb(selected_brush);
-					select_drag_original_verts = selected_brush->get_vertices_data();
-					return;
-				}
-			} else {
-				if (select_handle_drag != GHOST_NONE) {
-					_select_handle_end_drag();
-					return;
-				}
-			}
-		} else if (mm.is_valid()) {
-			if (select_handle_drag != GHOST_NONE && select_drag_viewport == vp) {
-				_select_handle_drag_to(vp, mm->get_position());
-				return;
-			} else {
-				int prev = select_handle_hover;
-				select_handle_hover = _pick_select_handle(vp, mm->get_position());
-				if (prev != select_handle_hover) {
-					_update_overlays();
-				}
-			}
-		}
+	// Dispatch to the per-tool input handlers in priority order. Each handler
+	// owns one tool's input and returns true when it consumed the event.
+	// The order matters: select handles beat the move gizmo, the gizmo beats
+	// the creation tools, and selection clicks come last.
+	if (_select_handles_input(vp, p_camera, p_event)) {
+		return;
 	}
-
-	// --- Rotate gizmo interaction (Rotate mode) ---
-	if (mode == MODE_ROTATE && selected_brush) {
-		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
-			if (mb->is_pressed()) {
-				int axis = _pick_rotate_ring(vp, mb->get_position());
-				if (axis < 0 && vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE) {
-					// Ortho views: click anywhere to rotate around the view axis.
-					switch (vp->get_view_type()) {
-						case LevelEditorViewport::VIEW_TOP:
-							axis = 1;
-							break;
-						case LevelEditorViewport::VIEW_FRONT:
-							axis = 2;
-							break;
-						case LevelEditorViewport::VIEW_SIDE:
-							axis = 0;
-							break;
-						default:
-							break;
-					}
-				}
-				if (axis >= 0) {
-					rotate_drag_axis = axis;
-					rotate_drag_viewport = vp;
-					rotate_drag_start_angle = _rotate_screen_angle(vp, mb->get_position(), axis);
-					gizmo_drag_original_verts = selected_brush->get_vertices_data();
-					return;
-				}
-			} else {
-				if (rotate_drag_axis >= 0) {
-					_rotate_end_drag();
-					return;
-				}
-			}
-		} else if (mm.is_valid()) {
-			if (rotate_drag_axis >= 0 && rotate_drag_viewport == vp) {
-				real_t cur = _rotate_screen_angle(vp, mm->get_position(), rotate_drag_axis);
-				real_t delta = cur - rotate_drag_start_angle;
-				// Snap to 15 degrees.
-				delta = Math::snapped(delta, Math::deg_to_rad(15.0));
-				_apply_gizmo_rotate(rotate_drag_axis, delta);
-				_update_overlays();
-				return;
-			} else {
-				int prev = rotate_hover_axis;
-				rotate_hover_axis = _pick_rotate_ring(vp, mm->get_position());
-				if (prev != rotate_hover_axis) {
-					_update_overlays();
-				}
-			}
-		}
+	if (_rotate_input(vp, p_camera, p_event)) {
+		return;
 	}
-
-	// --- Gizmo interaction takes priority (Select and element modes) ---
-	if (mode != MODE_BLOCK && mode != MODE_CLIP && mode != MODE_MIRROR && mode != MODE_ROTATE && _has_selection()) {
-		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
-			if (mb->is_pressed()) {
-				int part = _pick_gizmo(p_camera, mb->get_position());
-				if (part != GIZMO_NONE) {
-					gizmo_drag_uniform_scale = false;
-					gizmo_drag_part = (GizmoPart)part;
-					gizmo_extrude_drag = (mode == MODE_FACE && mb->is_shift_pressed());
-					_gizmo_begin_drag(vp, mb->get_position());
-					return; // Consumed by gizmo.
-				} else if (mode == MODE_SCALE) {
-					// Off-gizmo click in Scale mode: drag anywhere to scale
-					// uniformly via mouse X.
-					gizmo_drag_uniform_scale = true;
-					gizmo_drag_part = GIZMO_NONE;
-					_gizmo_begin_drag(vp, mb->get_position());
-					return;
-				}
-			} else {
-				if (gizmo_dragging) {
-					_gizmo_end_drag();
-					return;
-				}
-			}
-		} else if (mm.is_valid()) {
-			if (gizmo_dragging) {
-				_gizmo_drag_to(vp, mm->get_position());
-				return;
-			} else {
-				GizmoPart prev = gizmo_hover;
-				gizmo_hover = (GizmoPart)_pick_gizmo(p_camera, mm->get_position());
-				if (prev != gizmo_hover) {
-					_update_overlays();
-				}
-			}
-		}
+	if (_gizmo_input(vp, p_camera, p_event)) {
+		return;
 	}
+	if (_brush_input(vp, p_camera, p_event)) {
+		return;
+	}
+	if (_clip_input(vp, p_camera, p_event)) {
+		return;
+	}
+	if (_mirror_input(vp, p_camera, p_event)) {
+		return;
+	}
+	if (_selection_input(vp, p_camera, p_event)) {
+		return;
+	}
+}
 
-	if (mode == MODE_BLOCK) {
-		// --- Stage 2: ghost box with resize handles ---
-		if (ghost_active) {
-			if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
-				if (mb->is_pressed()) {
-					int h = _pick_ghost_handle(vp, mb->get_position());
-					if (h != GHOST_NONE) {
-						ghost_handle_drag = h;
-						ghost_drag_viewport = vp;
-					} else if (_ghost_hit_test(vp, mb->get_position())) {
-						// Clicked inside the ghost: drag the whole box.
-						ghost_moving = true;
-						ghost_drag_viewport = vp;
-						Vector3 hit;
-						if (_ghost_ray_to_edit_plane(vp, mb->get_position(), hit)) {
-							ghost_move_offset = hit - ghost_aabb.position;
-						} else {
-							ghost_move_offset = Vector3();
-						}
-					}
-				} else {
-					ghost_handle_drag = GHOST_NONE;
-					ghost_moving = false;
-					ghost_drag_viewport = nullptr;
-				}
-				return;
+void LevelEditorScreen::_paint_select_at(Camera3D *p_camera, const Vector2 &p_screen) {
+	// Add (never remove) the element under the cursor, per mode. Called on the
+	// initial click and on every mouse-motion while the button is held, so
+	// dragging paints a trail of selected elements.
+	switch (mode) {
+		case MODE_VERTEX: {
+			LevelBrush *brush = nullptr;
+			int v;
+			if (_pick_vertex(p_camera, p_screen, brush, v)) {
+				_vertex_set(brush).insert(v);
 			}
-			if (mm.is_valid()) {
-				if (ghost_moving && ghost_drag_viewport == vp) {
-					Vector3 hit;
-					if (_ghost_ray_to_edit_plane(vp, mm->get_position(), hit)) {
-						Vector3 new_pos = _snap(hit - ghost_move_offset);
-						ghost_aabb.position = new_pos;
-						_update_overlays();
-					}
-				} else if (ghost_handle_drag != GHOST_NONE && ghost_drag_viewport == vp) {
-					_ghost_handle_drag_to(vp, mm->get_position());
-				} else {
-					int prev = ghost_handle_hover;
-					ghost_handle_hover = _pick_ghost_handle(vp, mm->get_position());
-					if (prev != ghost_handle_hover) {
-						_update_overlays();
-					}
-				}
-				return;
+		} break;
+		case MODE_EDGE: {
+			LevelBrush *brush = nullptr;
+			LevelBrush::EdgeKey e;
+			if (_pick_edge(p_camera, p_screen, brush, e)) {
+				_edge_set(brush).insert(e);
 			}
-			Ref<InputEventKey> k = p_event;
-			if (k.is_valid() && k->is_pressed()) {
-				if (k->get_keycode() == Key::ENTER || k->get_keycode() == Key::KP_ENTER) {
-					_ghost_commit();
-					return;
-				}
-				if (k->get_keycode() == Key::ESCAPE) {
-					_ghost_cancel();
-					return;
-				}
-			}
-			return;
-		}
-
-		// --- Stage 1: initial drag ---
-		// Esc cancels an in-progress drag.
-		Ref<InputEventKey> k = p_event;
-		if (k.is_valid() && k->is_pressed() && k->get_keycode() == Key::ESCAPE && dragging) {
-			dragging = false;
-			drag_active = false;
-			drag_viewport = nullptr;
-			_update_overlays();
-			return;
-		}
-		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
-			if (mb->is_pressed()) {
-				Vector3 hit;
-				if (vp->ray_to_view_plane(mb->get_position(), Vector3(), hit)) {
-					drag_start = _snap(hit);
-					dragging = true;
-					drag_active = false;
-					drag_viewport = vp;
-					drag_current = drag_start;
-				}
-			} else {
-				if (dragging && drag_viewport == vp) {
-					if (drag_active) {
-						// Enter ghost state instead of committing immediately.
-						Vector3 mins, maxs;
-						_compute_drag_aabb(mins, maxs);
-						ghost_aabb = AABB(mins, maxs - mins);
-						ghost_active = true;
-						ghost_handle_hover = GHOST_NONE;
-						ghost_handle_drag = GHOST_NONE;
-					}
-					dragging = false;
-					drag_viewport = nullptr;
-					_update_overlays();
-				}
-			}
-		} else if (mm.is_valid() && dragging && drag_viewport == vp) {
+		} break;
+		case MODE_FACE: {
 			Vector3 hit;
-			if (vp->ray_to_view_plane(mm->get_position(), Vector3(), hit)) {
-				drag_current = _snap(hit);
-				drag_active = (drag_current - drag_start).length() > grid_size * 0.5;
-				_update_overlays();
+			LevelBrush *brush = nullptr;
+			int f;
+			if (_pick_face(p_camera, p_screen, brush, f, hit)) {
+				_face_set(brush).insert(f);
 			}
-		}
-		return;
-	}
-
-	// --- Clip mode ---
-	if (mode == MODE_CLIP) {
-		// Keys: Enter applies, Esc cancels. (Side cycling is on the Clip
-		// toolbar button - Tab is eaten by GUI focus navigation.)
-		Ref<InputEventKey> k = p_event;
-		if (k.is_valid() && k->is_pressed() && clip_active) {
-			if (k->get_keycode() == Key::ENTER || k->get_keycode() == Key::KP_ENTER) {
-				_clip_apply();
-				return;
-			}
-			if (k->get_keycode() == Key::ESCAPE) {
-				_clip_cancel();
-				return;
-			}
-		}
-
-		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
-			if (mb->is_pressed()) {
-				if (clip_active && !clip_drawing) {
-					// Grab a clip point to adjust.
-					int pi = _pick_clip_point(vp, mb->get_position());
-					if (pi >= 0) {
-						clip_drag_point = pi;
-						clip_viewport = vp;
-						return;
-					}
-				}
-				// Otherwise start a new clip on the clicked brush.
-				Vector3 hit;
-				LevelBrush *brush = nullptr;
-				int f;
-				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
-					_clip_begin(brush, hit, vp);
-				} else if (vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE) {
-					// Ortho views: click anywhere - use the selected brush (or the
-					// most recent one) and place the point on the edit plane.
-					LevelBrush *target = selected_brush;
-					if (!target) {
-						Vector<LevelBrush *> brushes = current_map->get_brushes();
-						if (!brushes.is_empty()) {
-							target = brushes[brushes.size() - 1];
-						}
-					}
-					if (target) {
-						// Place the point on the edit plane at the brush's depth.
-						Vector3 center = target->get_global_transform().xform(target->get_center());
-						if (vp->ray_to_view_plane(mb->get_position(), center, hit)) {
-							_clip_begin(target, hit, vp);
-						}
-					}
-				}
-			} else {
-				if (clip_drawing && clip_viewport == vp) {
-					clip_drawing = false;
-					clip_drag_point = -1;
-				} else if (clip_drag_point >= 0 && clip_viewport == vp) {
-					clip_drag_point = -1;
-				}
-			}
-			return;
-		}
-		if (mm.is_valid()) {
-			if ((clip_drawing || clip_drag_point >= 0) && clip_viewport == vp) {
-				// Move the active point on the edit plane THROUGH THE FIRST clip
-				// point, so both points stay coplanar (same Y in top view, etc).
-				Vector3 hit;
-				if (vp->ray_to_view_plane(mm->get_position(), clip_points[0], hit)) {
-					if (clip_drawing) {
-						_clip_update_second(hit);
-					} else if (clip_drag_point >= 0) {
-						clip_points[clip_drag_point] = _snap(hit);
-						_update_overlays();
-					}
-				}
-			}
-			return;
-		}
-		return;
-	}
-
-	// --- Mirror mode ---
-	if (mode == MODE_MIRROR) {
-		// Keys: Enter applies, Esc cancels (handled in input()).
-		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
-			if (mb->is_pressed()) {
-				if (mirror_active && !mirror_drawing) {
-					// Grab a mirror point to adjust.
-					for (int i = 0; i < 2; i++) {
-						Vector2 sp;
-						if (vp->project(mirror_points[i], sp) && sp.distance_to(mb->get_position()) < 10.0 * EDSCALE) {
-							mirror_drag_point = i;
-							mirror_viewport = vp;
-							return;
-						}
-					}
-				}
-				// Otherwise start a new mirror on the clicked brush.
-				Vector3 hit;
-				LevelBrush *brush = nullptr;
-				int f;
-				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
-					_mirror_begin(brush, hit, vp);
-				} else if (vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE) {
-					// Ortho views: click anywhere - use the selected brush (or the
-					// most recent one) and place the point on the edit plane.
-					LevelBrush *target = selected_brush;
-					if (!target) {
-						Vector<LevelBrush *> brushes = current_map->get_brushes();
-						if (!brushes.is_empty()) {
-							target = brushes[brushes.size() - 1];
-						}
-					}
-					if (target) {
-						Vector3 center = target->get_global_transform().xform(target->get_center());
-						if (vp->ray_to_view_plane(mb->get_position(), center, hit)) {
-							_mirror_begin(target, hit, vp);
-						}
-					}
-				}
-			} else {
-				if (mirror_drawing && mirror_viewport == vp) {
-					mirror_drawing = false;
-					mirror_drag_point = -1;
-				} else if (mirror_drag_point >= 0 && mirror_viewport == vp) {
-					mirror_drag_point = -1;
-				}
-			}
-			return;
-		}
-		if (mm.is_valid()) {
-			if ((mirror_drawing || mirror_drag_point >= 0) && mirror_viewport == vp) {
-				// Move the active point on the edit plane THROUGH THE FIRST
-				// mirror point (same coplanar constraint as the clip tool).
-				Vector3 hit;
-				if (vp->ray_to_view_plane(mm->get_position(), mirror_points[0], hit)) {
-					if (mirror_drawing) {
-						mirror_points[1] = _snap(hit);
-						_update_overlays();
-					} else if (mirror_drag_point >= 0) {
-						mirror_points[mirror_drag_point] = _snap(hit);
-						_update_overlays();
-					}
-				}
-			}
-			return;
-		}
-		return;
-	}
-
-	// Select + element modes (skip while the gizmo is active).
-	if (gizmo_dragging) {
-		return;
-	}
-
-	// Whole-brush drag in Select mode.
-	if (select_moving) {
-		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT && !mb->is_pressed()) {
-			// Release: commit undo.
-			Vector3 new_pos = selected_brush ? selected_brush->get_position() : select_move_original_position;
-			if (selected_brush && !new_pos.is_equal_approx(select_move_original_position)) {
-				LevelBrush *target = selected_brush;
-				Vector3 old_pos = select_move_original_position;
-				EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-				undo_redo->create_action(TTR("Move Brush"));
-				undo_redo->add_do_property(target, "position", new_pos);
-				undo_redo->add_undo_property(target, "position", old_pos);
-				undo_redo->commit_action(false);
-			}
-			select_moving = false;
-			select_move_viewport = nullptr;
-			return;
-		}
-		if (mm.is_valid() && select_move_viewport == vp && selected_brush) {
-			Vector3 grab;
-			if (_select_ray_to_edit_plane(vp, mm->get_position(), grab)) {
-				Vector3 new_world = _snap(grab - select_move_offset);
-				Node3D *parent = Object::cast_to<Node3D>(selected_brush->get_parent());
-				if (parent) {
-					selected_brush->set_position(parent->get_global_transform().affine_inverse().xform(new_world));
-				} else {
-					selected_brush->set_position(new_world);
-				}
-				_refresh_map();
-				_update_overlays();
-			}
-			return;
-		}
-	}
-	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT && mb->is_pressed()) {
-		bool add = mb->is_shift_pressed();
-		switch (mode) {
-			case MODE_SELECT: {
-				// Click a brush to select it; re-clicking the already-selected
-				// brush starts a whole-brush drag (like the ghost move).
-				Vector3 hit;
-				LevelBrush *brush = nullptr;
-				int f;
-				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
-					if (brush == selected_brush) {
-						// Begin drag on the edit plane at the grab depth.
-						select_moving = true;
-						select_move_viewport = vp;
-						select_move_original_position = selected_brush->get_position();
-						Vector3 grab;
-						if (_select_ray_to_edit_plane(vp, mb->get_position(), grab)) {
-							select_move_offset = grab - selected_brush->get_global_position();
-						} else {
-							select_move_offset = Vector3();
-						}
-					} else {
-						selected_brush = brush;
-						_edit_brush_node(brush);
-					}
-				} else if (!add) {
-					_clear_selection();
-				}
-			} break;
-			case MODE_FACE: {
-				Vector3 hit;
-				LevelBrush *brush = nullptr;
-				int f;
-				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
-					if (!add) {
-						selected_faces.clear();
-					}
-					HashSet<int> &set = _face_set(brush);
-					if (set.has(f) && add) {
-						set.erase(f);
-						if (set.is_empty()) {
-							selected_faces.erase(brush);
-						}
-					} else {
-						set.insert(f);
-					}
-					if (brush != selected_brush) {
-						selected_brush = brush;
-						_edit_brush_node(brush);
-					}
-				} else if (!add) {
-					_clear_selection();
-				}
-			} break;
-			case MODE_EDGE: {
-				LevelBrush *brush = nullptr;
-				LevelBrush::EdgeKey e;
-				if (_pick_edge(p_camera, mb->get_position(), brush, e)) {
-					if (mb->is_double_click()) {
-						if (mb->is_alt_pressed()) {
-							// Alt+double-click: edge loop (Blender alt-click) - opposite
-							// edges across each face, both directions.
-							_select_edge_loop(brush, e);
-						} else {
-							// Double-click: collinear chain (straight run of segments,
-							// e.g. consecutive pieces of a subdivided edge).
-							_select_edge_chain(brush, e);
-						}
-					} else {
-						if (!add) {
-							selected_edges.clear();
-						}
-						HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &set = _edge_set(brush);
-						if (set.has(e) && add) {
-							set.erase(e);
-							if (set.is_empty()) {
-								selected_edges.erase(brush);
-							}
-						} else {
-							set.insert(e);
-						}
-					}
-					if (brush != selected_brush) {
-						selected_brush = brush;
-						_edit_brush_node(brush);
-					}
-				} else if (!add) {
-					_clear_selection();
-				}
-			} break;
-			case MODE_VERTEX: {
-				LevelBrush *brush = nullptr;
-				int v;
-				if (_pick_vertex(p_camera, mb->get_position(), brush, v)) {
-					if (!add) {
-						selected_vertices.clear();
-					}
-					HashSet<int> &set = _vertex_set(brush);
-					if (set.has(v) && add) {
-						set.erase(v);
-						if (set.is_empty()) {
-							selected_vertices.erase(brush);
-						}
-					} else {
-						set.insert(v);
-					}
-					if (brush != selected_brush) {
-						selected_brush = brush;
-						_edit_brush_node(brush);
-					}
-				} else if (!add) {
-					_clear_selection();
-				}
-			} break;
-			default:
-				break;
-		}
-		_update_overlays();
-	} else if (mm.is_valid()) {
-		_update_hover(vp, mm->get_position());
+		} break;
+		default:
+			break;
 	}
 }
 

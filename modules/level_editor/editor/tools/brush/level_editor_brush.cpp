@@ -384,3 +384,119 @@ void LevelEditorScreen::_compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) con
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Input handler (dispatched from LevelEditorScreen::forward_input).
+// ---------------------------------------------------------------------------
+
+bool LevelEditorScreen::_brush_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
+	if (mode != MODE_BLOCK) {
+		return false;
+	}
+	Ref<InputEventMouseButton> mb = p_event;
+	Ref<InputEventMouseMotion> mm = p_event;
+	LevelEditorViewport *vp = p_vp;
+
+	// --- Stage 2: ghost box with resize handles ---
+	if (ghost_active) {
+		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
+			if (mb->is_pressed()) {
+				int h = _pick_ghost_handle(vp, mb->get_position());
+				if (h != GHOST_NONE) {
+					ghost_handle_drag = h;
+					ghost_drag_viewport = vp;
+				} else if (_ghost_hit_test(vp, mb->get_position())) {
+					// Clicked inside the ghost: drag the whole box.
+					ghost_moving = true;
+					ghost_drag_viewport = vp;
+					Vector3 hit;
+					if (_ghost_ray_to_edit_plane(vp, mb->get_position(), hit)) {
+						ghost_move_offset = hit - ghost_aabb.position;
+					} else {
+						ghost_move_offset = Vector3();
+					}
+				}
+			} else {
+				ghost_handle_drag = GHOST_NONE;
+				ghost_moving = false;
+				ghost_drag_viewport = nullptr;
+			}
+			return true;
+		}
+		if (mm.is_valid()) {
+			if (ghost_moving && ghost_drag_viewport == vp) {
+				Vector3 hit;
+				if (_ghost_ray_to_edit_plane(vp, mm->get_position(), hit)) {
+					Vector3 new_pos = _snap(hit - ghost_move_offset);
+					ghost_aabb.position = new_pos;
+					_update_overlays();
+				}
+			} else if (ghost_handle_drag != GHOST_NONE && ghost_drag_viewport == vp) {
+				_ghost_handle_drag_to(vp, mm->get_position());
+			} else {
+				int prev = ghost_handle_hover;
+				ghost_handle_hover = _pick_ghost_handle(vp, mm->get_position());
+				if (prev != ghost_handle_hover) {
+					_update_overlays();
+				}
+			}
+			return true;
+		}
+		Ref<InputEventKey> k = p_event;
+		if (k.is_valid() && k->is_pressed()) {
+			if (k->get_keycode() == Key::ENTER || k->get_keycode() == Key::KP_ENTER) {
+				_ghost_commit();
+				return true;
+			}
+			if (k->get_keycode() == Key::ESCAPE) {
+				_ghost_cancel();
+				return true;
+			}
+		}
+		return true;
+	}
+
+	// --- Stage 1: initial drag ---
+	// Esc cancels an in-progress drag.
+	Ref<InputEventKey> k = p_event;
+	if (k.is_valid() && k->is_pressed() && k->get_keycode() == Key::ESCAPE && dragging) {
+		dragging = false;
+		drag_active = false;
+		drag_viewport = nullptr;
+		_update_overlays();
+		return true;
+	}
+	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
+		if (mb->is_pressed()) {
+			Vector3 hit;
+			if (vp->ray_to_view_plane(mb->get_position(), Vector3(), hit)) {
+				drag_start = _snap(hit);
+				dragging = true;
+				drag_active = false;
+				drag_viewport = vp;
+				drag_current = drag_start;
+			}
+		} else if (dragging && drag_viewport == vp) {
+			if (drag_active) {
+				// Enter ghost state instead of committing immediately.
+				Vector3 mins, maxs;
+				_compute_drag_aabb(mins, maxs);
+				ghost_aabb = AABB(mins, maxs - mins);
+				ghost_active = true;
+				ghost_handle_hover = GHOST_NONE;
+				ghost_handle_drag = GHOST_NONE;
+			}
+			dragging = false;
+			drag_viewport = nullptr;
+			_update_overlays();
+		}
+	} else if (mm.is_valid() && dragging && drag_viewport == vp) {
+		Vector3 hit;
+		if (vp->ray_to_view_plane(mm->get_position(), Vector3(), hit)) {
+			drag_current = _snap(hit);
+			drag_active = (drag_current - drag_start).length() > grid_size * 0.5;
+			_update_overlays();
+		}
+	}
+	return true;
+}

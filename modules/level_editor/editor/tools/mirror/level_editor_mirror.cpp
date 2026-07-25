@@ -144,3 +144,82 @@ void LevelEditorScreen::_draw_mirror(LevelEditorViewport *p_vp, Control *p_canva
 			TTR("Mirror: draw the mirror plane (Enter to apply, Esc to cancel)"),
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 13, LevelEditorColors::TEXT_DIM);
 }
+
+// ---------------------------------------------------------------------------
+// Input handler (dispatched from LevelEditorScreen::forward_input).
+// Keys (Enter applies, Esc cancels) are handled in input().
+// ---------------------------------------------------------------------------
+
+bool LevelEditorScreen::_mirror_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
+	if (mode != MODE_MIRROR) {
+		return false;
+	}
+	Ref<InputEventMouseButton> mb = p_event;
+	Ref<InputEventMouseMotion> mm = p_event;
+	LevelEditorViewport *vp = p_vp;
+
+	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
+		if (mb->is_pressed()) {
+			if (mirror_active && !mirror_drawing) {
+				// Grab a mirror point to adjust.
+				for (int i = 0; i < 2; i++) {
+					Vector2 sp;
+					if (vp->project(mirror_points[i], sp) && sp.distance_to(mb->get_position()) < 10.0 * EDSCALE) {
+						mirror_drag_point = i;
+						mirror_viewport = vp;
+						return true;
+					}
+				}
+			}
+			// Otherwise start a new mirror on the clicked brush.
+			Vector3 hit;
+			LevelBrush *brush = nullptr;
+			int f;
+			if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
+				_mirror_begin(brush, hit, vp);
+			} else if (vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE) {
+				// Ortho views: click anywhere - use the selected brush (or the
+				// most recent one) and place the point on the edit plane.
+				LevelBrush *target = selected_brush;
+				if (!target) {
+					Vector<LevelBrush *> brushes = current_map->get_brushes();
+					if (!brushes.is_empty()) {
+						target = brushes[brushes.size() - 1];
+					}
+				}
+				if (target) {
+					Vector3 center = target->get_global_transform().xform(target->get_center());
+					if (vp->ray_to_view_plane(mb->get_position(), center, hit)) {
+						_mirror_begin(target, hit, vp);
+					}
+				}
+			}
+		} else {
+			if (mirror_drawing && mirror_viewport == vp) {
+				mirror_drawing = false;
+				mirror_drag_point = -1;
+			} else if (mirror_drag_point >= 0 && mirror_viewport == vp) {
+				mirror_drag_point = -1;
+			}
+		}
+		return true;
+	}
+	if (mm.is_valid()) {
+		if ((mirror_drawing || mirror_drag_point >= 0) && mirror_viewport == vp) {
+			// Move the active point on the edit plane THROUGH THE FIRST
+			// mirror point (same coplanar constraint as the clip tool).
+			Vector3 hit;
+			if (vp->ray_to_view_plane(mm->get_position(), mirror_points[0], hit)) {
+				if (mirror_drawing) {
+					mirror_points[1] = _snap(hit);
+					_update_overlays();
+				} else if (mirror_drag_point >= 0) {
+					mirror_points[mirror_drag_point] = _snap(hit);
+					_update_overlays();
+				}
+			}
+		}
+		return true;
+	}
+	return true;
+}

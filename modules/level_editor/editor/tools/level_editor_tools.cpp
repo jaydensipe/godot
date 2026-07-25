@@ -388,16 +388,16 @@ void LevelEditorScreen::_view_grid_toggled(int p_id) {
 void LevelEditorScreen::_view_display_selected(int p_id) {
 	view_menu->release_focus();
 	const int vp = p_id / LevelEditorViewport::DISPLAY_MAX;
-	const int mode = p_id % LevelEditorViewport::DISPLAY_MAX;
+	const int disp_mode = p_id % LevelEditorViewport::DISPLAY_MAX;
 	ERR_FAIL_INDEX(vp, 4);
 
-	viewports[vp]->set_display_mode((LevelEditorViewport::DisplayMode)mode);
+	viewports[vp]->set_display_mode((LevelEditorViewport::DisplayMode)disp_mode);
 
 	// Keep the radio state in sync within that viewport's submenu.
 	PopupMenu *sub = view_submenus[vp];
 	if (sub) {
 		for (int i = 0; i < sub->get_item_count(); i++) {
-			sub->set_item_checked(i, (sub->get_item_id(i) % LevelEditorViewport::DISPLAY_MAX) == mode);
+			sub->set_item_checked(i, (sub->get_item_id(i) % LevelEditorViewport::DISPLAY_MAX) == disp_mode);
 		}
 	}
 
@@ -563,4 +563,240 @@ void LevelEditorScreen::_action_collapse_vertices() {
 	undo_redo->commit_action(false);
 	selected_vertices.clear();
 	_refresh_map();
+}
+
+// ---------------------------------------------------------------------------
+// Input handlers (dispatched from LevelEditorScreen::forward_input).
+// Each returns true when it consumed the event.
+// ---------------------------------------------------------------------------
+
+bool LevelEditorScreen::_select_handles_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
+	// Select-mode box handles take priority over the move gizmo.
+	if (mode != MODE_SELECT || !selected_brush) {
+		return false;
+	}
+	Ref<InputEventMouseButton> mb = p_event;
+	Ref<InputEventMouseMotion> mm = p_event;
+	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
+		if (mb->is_pressed()) {
+			int h = _pick_select_handle(p_vp, mb->get_position());
+			if (h != GHOST_NONE) {
+				select_handle_drag = h;
+				select_drag_viewport = p_vp;
+				select_drag_original_aabb = _get_brush_local_aabb(selected_brush);
+				select_drag_original_verts = selected_brush->get_vertices_data();
+				return true;
+			}
+		} else if (select_handle_drag != GHOST_NONE) {
+			_select_handle_end_drag();
+			return true;
+		}
+	} else if (mm.is_valid()) {
+		if (select_handle_drag != GHOST_NONE && select_drag_viewport == p_vp) {
+			_select_handle_drag_to(p_vp, mm->get_position());
+			return true;
+		}
+		int prev = select_handle_hover;
+		select_handle_hover = _pick_select_handle(p_vp, mm->get_position());
+		if (prev != select_handle_hover) {
+			_update_overlays();
+		}
+	}
+	return false;
+}
+
+bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
+	// Select + element modes only, and never while the gizmo owns the drag.
+	if (gizmo_dragging) {
+		return false;
+	}
+	Ref<InputEventMouseButton> mb = p_event;
+	Ref<InputEventMouseMotion> mm = p_event;
+
+	// Whole-brush drag in Select mode.
+	if (select_moving) {
+		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT && !mb->is_pressed()) {
+			// Release: commit undo.
+			Vector3 new_pos = selected_brush ? selected_brush->get_position() : select_move_original_position;
+			if (selected_brush && !new_pos.is_equal_approx(select_move_original_position)) {
+				LevelBrush *target = selected_brush;
+				Vector3 old_pos = select_move_original_position;
+				EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+				undo_redo->create_action(TTR("Move Brush"));
+				undo_redo->add_do_property(target, "position", new_pos);
+				undo_redo->add_undo_property(target, "position", old_pos);
+				undo_redo->commit_action(false);
+			}
+			select_moving = false;
+			select_move_viewport = nullptr;
+			return true;
+		}
+		if (mm.is_valid() && select_move_viewport == p_vp && selected_brush) {
+			Vector3 grab;
+			if (_select_ray_to_edit_plane(p_vp, mm->get_position(), grab)) {
+				Vector3 new_world = _snap(grab - select_move_offset);
+				Node3D *parent = Object::cast_to<Node3D>(selected_brush->get_parent());
+				if (parent) {
+					selected_brush->set_position(parent->get_global_transform().affine_inverse().xform(new_world));
+				} else {
+					selected_brush->set_position(new_world);
+				}
+				_refresh_map();
+				_update_overlays();
+			}
+			return true;
+		}
+	}
+
+	// Paint selection drag (vertex/edge/face modes).
+	if (paint_select_active) {
+		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT && !mb->is_pressed()) {
+			paint_select_active = false;
+			paint_select_viewport = nullptr;
+			return true;
+		}
+		if (mm.is_valid() && paint_select_viewport == p_vp) {
+			_paint_select_at(p_camera, mm->get_position());
+			_update_overlays();
+			return true;
+		}
+	}
+
+	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT && mb->is_pressed()) {
+		bool add = mb->is_shift_pressed();
+		switch (mode) {
+			case MODE_SELECT: {
+				// Click a brush to select it; re-clicking the already-selected
+				// brush starts a whole-brush drag (like the ghost move).
+				Vector3 hit;
+				LevelBrush *brush = nullptr;
+				int f;
+				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
+					if (brush == selected_brush) {
+						// Begin drag on the edit plane at the grab depth.
+						select_moving = true;
+						select_move_viewport = p_vp;
+						select_move_original_position = selected_brush->get_position();
+						Vector3 grab;
+						if (_select_ray_to_edit_plane(p_vp, mb->get_position(), grab)) {
+							select_move_offset = grab - selected_brush->get_global_position();
+						} else {
+							select_move_offset = Vector3();
+						}
+					} else {
+						selected_brush = brush;
+						_edit_brush_node(brush);
+					}
+				} else if (!add) {
+					_clear_selection();
+				}
+			} break;
+			case MODE_FACE: {
+				Vector3 hit;
+				LevelBrush *brush = nullptr;
+				int f;
+				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
+					if (!add) {
+						selected_faces.clear();
+					}
+					HashSet<int> &set = _face_set(brush);
+					if (set.has(f) && add) {
+						set.erase(f);
+						if (set.is_empty()) {
+							selected_faces.erase(brush);
+						}
+					} else {
+						set.insert(f);
+					}
+					if (brush != selected_brush) {
+						selected_brush = brush;
+						_edit_brush_node(brush);
+					}
+					paint_select_active = true;
+					paint_select_viewport = p_vp;
+				} else if (!add) {
+					_clear_selection();
+				}
+			} break;
+			case MODE_EDGE: {
+				LevelBrush *brush = nullptr;
+				LevelBrush::EdgeKey e;
+				if (_pick_edge(p_camera, mb->get_position(), brush, e)) {
+					if (mb->is_double_click()) {
+						if (mb->is_alt_pressed()) {
+							// Alt+double-click: edge loop (Blender alt-click) - opposite
+							// edges across each face, both directions.
+							_select_edge_loop(brush, e);
+						} else {
+							// Double-click: collinear chain (straight run of segments,
+							// e.g. consecutive pieces of a subdivided edge).
+							_select_edge_chain(brush, e);
+						}
+					} else {
+						if (!add) {
+							selected_edges.clear();
+						}
+						HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &set = _edge_set(brush);
+						if (set.has(e) && add) {
+							set.erase(e);
+							if (set.is_empty()) {
+								selected_edges.erase(brush);
+							}
+						} else {
+							set.insert(e);
+						}
+					}
+					if (brush != selected_brush) {
+						selected_brush = brush;
+						_edit_brush_node(brush);
+					}
+					paint_select_active = true;
+					paint_select_viewport = p_vp;
+				} else {
+					// Missed any edge: still arm the paint drag so a drag started
+					// over empty space adds edges as it crosses them.
+					paint_select_active = true;
+					paint_select_viewport = p_vp;
+					if (!add) {
+						_clear_selection();
+					}
+				}
+			} break;
+			case MODE_VERTEX: {
+				LevelBrush *brush = nullptr;
+				int v;
+				if (_pick_vertex(p_camera, mb->get_position(), brush, v)) {
+					if (!add) {
+						selected_vertices.clear();
+					}
+					HashSet<int> &set = _vertex_set(brush);
+					if (set.has(v) && add) {
+						set.erase(v);
+						if (set.is_empty()) {
+							selected_vertices.erase(brush);
+						}
+					} else {
+						set.insert(v);
+					}
+					if (brush != selected_brush) {
+						selected_brush = brush;
+						_edit_brush_node(brush);
+					}
+					paint_select_active = true;
+					paint_select_viewport = p_vp;
+				} else if (!add) {
+					_clear_selection();
+				}
+			} break;
+			default:
+				break;
+		}
+		_update_overlays();
+		return true;
+	}
+	if (mm.is_valid()) {
+		_update_hover(p_vp, mm->get_position());
+		return true;
+	}
+	return false;
 }
