@@ -34,6 +34,7 @@
 
 class LevelEditorScreen;
 class SpinBox;
+class OptionButton;
 
 // Right-side dock for the Level editor: settings panels for ARMED actions.
 //
@@ -68,6 +69,7 @@ class LevelEditorDock : public VBoxContainer {
 
 	void _setting_changed(double p_value, const StringName &p_id);
 	void _cancel_pressed();
+	void _brush_type_selected(int p_index);
 
 protected:
 	static void _bind_methods();

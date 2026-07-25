@@ -27,6 +27,8 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
 **`test_level_brush.h`** — pure geometry, no tree needed:
 
 - `setup_box` topology (8 verts, 6 quads, 12 edges, outward normals)
+- `setup_quad` (4 verts, 1 face, outward normal from winding; reversed
+  winding flips it) - the Quad brush type's commit path
 - `move_vertices` isolation (only the moved vertex changes; incident faces tilt)
 - `ray_intersect` (entry face, distance, miss)
 - `extrude_face` (cap + side walls, counts)

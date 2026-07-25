@@ -69,6 +69,35 @@ TEST_CASE("[LevelBrush] setup_box produces a valid cube") {
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] setup_quad produces a single-face flat brush") {
+	LevelBrush *brush = memnew(LevelBrush);
+	// XZ plane at y=1, CCW seen from +Y (same winding the quad brush type
+	// commits from the ghost).
+	Vector3 corners[4] = {
+		Vector3(0, 1, 0),
+		Vector3(0, 1, 2),
+		Vector3(3, 1, 2),
+		Vector3(3, 1, 0),
+	};
+	brush->setup_quad(corners);
+
+	CHECK(brush->get_vertex_count() == 4);
+	CHECK(brush->get_face_count() == 1);
+	CHECK(brush->is_valid());
+	CHECK(brush->get_face(0).size() == 4);
+	CHECK(brush->get_face_normal(0).is_equal_approx(Vector3(0, 1, 0)));
+	CHECK(brush->get_center().is_equal_approx(Vector3(1.5, 1, 1)));
+
+	// A reversed winding flips the normal.
+	LevelBrush *flipped = memnew(LevelBrush);
+	Vector3 rev[4] = { corners[3], corners[2], corners[1], corners[0] };
+	flipped->setup_quad(rev);
+	CHECK(flipped->get_face_normal(0).is_equal_approx(Vector3(0, -1, 0)));
+
+	memdelete(brush);
+	memdelete(flipped);
+}
+
 TEST_CASE("[LevelBrush] move_vertices only affects the given vertices") {
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));

@@ -48,9 +48,13 @@ modules/level_editor/
       level_editor_gizmos.cpp    # LevelEditorScreen gizmo members (translate/scale arrow
                                  #   gizmo, rotate rings, Shift+drag face extrude, undo commits)
     dock/
-      level_editor_dock.{h,cpp}  # LevelEditorDock - per-ACTION settings panels:
-                                 #   armed actions (Edge > Bevel) build a SpinBox
-                                 #   form from LevelActionSetting descriptors
+      level_editor_dock.{h,cpp}  # LevelEditorDock - persistent per-tool
+                                 #   settings (Block: Brush Type OptionButton;
+                                 #   refresh() called from _set_tool) + per-ACTION
+                                 #   armed panels: armed actions (Edge > Bevel)
+                                 #   build a SpinBox form from LevelActionSetting
+                                 #   descriptors (get_action_settings); Enter
+                                 #   applies, Esc cancels.
                                  #   (get_action_settings); Enter applies, Esc cancels.
 ```
 
@@ -129,7 +133,8 @@ SubViewportContainer
   screen; the dock builds a SpinBox form from `LevelActionSetting`
   descriptors (`get_action_settings` in the dock cpp) and writes values
   back via `set_armed_value`; Enter runs `_action_apply_armed`, Esc
-  cancels; `_set_mode` cancels any armed action. To add a configurable
+  cancels; `_set_tool`/`_set_target` cancel any armed action. To add a
+  configurable
   action: enum entry in `ArmedAction` + descriptor list + a case in
   `_action_apply_armed`.
 - **Tool previews**: generic `ToolPreview` struct (preview id, source
@@ -138,26 +143,38 @@ SubViewportContainer
   hash of brush + selection + values); `_draw_tool_preview` draws with a
   per-id color. Add a preview: enum entry + color case + producer.
 
-- `Mode` enum order: SELECT, ROTATE, SCALE, BLOCK, CLIP, MIRROR, VERTEX,
-  EDGE, FACE.
-  Toolbar indices iterate `mode_buttons[MODE_MAX]`; mode buttons live in three
-  button-group panels (SELECT..SCALE, BLOCK..MIRROR, then VERTEX..FACE).
+- `Tool` × `SelectionTarget` replace the old single `Mode` enum (Hammer 2
+  style). Tool = Select/Rotate/Scale + modal Block/Clip/Mirror (entering a
+  modal tool stashes `last_transform_tool`/`last_target`, restores on exit).
+  Target = Vertex/Edge/Face/Mesh (1/2/3/4) - what gets selected and
+  transformed by ANY transform tool. Toolbar: three panels (transform tools,
+  drawing tools, targets); `_set_tool`/`_set_target` end active drags first
+  (committing their undos).
 - **No-map gate**: if the edited scene has no `LevelMap`, the quad viewports
   are hidden and a warning panel ("Create LevelMap" button) shows instead.
   `_update_map_ui()` resolves/adopts a map found in the scene (never
   auto-creates); `LevelEditorPlugin::edited_scene_changed()` override
   re-resolves on scene switch. The map is only created by the button
   (`_get_or_create_map`).
-- Selection: `LevelBrush *selected_brush` (whole-brush modes) + per-brush
+- Selection: `LevelBrush *selected_brush` (always the most-recent brush,
+  even in element targets - clip/mirror/menus rely on it) + per-brush
   element sets: `HashMap<LevelBrush *, HashSet<...>> selected_faces /
-  selected_edges / selected_vertices` - element modes select across brushes.
-  Selection clears on EVERY mode switch (`_set_mode`).
+  selected_edges / selected_vertices` - element targets select across
+  brushes. `_set_target` clears selection; switching among the three
+  transform tools keeps it.
 - Element picking scans ALL brushes in the map (`_pick_vertex`/`_pick_edge`/
   `_pick_face`). Hover shows the hovered brush (light-blue outline) + its
-  pickable elements: green vertices (vertex mode only), green hovered edge,
+  pickable elements: green vertices (vertex target only), green hovered edge,
   green hovered face fill; selected elements draw in orange
   (`LevelEditorColors::SELECTED_ELEMENT`). Brushes with any selection keep the
-  highlight after the cursor leaves.
+  highlight after the cursor leaves. Holding LMB and dragging in an element
+  target paint-selects every crossed element (`paint_select_active` +
+  `_paint_select_at` - adds only, no toggle-off mid-drag).
+- Face/edge hover + selection fills pre-flight `Geometry2D::triangulate_
+  polygon` before `draw_colored_polygon` - projected n-gons can be
+  degenerate (edge-on view, concave after vertex edits) and the renderer
+  ERR_FAILs on untriangulable polygons. On failure the fill is skipped;
+  the outline still draws.
 - Editor selection sync: plugin listens to `EditorSelection::selection_changed`
   and adopts a selected `LevelBrush` (`set_selected_brush_from_editor`).
 - Map lookup: `_find_map_in_scene()` is the single DFS that finds the first
@@ -168,7 +185,14 @@ SubViewportContainer
 - Block flow: stage 1 drag → stage 2 "ghost" (AABB + 6 face handles + 8
   corner handles + inside-drag move + dim labels) → Enter commits
   (`_ghost_commit`), Esc cancels. `_compute_drag_aabb` shared by preview +
-  commit; reuses last brush's Y height for walls.
+  commit; reuses last brush's Y height for walls. Brush Type (dock
+  dropdown: Block/Quad): Quad collapses the drag AABB's view axis to zero
+  (`ghost_flat_axis`) and commits a single-face `setup_quad` brush on that
+  plane; ALL handle rules funnel through one predicate,
+  `_ghost_handle_usable(vp, handle)` - the flat-axis (thickness) face
+  handles never exist, corner drags stay in plane, and edge-on views
+  (quad projects to a line) keep only the two endpoint face handles, no
+  corners, no inside-drag.
 - Clip flow: `_clip_begin` on brush click (or anywhere in ortho at brush
   depth), 2 snapped points + captured `clip_view_dir`; plane normal =
   `along × view_dir` (verified = screen-left of the drawn line). Clip toolbar
@@ -219,9 +243,11 @@ SubViewportContainer
   the View menu (persisted via project metadata).
 - `gui_input` forwarding: `LevelEditorViewport::gui_input` calls
   `screen->forward_input(camera, event)` FIRST, then handles navigation.
-  `forward_input` maps camera → viewport and implements ALL tool logic
-  (block drag, ghost, clip, gizmo, selection, hover) in mode order:
-  rotate-ring → move-gizmo → block/ghost → clip → select/element clicks.
+  `forward_input` maps camera → viewport and dispatches to per-tool input
+  handlers in priority order (`_select_handles_input` → `_rotate_input` →
+  `_gizmo_input` → `_brush_input` → `_clip_input` → `_mirror_input` →
+  `_selection_input`); each lives in its tool's .cpp and returns true when
+  it consumed the event.
 - Freelook disabled on `NOTIFICATION_WM_WINDOW_FOCUS_OUT`.
 - Each viewport has its own DirectionalLight3D (`look_at_from_position`
   from (10,20,10) → origin) + fill light (energy 0.35) + WorldEnvironment

@@ -213,6 +213,14 @@ private:
 	real_t grid_size = 1.0;
 	real_t extrude_amount = 1.0;
 
+	// Block tool setting (edited from the dock): what shape the drag commits.
+	enum BrushType {
+		BRUSH_BLOCK, // Solid box.
+		BRUSH_QUAD, // Flat plane (one grid unit thick).
+		BRUSH_TYPE_MAX
+	};
+	BrushType brush_type = BRUSH_BLOCK;
+
 	Tool tool = TOOL_SELECT;
 	Tool last_transform_tool = TOOL_SELECT; // Restored after BLOCK/CLIP/MIRROR.
 	SelectionTarget selection_target = TARGET_MESH;
@@ -252,6 +260,7 @@ private:
 	LevelEditorViewport *ghost_drag_viewport = nullptr;
 	bool ghost_moving = false; // Dragging the whole ghost box.
 	Vector3 ghost_move_offset; // Grab point minus ghost AABB position.
+	mutable int ghost_flat_axis = -1; // Quad brush: the view axis the ghost is flat on (-1 = box). Written by the const _compute_drag_aabb.
 
 	bool _ghost_hit_test(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
 	bool _ghost_ray_to_edit_plane(LevelEditorViewport *p_vp, const Vector2 &p_screen, Vector3 &r_hit) const;
@@ -264,6 +273,9 @@ private:
 	void _ghost_cancel();
 	void _draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas);
 	void _draw_dim_labels(LevelEditorViewport *p_vp, Control *p_canvas, const AABB &p_aabb);
+	// One predicate for all quad-ghost handle rules (thickness handles never
+	// exist; edge-on views keep only the two endpoint handles + no corners).
+	bool _ghost_handle_usable(LevelEditorViewport *p_vp, int p_handle) const;
 
 	// --- Clip tool state ---
 	enum ClipSide {
@@ -354,6 +366,11 @@ public:
 	ArmedAction get_armed_action() const { return armed_action; }
 	double get_armed_value(const StringName &p_id, double p_fallback) const;
 	void set_armed_value(const StringName &p_id, double p_value);
+
+	// Brush-tool dock settings.
+	Tool get_tool() const { return tool; }
+	int get_brush_type() const { return (int)brush_type; }
+	void set_brush_type(int p_type) { brush_type = (BrushType)p_type; }
 	void cancel_armed_action() { _action_cancel_armed(); }
 
 private:

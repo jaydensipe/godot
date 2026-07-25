@@ -89,11 +89,11 @@ Bugs that cost real debugging time. Read before touching the module.
     replaces each source face with its cap in place, so a face selection
     stays valid across extrudes (chained extrude relies on this).
 
-15. **`_set_mode` must interrupt active drags.** Mode shortcuts can fire
-    mid-drag; the drag's undo action commits against the old mode's
-    snapshots, so `_set_mode` ends gizmo/rotate/select-handle drags
-    (committing their undos) before switching. Any NEW drag state must be
-    added there too, or its edit becomes un-undoable.
+15. **`_set_tool`/`_set_target` must interrupt active drags.** Tool/target
+    shortcuts can fire mid-drag; the drag's undo action commits against the
+    old state snapshots, so both setters end gizmo/rotate/select-handle
+    drags (committing their undos) before switching. Any NEW drag state
+    must be added there too, or its edit becomes un-undoable.
 
 ## Rendering
 
@@ -233,3 +233,23 @@ Bugs that cost real debugging time. Read before touching the module.
 38. Clean stale `__pycache__` in the module dir after renames.
 39. `Math::pow(2.0, step)` was "ambiguous" on MSVC - hardcoded a ladder array
     instead (simpler anyway).
+40. **`draw_colored_polygon` ERR_FAILs on untriangulable polygons.** Projected
+    n-gon fills (face hover/selection overlays) can be degenerate in screen
+    space - viewed edge-on, or concave/self-intersecting after vertex edits -
+    and `RendererCanvasCull` errors once per redraw (log spam on every hover).
+    Pre-flight with `Geometry2D::triangulate_polygon` and skip the fill on
+    failure; keep drawing the outline.
+41. **Member names collide with locals.** Naming the selection-target member
+    plain `target` shadowed ~15 existing `LevelBrush *target` locals (C4458
+    warnings everywhere). Module state members that describe editor concepts
+    (tool, target, mode) need qualified names (`selection_target`).
+42. **Flat (zero-extent) ghost AABBs break handle math in edge-on views.**
+    A quad ghost projects to a LINE in the two ortho views looking
+    perpendicular to its normal: point-in-polygon hit tests can never hit,
+    and all 8 corner handles stack onto one line. Funnel picking,
+    inside-drag, AND drawing through ONE predicate
+    (`_ghost_handle_usable`) instead of parallel filters - the first
+    version drifted into `_quad_flat_axis`/`_quad_edge_on`/
+    `_edge_on_handle_axis` helpers and shipped with the edge-on test
+    inverted (face-on vs edge-on view axis), which removed ALL handles
+    from the one usable view.

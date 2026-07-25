@@ -110,6 +110,11 @@ public:
 	// local-space AABB.
 	void setup_box(const AABB &p_aabb);
 
+	// Initialize as a single flat quad (4 verts, 1 face). The corners must be
+	// wound CCW around the intended outward normal (same convention as
+	// setup_box faces).
+	void setup_quad(const Vector3 p_corners[4]);
+
 	// Move vertices directly (Blender-style). Only the given vertices move.
 	void move_vertices(const Vector<int> &p_vertices, const Vector3 &p_delta);
 

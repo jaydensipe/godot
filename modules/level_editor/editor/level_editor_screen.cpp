@@ -38,6 +38,7 @@ using namespace LevelHelpers;
 using LevelEditorColors::GIZMO_PLANE_EXTENT;
 
 #include "core/object/callable_mp.h"
+#include "core/math/geometry_2d.h"
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_main_screen.h"
@@ -1231,6 +1232,9 @@ void LevelEditorScreen::_set_tool(Tool p_tool) {
 		_mirror_cancel();
 	}
 	_action_cancel_armed();
+	if (dock) {
+		dock->refresh();
+	}
 	_update_overlays();
 }
 
@@ -2089,7 +2093,13 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 						pts.push_back(sp);
 					}
 					if (ok) {
-						p_canvas->draw_colored_polygon(pts, LevelEditorColors::HOVER_FACE_FILL);
+						// The projected polygon can be degenerate (face viewed edge-on,
+						// or a concave/self-intersecting outline after vertex edits) -
+						// pre-flight the same triangulation the renderer does and skip
+						// the fill if it fails (the outline still draws).
+						if (!Geometry2D::triangulate_polygon(pts).is_empty()) {
+							p_canvas->draw_colored_polygon(pts, LevelEditorColors::HOVER_FACE_FILL);
+						}
 						for (int i = 0; i < pts.size(); i++) {
 							p_canvas->draw_line(pts[i], pts[(i + 1) % pts.size()], LevelEditorColors::HOVER_ELEMENT, 2.0);
 						}
@@ -2204,7 +2214,10 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 				pts.push_back(sp);
 			}
 			if (all_front) {
-				p_canvas->draw_colored_polygon(pts, face_col);
+				// Same degenerate-projection guard as the hover fill.
+				if (!Geometry2D::triangulate_polygon(pts).is_empty()) {
+					p_canvas->draw_colored_polygon(pts, face_col);
+				}
 				for (int i = 0; i < pts.size(); i++) {
 					p_canvas->draw_line(pts[i], pts[(i + 1) % pts.size()], face_outline, 2.0);
 				}

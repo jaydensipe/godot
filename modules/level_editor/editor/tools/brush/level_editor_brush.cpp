@@ -75,11 +75,61 @@ int LevelEditorScreen::_pick_box_handle(LevelEditorViewport *p_vp, const Vector2
 	return best;
 }
 
+// Is ghost handle h usable for the current brush type in p_vp? Box brushes
+// allow everything. Quad ghosts have no thickness, so the two face handles
+// on the flat axis never exist; in edge-on views (quad projects to a line)
+// only the two face handles at the line's endpoints remain (corners all
+// project onto the same line).
+bool LevelEditorScreen::_ghost_handle_usable(LevelEditorViewport *p_vp, int p_handle) const {
+	if (brush_type != BRUSH_QUAD || p_handle == GHOST_NONE) {
+		return p_handle != GHOST_NONE;
+	}
+	const int flat = ghost_flat_axis;
+	if (flat < 0) {
+		return true;
+	}
+	// View axis of this ortho view (-1 for perspective).
+	int view_axis = -1;
+	switch (p_vp->get_view_type()) {
+		case LevelEditorViewport::VIEW_TOP:
+			view_axis = 1;
+			break;
+		case LevelEditorViewport::VIEW_FRONT:
+			view_axis = 2;
+			break;
+		case LevelEditorViewport::VIEW_SIDE:
+			view_axis = 0;
+			break;
+		default:
+			break;
+	}
+	const bool edge_on = (view_axis >= 0 && view_axis != flat);
+	if (p_handle >= GHOST_CORNER_0) {
+		return !edge_on;
+	}
+	const int axis = (p_handle - GHOST_FACE_XN) / 2;
+	if (axis == flat) {
+		return false; // Thickness handle.
+	}
+	if (edge_on) {
+		// Only the handles on the one axis that is neither view nor flat
+		// (0+1+2 = 3, so it is 3 - view - flat).
+		return axis == 3 - view_axis - flat;
+	}
+	return true;
+}
+
 int LevelEditorScreen::_pick_ghost_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
-	return _pick_box_handle(p_vp, p_screen, ghost_aabb, Transform3D());
+	int h = _pick_box_handle(p_vp, p_screen, ghost_aabb, Transform3D());
+	return _ghost_handle_usable(p_vp, h) ? h : GHOST_NONE;
 }
 
 bool LevelEditorScreen::_ghost_hit_test(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
+	// A quad seen edge-on has no clickable area (only its endpoint handles):
+	// if a corner handle wouldn't be usable, the inside-drag isn't either.
+	if (brush_type == BRUSH_QUAD && ghost_flat_axis >= 0 && !_ghost_handle_usable(p_vp, GHOST_CORNER_0)) {
+		return false;
+	}
 	// Screen-space point-in-polygon test against the ghost's projected faces.
 	Vector3 corners[8];
 	aabb_corners(ghost_aabb, corners);
@@ -154,6 +204,9 @@ void LevelEditorScreen::_ghost_handle_drag_to(LevelEditorViewport *p_vp, const V
 		// so vertical movement works in the top view (and vice versa). Each
 		// component uses the last mouse hit on that axis' plane.
 		for (int axis = 0; axis < 3; axis++) {
+			if (axis == ghost_flat_axis) {
+				continue; // Quad corners stay on the flat plane.
+			}
 			Vector3 hit;
 			if (!_ray_to_axis_plane(p_vp, p_mouse, corner, axis, hit)) {
 				continue;
@@ -194,6 +247,8 @@ void LevelEditorScreen::_ghost_commit() {
 	ghost_handle_hover = GHOST_NONE;
 	ghost_handle_drag = GHOST_NONE;
 	ghost_moving = false;
+	const int committed_flat_axis = ghost_flat_axis;
+	ghost_flat_axis = -1;
 
 	LevelMap *map = _get_or_create_map();
 	ERR_FAIL_NULL(map);
@@ -205,7 +260,42 @@ void LevelEditorScreen::_ghost_commit() {
 
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->set_name("Brush");
-	brush->setup_box(map_inv.xform(ghost_aabb));
+	if (brush_type == BRUSH_QUAD) {
+		// Quad: a single flat polygon on the ghost's plane (recorded at drag
+		// time), wound CCW seen from the +axis side - same outward convention
+		// as setup_box.
+		AABB bb = map_inv.xform(ghost_aabb);
+		Vector3 mn = bb.position;
+		Vector3 mx = bb.position + bb.size;
+		int flat_axis = committed_flat_axis;
+		if (flat_axis < 0) {
+			flat_axis = 1; // Fallback (shouldn't happen): floor quad.
+		}
+		Vector3 quad[4];
+		switch (flat_axis) {
+			case 0: // YZ plane at max X, normal +X (CCW seen from +X).
+				quad[0] = Vector3(mx.x, mn.y, mn.z);
+				quad[1] = Vector3(mx.x, mx.y, mn.z);
+				quad[2] = Vector3(mx.x, mx.y, mx.z);
+				quad[3] = Vector3(mx.x, mn.y, mx.z);
+				break;
+			case 1: // XZ plane at max Y, normal +Y (CCW seen from +Y).
+				quad[0] = Vector3(mn.x, mx.y, mn.z);
+				quad[1] = Vector3(mn.x, mx.y, mx.z);
+				quad[2] = Vector3(mx.x, mx.y, mx.z);
+				quad[3] = Vector3(mx.x, mx.y, mn.z);
+				break;
+			default: // XY plane at max Z, normal +Z (CCW seen from +Z).
+				quad[0] = Vector3(mn.x, mn.y, mx.z);
+				quad[1] = Vector3(mx.x, mn.y, mx.z);
+				quad[2] = Vector3(mx.x, mx.y, mx.z);
+				quad[3] = Vector3(mn.x, mx.y, mx.z);
+				break;
+		}
+		brush->setup_quad(quad);
+	} else {
+		brush->setup_box(map_inv.xform(ghost_aabb));
+	}
 	if (current_material.is_valid()) {
 		for (int f = 0; f < brush->get_face_count(); f++) {
 			brush->set_face_material(f, current_material);
@@ -232,6 +322,7 @@ void LevelEditorScreen::_ghost_cancel() {
 	ghost_handle_hover = GHOST_NONE;
 	ghost_handle_drag = GHOST_NONE;
 	ghost_moving = false;
+	ghost_flat_axis = -1;
 	_update_overlays();
 }
 
@@ -252,8 +343,12 @@ void LevelEditorScreen::_draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas
 		}
 	}
 
-	// Face handles: squares at face centers.
+	// Face handles: squares at face centers (quad: no thickness handles, and
+	// edge-on views show only the two endpoint handles).
 	for (int i = 0; i < 6; i++) {
+		if (!_ghost_handle_usable(p_vp, GHOST_FACE_XN + i)) {
+			continue;
+		}
 		Vector3 fc = aabb_face_center(ghost_aabb, i);
 		Vector2 sp;
 		if (p_vp->project(fc, sp)) {
@@ -266,6 +361,9 @@ void LevelEditorScreen::_draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas
 
 	// Corner handles.
 	for (int i = 0; i < 8; i++) {
+		if (!_ghost_handle_usable(p_vp, GHOST_CORNER_0 + i)) {
+			continue;
+		}
 		Vector2 sp;
 		if (p_vp->project(corners[i], sp)) {
 			bool hot = (ghost_handle_hover == GHOST_CORNER_0 + i || ghost_handle_drag == GHOST_CORNER_0 + i);
@@ -333,6 +431,27 @@ void LevelEditorScreen::_compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) con
 
 	LevelEditorViewport::ViewType vt = drag_viewport->get_view_type();
 	real_t thickness = grid_size;
+
+	// Quads are flat: zero thickness along the view axis.
+	if (brush_type == BRUSH_QUAD) {
+		switch (vt) {
+			case LevelEditorViewport::VIEW_TOP:
+			case LevelEditorViewport::VIEW_PERSPECTIVE:
+				r_mins.y = r_maxs.y = _snap(drag_start.y);
+				ghost_flat_axis = 1;
+				break;
+			case LevelEditorViewport::VIEW_FRONT:
+				r_mins.z = r_maxs.z = _snap(drag_start.z);
+				ghost_flat_axis = 2;
+				break;
+			case LevelEditorViewport::VIEW_SIDE:
+				r_mins.x = r_maxs.x = _snap(drag_start.x);
+				ghost_flat_axis = 0;
+				break;
+		}
+		return;
+	}
+	ghost_flat_axis = -1;
 
 	// Reuse the last brush's Y height if there is one, so walls of uniform
 	// height are quick to lay out (edits to the previous block carry over).

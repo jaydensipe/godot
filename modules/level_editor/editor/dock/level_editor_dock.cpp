@@ -35,6 +35,7 @@
 #include "core/object/callable_mp.h"
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
+#include "scene/gui/option_button.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/spin_box.h"
 
@@ -101,6 +102,22 @@ void LevelEditorDock::refresh() {
 	form = memnew(VBoxContainer);
 	add_child(form);
 
+	// Persistent tool settings, per active tool.
+	if (screen && screen->get_tool() == LevelEditorScreen::TOOL_BLOCK) {
+		Label *label = memnew(Label);
+		label->set_text(TTRC("Brush Type"));
+		form->add_child(label);
+
+		OptionButton *type = memnew(OptionButton);
+		type->add_item(TTRC("Block"), 0);
+		type->add_item(TTRC("Quad"), 1);
+		type->select(screen->get_brush_type());
+		type->connect("item_selected", callable_mp(this, &LevelEditorDock::_brush_type_selected));
+		form->add_child(type);
+
+		form->add_child(memnew(HSeparator));
+	}
+
 	if (!screen || screen->get_armed_action() == LevelEditorScreen::ACTION_NONE) {
 		Label *hint = memnew(Label);
 		hint->set_text(TTRC("No active tool settings."));
@@ -141,6 +158,12 @@ void LevelEditorDock::refresh() {
 	cancel->set_text(TTRC("Cancel"));
 	cancel->connect("pressed", callable_mp(this, &LevelEditorDock::_cancel_pressed));
 	form->add_child(cancel);
+}
+
+void LevelEditorDock::_brush_type_selected(int p_index) {
+	if (screen) {
+		screen->set_brush_type(p_index);
+	}
 }
 
 void LevelEditorDock::_cancel_pressed() {

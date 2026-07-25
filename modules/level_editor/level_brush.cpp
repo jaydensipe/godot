@@ -245,6 +245,19 @@ void LevelBrush::setup_box(const AABB &p_aabb) {
 	_update_face_count_storage();
 }
 
+void LevelBrush::setup_quad(const Vector3 p_corners[4]) {
+	verts.clear();
+	faces.clear();
+	face_materials.clear();
+
+	for (int i = 0; i < 4; i++) {
+		verts.push_back(p_corners[i]);
+	}
+	faces.push_back({ 0, 1, 2, 3 });
+
+	_update_face_count_storage();
+}
+
 void LevelBrush::flip_faces() {
 	set_faces_flipped(!faces_flipped);
 }
