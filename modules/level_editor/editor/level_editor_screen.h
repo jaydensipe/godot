@@ -167,6 +167,7 @@ public:
 		MODE_SCALE,
 		MODE_BLOCK,
 		MODE_CLIP,
+		MODE_MIRROR,
 		MODE_VERTEX,
 		MODE_EDGE,
 		MODE_FACE,
@@ -187,6 +188,7 @@ private:
 	OptionButton *grid_size_option = nullptr;
 	Button *bake_button = nullptr;
 	MenuButton *tools_menu = nullptr;
+	LevelEditorDock *dock = nullptr; // Owned by the plugin; set after ctor.
 	MenuButton *vertex_menu = nullptr;
 	MenuButton *edge_menu = nullptr;
 	MenuButton *face_menu = nullptr;
@@ -268,6 +270,69 @@ private:
 	void _clip_cycle_side();
 	void _draw_clip(LevelEditorViewport *p_vp, Control *p_canvas);
 
+	// --- Mirror tool state (clip-style 2-point plane, previews the ---
+	// mirrored copy; Enter creates it as a NEW brush node).
+	LevelBrush *mirror_brush = nullptr;
+	bool mirror_active = false;
+	bool mirror_drawing = false;
+	int mirror_drag_point = -1;
+	Vector3 mirror_points[2]; // World space.
+	Vector3 mirror_view_dir;
+	LevelEditorViewport *mirror_viewport = nullptr;
+
+	void _mirror_begin(LevelBrush *p_brush, const Vector3 &p_point, LevelEditorViewport *p_vp);
+	Plane _mirror_plane() const; // In mirror_brush local space.
+	void _mirror_apply();
+	void _mirror_cancel();
+	void _draw_mirror(LevelEditorViewport *p_vp, Control *p_canvas);
+
+	// --- Armed action state (dock-configured actions, Enter applies) ---
+public:
+	// An action with dock settings is "armed" by its menu item (instead of
+	// applying immediately); the dock edits armed_values; Enter runs
+	// _action_apply_armed(), Esc _action_cancel_armed().
+	enum ArmedAction {
+		ACTION_NONE,
+		ACTION_BEVEL_EDGES,
+	};
+
+private:
+	ArmedAction armed_action = ACTION_NONE;
+	HashMap<StringName, double> armed_values;
+
+	void _arm_action(ArmedAction p_action);
+	void _action_apply_armed();
+	void _action_cancel_armed();
+
+	// --- Tool previews (overlay line sets that follow tool state) ---
+	// Generic container: line segments in a brush's local space, drawn in a
+	// color. Each tool owns a PRODUCER that (re)builds the lines when its
+	// relevant inputs change; the cache key is just a hash of those inputs.
+	// To add a preview: one PreviewId, a color in _draw_tool_preview, and a
+	// _*_preview_rebuild() that fills the struct and sets cache_hash.
+	enum PreviewId {
+		PREVIEW_NONE,
+		PREVIEW_BEVEL,
+	};
+	struct ToolPreview {
+		PreviewId id = PREVIEW_NONE;
+		LevelBrush *brush = nullptr; // Brush whose transform the lines are in.
+		LocalVector<Vector3> lines; // Brush-local segments (pairs of points).
+		uint32_t cache_hash = 0; // 0 = invalid/needs rebuild.
+	};
+	ToolPreview tool_preview;
+
+	void _bevel_preview_rebuild();
+	void _draw_tool_preview(LevelEditorViewport *p_vp, Control *p_canvas);
+
+public:
+	// Dock hooks (LevelEditorDock reads/writes these).
+	ArmedAction get_armed_action() const { return armed_action; }
+	double get_armed_value(const StringName &p_id, double p_fallback) const;
+	void set_armed_value(const StringName &p_id, double p_value);
+	void cancel_armed_action() { _action_cancel_armed(); }
+
+private:
 	// Select-mode box handles: resize the selected brush's local AABB.
 	// Shares the GhostHandle enum (0..5 faces, 6..13 corners).
 	int select_handle_hover = GHOST_NONE;
@@ -453,6 +518,7 @@ private:
 
 	// Draw helpers used by the viewport overlay.
 	friend class LevelEditorViewport;
+	friend class LevelEditorDock;
 	void _draw_viewport_overlay(LevelEditorViewport *p_vp, Control *p_canvas);
 	void _draw_brush_outline(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, bool p_selected);
 	void _draw_drag_feedback(LevelEditorViewport *p_vp, Control *p_canvas);
@@ -476,6 +542,8 @@ public:
 
 	// Sync the level-editor brush selection with the editor's node selection.
 	void set_selected_brush_from_editor(LevelBrush *p_brush);
+
+	void set_dock(LevelEditorDock *p_dock) { dock = p_dock; }
 
 	void make_visible(bool p_visible);
 	void forward_input(Camera3D *p_camera, const Ref<InputEvent> &p_event);

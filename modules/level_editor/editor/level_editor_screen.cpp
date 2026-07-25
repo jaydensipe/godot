@@ -656,7 +656,7 @@ LevelEditorScreen::LevelEditorScreen() {
 	HBoxContainer *draw_hbox = memnew(HBoxContainer);
 	draw_panel->add_child(draw_hbox);
 
-	for (int i = MODE_BLOCK; i <= MODE_CLIP; i++) {
+	for (int i = MODE_BLOCK; i <= MODE_MIRROR; i++) {
 		Button *b = memnew(Button);
 		b->set_toggle_mode(true);
 		b->set_pressed(false);
@@ -690,6 +690,7 @@ LevelEditorScreen::LevelEditorScreen() {
 	// fallbacks for buttons without icons.
 	mode_buttons[MODE_BLOCK]->set_tooltip_text(TTRC("Block"));
 	mode_buttons[MODE_CLIP]->set_tooltip_text(TTRC("Clip"));
+	mode_buttons[MODE_MIRROR]->set_tooltip_text(TTRC("Mirror (draw a plane to duplicate the brush reflected across it)"));
 	mode_buttons[MODE_VERTEX]->set_tooltip_text(TTRC("Vertex"));
 	mode_buttons[MODE_EDGE]->set_tooltip_text(TTRC("Edge (double-click: select straight chain, Alt+double-click: select loop)"));
 	mode_buttons[MODE_FACE]->set_tooltip_text(TTRC("Shift: Hold while dragging to extrude."));
@@ -940,6 +941,12 @@ void LevelEditorScreen::input(const Ref<InputEvent> &p_event) {
 			} else if (clip_active) {
 				_clip_apply();
 				handled = true;
+			} else if (mirror_active) {
+				_mirror_apply();
+				handled = true;
+			} else if (armed_action != ACTION_NONE) {
+				_action_apply_armed();
+				handled = true;
 			}
 			if (handled) {
 				get_viewport()->set_input_as_handled();
@@ -952,6 +959,12 @@ void LevelEditorScreen::input(const Ref<InputEvent> &p_event) {
 				handled = true;
 			} else if (clip_active) {
 				_clip_cancel();
+				handled = true;
+			} else if (mirror_active) {
+				_mirror_cancel();
+				handled = true;
+			} else if (armed_action != ACTION_NONE) {
+				_action_cancel_armed();
 				handled = true;
 			} else if (dragging) {
 				dragging = false;
@@ -1055,6 +1068,9 @@ void LevelEditorScreen::on_scene_changed() {
 	if (clip_active) {
 		_clip_cancel();
 	}
+	if (mirror_active) {
+		_mirror_cancel();
+	}
 	_clear_selection();
 	_update_map_ui();
 	_update_overlays();
@@ -1114,6 +1130,7 @@ void LevelEditorScreen::_update_mode_icons() {
 		mode_buttons[MODE_SCALE]->set_button_icon(get_editor_theme_icon(SNAME("ToolScale")));
 		mode_buttons[MODE_BLOCK]->set_button_icon(get_editor_theme_icon(SNAME("Brush")));
 		mode_buttons[MODE_CLIP]->set_button_icon(get_editor_theme_icon(SNAME("Clip")));
+		mode_buttons[MODE_MIRROR]->set_button_icon(get_editor_theme_icon(SNAME("MirrorX")));
 		mode_buttons[MODE_VERTEX]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignCenterLeft")));
 		mode_buttons[MODE_EDGE]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignRightWide")));
 		mode_buttons[MODE_FACE]->set_button_icon(get_editor_theme_icon(SNAME("ControlAlignFullRect")));
@@ -1165,7 +1182,146 @@ void LevelEditorScreen::_set_mode(Mode p_mode) {
 	if (mode != MODE_CLIP && clip_active) {
 		_clip_cancel();
 	}
+	if (mode != MODE_MIRROR && mirror_active) {
+		_mirror_cancel();
+	}
+	_action_cancel_armed();
 	_update_overlays();
+}
+
+// --- Armed action plumbing (dock settings, Enter applies) ---
+
+void LevelEditorScreen::_arm_action(ArmedAction p_action) {
+	if (armed_action == p_action) {
+		return; // Keep values across a re-click (acts as a toggle-off guard).
+	}
+	armed_action = p_action;
+	if (dock) {
+		dock->refresh();
+	}
+	_update_overlays();
+}
+
+void LevelEditorScreen::_action_cancel_armed() {
+	if (armed_action == ACTION_NONE) {
+		return;
+	}
+	armed_action = ACTION_NONE;
+	armed_values.clear();
+	tool_preview = ToolPreview();
+	if (dock) {
+		dock->refresh();
+	}
+	_update_overlays();
+}
+
+double LevelEditorScreen::get_armed_value(const StringName &p_id, double p_fallback) const {
+	const double *v = armed_values.getptr(p_id);
+	return v ? *v : p_fallback;
+}
+
+void LevelEditorScreen::set_armed_value(const StringName &p_id, double p_value) {
+	armed_values[p_id] = p_value;
+	_update_overlays(); // Live previews follow dock edits.
+}
+
+// --- Tool previews ---
+
+void LevelEditorScreen::_bevel_preview_rebuild() {
+	if (armed_action != ACTION_BEVEL_EDGES || selected_edges.size() != 1) {
+		if (tool_preview.id == PREVIEW_BEVEL) {
+			tool_preview = ToolPreview();
+		}
+		return;
+	}
+
+	const real_t width = get_armed_value(StringName("width"), grid_size);
+	const int steps = (int)get_armed_value(StringName("steps"), 0.0);
+	const real_t shape = get_armed_value(StringName("shape"), 0.5);
+	const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E = *selected_edges.begin();
+
+	// Cache key: everything the preview depends on.
+	uint32_t h = hash_murmur3_one_64((uint64_t)E.key);
+	h = hash_murmur3_one_32((uint64_t)E.value.size(), h);
+	for (const LevelBrush::EdgeKey &e : E.value) {
+		h = hash_murmur3_one_32((uint32_t)e.a, h);
+		h = hash_murmur3_one_32((uint32_t)e.b, h);
+	}
+	h = hash_murmur3_one_real((double)width, h);
+	h = hash_murmur3_one_32((uint32_t)steps, h);
+	h = hash_murmur3_one_real((double)shape, h);
+	if (tool_preview.id == PREVIEW_BEVEL && tool_preview.cache_hash == h) {
+		return;
+	}
+
+	tool_preview = ToolPreview();
+
+	Vector<LevelBrush::EdgeKey> edges;
+	for (const LevelBrush::EdgeKey &e : E.value) {
+		edges.push_back(e);
+	}
+
+	LevelBrush *working = E.key->duplicate_brush();
+	if (working->bevel_edges_profiled(edges, width, steps, shape) > 0) {
+		// Draw only edges the bevel CREATED (present in the result but not
+		// in the original brush) - the original edges stay drawn by the
+		// normal outline pass, and consumed edges (steps=0 centerline) must
+		// not ghost back in here.
+		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> orig_edges = E.key->get_edges();
+		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> result_edges = working->get_edges();
+		for (const LevelBrush::EdgeKey &e : result_edges) {
+			const Vector3 va = working->get_vertex(e.a);
+			const Vector3 vb = working->get_vertex(e.b);
+			bool existed = false;
+			for (const LevelBrush::EdgeKey &oe : orig_edges) {
+				if (E.key->get_vertex(oe.a).is_equal_approx(va) && E.key->get_vertex(oe.b).is_equal_approx(vb)) {
+					existed = true;
+					break;
+				}
+			}
+			if (!existed) {
+				tool_preview.lines.push_back(va);
+				tool_preview.lines.push_back(vb);
+			}
+		}
+		tool_preview.id = PREVIEW_BEVEL;
+		tool_preview.brush = E.key;
+		tool_preview.cache_hash = h;
+	}
+	memdelete(working);
+}
+
+void LevelEditorScreen::_draw_tool_preview(LevelEditorViewport *p_vp, Control *p_canvas) {
+	if (tool_preview.id == PREVIEW_NONE || !tool_preview.brush || tool_preview.lines.is_empty()) {
+		return;
+	}
+	Color col;
+	switch (tool_preview.id) {
+		case PREVIEW_BEVEL:
+			col = LevelEditorColors::CLIP_LINE;
+			break;
+		default:
+			col = LevelEditorColors::GHOST;
+			break;
+	}
+	const Transform3D gt = tool_preview.brush->get_global_transform();
+	for (uint32_t i = 0; i + 1 < tool_preview.lines.size(); i += 2) {
+		Vector2 a, b;
+		if (p_vp->project(gt.xform(tool_preview.lines[i]), a) && p_vp->project(gt.xform(tool_preview.lines[i + 1]), b)) {
+			p_canvas->draw_line(a, b, col, 2.0);
+		}
+	}
+}
+
+void LevelEditorScreen::_action_apply_armed() {
+	switch (armed_action) {
+		case ACTION_BEVEL_EDGES:
+			_action_bevel_edges();
+			break;
+		default:
+			break;
+	}
+	_action_cancel_armed();
 }
 
 int LevelEditorScreen::_grid_step_index() const {
@@ -1598,7 +1754,7 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 	}
 
 	// --- Gizmo interaction takes priority (Select and element modes) ---
-	if (mode != MODE_BLOCK && mode != MODE_CLIP && mode != MODE_ROTATE && _has_selection()) {
+	if (mode != MODE_BLOCK && mode != MODE_CLIP && mode != MODE_MIRROR && mode != MODE_ROTATE && _has_selection()) {
 		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
 			if (mb->is_pressed()) {
 				int part = _pick_gizmo(p_camera, mb->get_position());
@@ -1814,6 +1970,75 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 						_clip_update_second(hit);
 					} else if (clip_drag_point >= 0) {
 						clip_points[clip_drag_point] = _snap(hit);
+						_update_overlays();
+					}
+				}
+			}
+			return;
+		}
+		return;
+	}
+
+	// --- Mirror mode ---
+	if (mode == MODE_MIRROR) {
+		// Keys: Enter applies, Esc cancels (handled in input()).
+		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
+			if (mb->is_pressed()) {
+				if (mirror_active && !mirror_drawing) {
+					// Grab a mirror point to adjust.
+					for (int i = 0; i < 2; i++) {
+						Vector2 sp;
+						if (vp->project(mirror_points[i], sp) && sp.distance_to(mb->get_position()) < 10.0 * EDSCALE) {
+							mirror_drag_point = i;
+							mirror_viewport = vp;
+							return;
+						}
+					}
+				}
+				// Otherwise start a new mirror on the clicked brush.
+				Vector3 hit;
+				LevelBrush *brush = nullptr;
+				int f;
+				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
+					_mirror_begin(brush, hit, vp);
+				} else if (vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE) {
+					// Ortho views: click anywhere - use the selected brush (or the
+					// most recent one) and place the point on the edit plane.
+					LevelBrush *target = selected_brush;
+					if (!target) {
+						Vector<LevelBrush *> brushes = current_map->get_brushes();
+						if (!brushes.is_empty()) {
+							target = brushes[brushes.size() - 1];
+						}
+					}
+					if (target) {
+						Vector3 center = target->get_global_transform().xform(target->get_center());
+						if (vp->ray_to_view_plane(mb->get_position(), center, hit)) {
+							_mirror_begin(target, hit, vp);
+						}
+					}
+				}
+			} else {
+				if (mirror_drawing && mirror_viewport == vp) {
+					mirror_drawing = false;
+					mirror_drag_point = -1;
+				} else if (mirror_drag_point >= 0 && mirror_viewport == vp) {
+					mirror_drag_point = -1;
+				}
+			}
+			return;
+		}
+		if (mm.is_valid()) {
+			if ((mirror_drawing || mirror_drag_point >= 0) && mirror_viewport == vp) {
+				// Move the active point on the edit plane THROUGH THE FIRST
+				// mirror point (same coplanar constraint as the clip tool).
+				Vector3 hit;
+				if (vp->ray_to_view_plane(mm->get_position(), mirror_points[0], hit)) {
+					if (mirror_drawing) {
+						mirror_points[1] = _snap(hit);
+						_update_overlays();
+					} else if (mirror_drag_point >= 0) {
+						mirror_points[mirror_drag_point] = _snap(hit);
 						_update_overlays();
 					}
 				}
@@ -2305,6 +2530,9 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 	_draw_gizmo(p_vp, p_canvas);
 	_draw_rotate_gizmo(p_vp, p_canvas);
 	_draw_clip(p_vp, p_canvas);
+	_draw_mirror(p_vp, p_canvas);
+	_bevel_preview_rebuild();
+	_draw_tool_preview(p_vp, p_canvas);
 }
 
 void LevelEditorScreen::_draw_brush_outline(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, bool p_selected) {
@@ -2393,14 +2621,17 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 		}
 	}
 
-	// Edges (selected: same orange as selected-face outlines).
-	Color edge_col = LevelEditorColors::SELECTED_ELEMENT;
-	for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
-		Transform3D gt = E.key->get_global_transform();
-		for (const LevelBrush::EdgeKey &e : E.value) {
-			Vector2 a, b;
-			if (p_vp->project(gt.xform(E.key->get_vertex(e.a)), a) && p_vp->project(gt.xform(E.key->get_vertex(e.b)), b)) {
-				p_canvas->draw_line(a, b, edge_col, 3.0);
+	// Edges (selected: same orange as selected-face outlines). Hidden while
+	// a bevel is armed - the cyan preview shows the bevel target instead.
+	if (armed_action != ACTION_BEVEL_EDGES) {
+		Color edge_col = LevelEditorColors::SELECTED_ELEMENT;
+		for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
+			Transform3D gt = E.key->get_global_transform();
+			for (const LevelBrush::EdgeKey &e : E.value) {
+				Vector2 a, b;
+				if (p_vp->project(gt.xform(E.key->get_vertex(e.a)), a) && p_vp->project(gt.xform(E.key->get_vertex(e.b)), b)) {
+					p_canvas->draw_line(a, b, edge_col, 3.0);
+				}
 			}
 		}
 	}
@@ -2436,6 +2667,7 @@ LevelEditorPlugin::LevelEditorPlugin() {
 
 	dock = memnew(LevelEditorDock);
 	dock->set_screen(screen);
+	screen->set_dock(dock);
 	add_control_to_dock(DOCK_SLOT_RIGHT_BL, dock);
 	// Tab icon is set lazily in make_visible() - theme icons aren't
 	// registered yet when plugins construct.

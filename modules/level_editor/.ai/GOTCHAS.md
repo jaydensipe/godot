@@ -186,28 +186,41 @@ Bugs that cost real debugging time. Read before touching the module.
     `vertices`/`faces`/`face_materials`/`faces_flipped` are real properties.
     Old scenes saved before this have empty brushes - recreate them.
 
-32. **Bevel: edge CONSUMED, offset lines mitred at shared corners.** After
-    three wrong models (bisector-scaled chamfer, perpendicular chamfer,
-    retained-centerline strip), the working model is Blender's: each
-    beveled edge is consumed; every adjacent face gets an offset line
-    parallel to the edge at distance d (measured ALONG the boundary edges
-    at the corners - the corner point sits on the unbeveled boundary ray
-    at distance d); one strip quad bridges the two offset lines. Where
-    several beveled edges meet at a vertex, the corner point is the
-    intersection of their offset lines (on the angle bisector at
-    d/sin(angle-to-edge)) - ONE shared vert per (vertex, face), so strips
-    join cleanly. Collinear chains share via the same mechanism. Two
-    failure modes this avoids: (a) corner offsets computed from MUTATED
-    loops poison later edges in the same action - all positions must come
-    from original topology (two-pass: gather, then apply); (b) keeping
-    the original edge as a raised ridge overlaps coplanar neighbors and
-    crosses at shared verts (the dark X-fins screenshot).
+32. **Bevel: edge CONSUMED; strip cross-section profiled by shape.** After
+    several wrong models, the working one: each beveled edge is consumed;
+    every adjacent face gets an offset line at distance d (measured
+    ALONG the boundary edges); the strip between them is either ONE quad
+    (steps=0) or 2*steps band quads whose iso verts follow the profile:
+    shape 0 = straight chord (flat chamfer), 0.5 = quadratic Bezier
+    A->corner->B (apex halfway between chord mid and the corner - NOT on
+    it), 1 = the original face segments (full bulge, no visual bevel).
+    The per-side "retained centerline" model was geometrically flat on
+    the original faces (invisible bevel) - the strip must span the gap.
+    Corners where beveled edges meet mitre to ONE shared vert per
+    (vertex, face); collinear chains share via the same mechanism.
+    Faces touching an endpoint are trimmed along the profile polyline
+    (skip faces bordering another selected edge at that vertex - the
+    bowtie X). All corner positions come from ORIGINAL topology
+    (two-pass: gather, then apply). A corner whose two runs are
+    collinear (chain midpoint on a face boundary) has NO bisector -
+    use face normal x edge-dir toward the face centroid, or every edge
+    touching it gets rejected.
+
+33. **subdivide_face must split the NEIGHBORS' shared edges too.** The quad
+    grid creates midpoint verts on the subdivided face's boundary, but
+    neighboring faces kept their original long edge - a T-junction
+    (render cracks, and the boundary edge no longer exists in the
+    neighbor's loop, so bevel's adjacency search found only ONE face and
+    refused - "top edges of a subdivided face won't bevel"). FIX: after
+    rewiring the subdivided face, insert each midpoint into any other
+    face whose loop contains that boundary run consecutively. The n-gon
+    fan path adds no boundary verts, so it needs no such fix.
 
 ## SCons/module mechanics
 
-33. Module SCsub env flag is `env.editor_build`, not `env["tools"]`.
-34. `initialize_<foldername>_module` must match the folder name exactly
+34. Module SCsub env flag is `env.editor_build`, not `env["tools"]`.
+35. `initialize_<foldername>_module` must match the folder name exactly
     (module was renamed `leveleditor` → `level_editor` mid-project).
-35. Clean stale `__pycache__` in the module dir after renames.
-36. `Math::pow(2.0, step)` was "ambiguous" on MSVC - hardcoded a ladder array
+36. Clean stale `__pycache__` in the module dir after renames.
+37. `Math::pow(2.0, step)` was "ambiguous" on MSVC - hardcoded a ladder array
     instead (simpler anyway).

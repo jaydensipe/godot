@@ -33,6 +33,11 @@ modules/level_editor/
       clip/
         level_editor_clip.cpp    # Clip tool state machine (begin/drag/cycle/apply/cancel)
                                  #   + cut-line and edge-color preview drawing
+      mirror/
+        level_editor_mirror.cpp  # Mirror tool (MODE_MIRROR): clip-style 2-point
+                                 #   plane, live reflected-wireframe preview, Enter
+                                 #   duplicates the brush mirrored as a NEW node
+                                 #   (undo via add_do_method add_child + do_reference)
       brush/
         level_editor_brush.cpp   # Block tool ghost box (handles, drag, dim labels, commit)
                                  #   + shared box-handle picking (_pick_box_handle,
@@ -41,8 +46,10 @@ modules/level_editor/
       level_editor_gizmos.cpp    # LevelEditorScreen gizmo members (translate/scale arrow
                                  #   gizmo, rotate rings, Shift+drag face extrude, undo commits)
     dock/
-      level_editor_dock.{h,cpp}  # LevelEditorDock - right-side per-tool settings dock
-                                 #   (active material picker + apply button)
+      level_editor_dock.{h,cpp}  # LevelEditorDock - per-ACTION settings panels:
+                                 #   armed actions (Edge > Bevel) build a SpinBox
+                                 #   form from LevelActionSetting descriptors
+                                 #   (get_action_settings); Enter applies, Esc cancels.
 ```
 
 IMPORTANT: `level_brush.*` and `level_map.*` MUST stay at module root (they
@@ -78,6 +85,8 @@ SubViewportContainer
 - `get_face_normal()` = Newell's method (robust for non-planar n-gons).
 - Geometry ops: `setup_box`, `move_vertices`, `extrude_face` (cap + walls),
   `clip(plane)` (solid clip + cap), `split_faces(plane)` (subdivide in place),
+  `mirror(plane)` (reflect verts + reverse winding - reflection flips
+  chirality), `compact_vertices` (drop unreferenced verts, remap loops),
   `clip_split`, `delete_faces`, `collapse_vertices`, `weld_vertices`,
   `bridge_edges`, `bevel_edges` (Blender-style bevel: edge consumed, one
   strip quad per edge bridging offset lines p_distance into each adjacent
@@ -113,7 +122,22 @@ SubViewportContainer
 
 ## Editor state (LevelEditorScreen)
 
-- `Mode` enum order: SELECT, ROTATE, SCALE, BLOCK, CLIP, VERTEX, EDGE, FACE.
+- **Armed actions**: toolbar actions with dock settings (currently Edge >
+  Bevel) arm instead of applying: `armed_action`/`armed_values` on the
+  screen; the dock builds a SpinBox form from `LevelActionSetting`
+  descriptors (`get_action_settings` in the dock cpp) and writes values
+  back via `set_armed_value`; Enter runs `_action_apply_armed`, Esc
+  cancels; `_set_mode` cancels any armed action. To add a configurable
+  action: enum entry in `ArmedAction` + descriptor list + a case in
+  `_action_apply_armed`.
+- **Tool previews**: generic `ToolPreview` struct (preview id, source
+  brush, local-space line pairs, cache-hash). Each tool owns a producer
+  (`_bevel_preview_rebuild` builds from the armed values, keyed by a
+  hash of brush + selection + values); `_draw_tool_preview` draws with a
+  per-id color. Add a preview: enum entry + color case + producer.
+
+- `Mode` enum order: SELECT, ROTATE, SCALE, BLOCK, CLIP, MIRROR, VERTEX,
+  EDGE, FACE.
   Toolbar indices iterate `mode_buttons[MODE_MAX]`; mode buttons live in three
   button-group panels (SELECT..SCALE, BLOCK..CLIP, then VERTEX..FACE).
 - **No-map gate**: if the edited scene has no `LevelMap`, the quad viewports

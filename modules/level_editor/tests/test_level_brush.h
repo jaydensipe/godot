@@ -628,6 +628,18 @@ TEST_CASE("[LevelBrush] subdivide_face splits a quad into four quads") {
 	}
 	CHECK(has_center);
 
+	// Neighboring faces must pass through the new midpoint verts (no
+	// T-junctions): each of the 4 side faces of the box gains one midpoint
+	// on the boundary it shared with the subdivided face (quad ->
+	// pentagon).
+	int pentagons = 0;
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		if (brush->get_face(f).size() == 5) {
+			pentagons++;
+		}
+	}
+	CHECK(pentagons == 4);
+
 	memdelete(brush);
 }
 
@@ -831,24 +843,20 @@ TEST_CASE("[LevelBrush] bevel_edges consumes the edge into a strip face") {
 	edges.push_back(LevelBrush::EdgeKey(3, 2));
 	CHECK(brush->bevel_edges(edges, 0.5) == 1);
 
-	// 6 + 1 faces (one strip quad); 8 + 4 verts (2 offset points per face).
+	// 6 + 1 faces (one strip quad); 8 + 4 = 12 verts minus the 2 consumed
+	// endpoints (bevel compacts orphaned verts) = 10.
 	CHECK(brush->get_face_count() == 7);
-	CHECK(brush->get_vertex_count() == 12);
+	CHECK(brush->get_vertex_count() == 10);
 
-	// The original endpoint verts are no longer referenced by the two
-	// faces adjacent to the beveled edge (top=4, front=?): find the two
-	// faces that USED to contain both verts - they no longer do. (Side
-	// faces keep the verts as ordinary corners - that's correct.)
+	// No face references the original endpoint POSITIONS (compaction may
+	// reuse their old indices for other verts, so compare by position).
 	for (int f = 0; f < brush->get_face_count(); f++) {
 		LocalVector<int> loop = brush->get_face(f);
-		bool has_a = false, has_b = false;
 		for (uint32_t i = 0; i < loop.size(); i++) {
-			has_a = has_a || loop[i] == 3;
-			has_b = has_b || loop[i] == 2;
+			const Vector3 v = brush->get_vertex(loop[i]);
+			CHECK(!v.is_equal_approx(Vector3(0, 2, 0)));
+			CHECK(!v.is_equal_approx(Vector3(2, 2, 0)));
 		}
-		// No face may still contain BOTH original endpoints (that would be
-		// the consumed edge still existing).
-		CHECK(!(has_a && has_b));
 	}
 
 	// The strip face (last) is a quad whose normal points outward -
@@ -926,8 +934,10 @@ TEST_CASE("[LevelBrush] bevel_edges makes one continuous strip across a collinea
 	// edge shares its slide verts between its two sides - 2 new verts per
 	// endpoint region: the 3 distinct endpoints (mid_l, centroid, mid_r)
 	// each get 2 (one per side of the line), with the centroid's shared by
-	// both edges: 3 * 2 = 6 new verts total.
-	CHECK(brush->get_vertex_count() == 13 + 6); // 8 box + 5 subdiv + 6.
+	// both edges: 3 * 2 = 6 new verts total. All three original endpoint
+	// verts are consumed everywhere (sub-quads + the side-cap trims) and
+	// compacted away (-3).
+	CHECK(brush->get_vertex_count() == 13 + 6 - 3); // 8 box + 5 subdiv + 6 - 3 consumed.
 
 	// New verts: (x, 2, 0.75) and (x, 2, 1.25) for x in {0, 1, 2}.
 	int found = 0;
@@ -945,6 +955,173 @@ TEST_CASE("[LevelBrush] bevel_edges makes one continuous strip across a collinea
 	CHECK(found == 6);
 
 	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] bevel_edges works on the boundary of a subdivided face") {
+	// Subdivide the FRONT face, then bevel its top boundary (now two
+	// half-edges through the midpoint) - the user hit a case where these
+	// refused to bevel.
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+
+	// Find the front face (z=0): the quad containing both (0,2,0) and (2,0,0).
+	int front = -1;
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		bool has_tl = false, has_br = false;
+		LocalVector<int> loop = brush->get_face(f);
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			const Vector3 v = brush->get_vertex(loop[i]);
+			has_tl = has_tl || v.is_equal_approx(Vector3(0, 2, 0));
+			has_br = has_br || v.is_equal_approx(Vector3(2, 0, 0));
+		}
+		if (has_tl && has_br) {
+			front = f;
+			break;
+		}
+	}
+	REQUIRE(front >= 0);
+	REQUIRE(brush->subdivide_face(front)); // -> 4 quads.
+
+	// The top boundary halves: (0,2,0)->(1,2,0) and (1,2,0)->(2,2,0).
+	int tl = -1, tm = -1, tr = -1;
+	for (int i = 0; i < brush->get_vertex_count(); i++) {
+		const Vector3 v = brush->get_vertex(i);
+		if (v.is_equal_approx(Vector3(0, 2, 0))) {
+			tl = i;
+		} else if (v.is_equal_approx(Vector3(1, 2, 0))) {
+			tm = i;
+		} else if (v.is_equal_approx(Vector3(2, 2, 0))) {
+			tr = i;
+		}
+	}
+	REQUIRE(tl >= 0);
+	REQUIRE(tm >= 0);
+	REQUIRE(tr >= 0);
+
+	Vector<LevelBrush::EdgeKey> edges;
+	edges.push_back(LevelBrush::EdgeKey(tl, tm));
+	edges.push_back(LevelBrush::EdgeKey(tm, tr));
+	// BOTH halves must bevel.
+	CHECK(brush->bevel_edges(edges, 0.5) == 2);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] bevel_edges trims the end faces at the edge endpoints") {
+	// Beveling a box edge must also cut the corner of the faces touching
+	// the edge's ENDPOINTS (the side caps) - otherwise the original corner
+	// pokes through the chamfer as a fin.
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+
+	// Top-front edge (0,2,0) -> (2,2,0): verts 3 -> 2.
+	Vector<LevelBrush::EdgeKey> edges;
+	edges.push_back(LevelBrush::EdgeKey(3, 2));
+	REQUIRE(brush->bevel_edges(edges, 0.5) == 1);
+
+	// The side caps (x=0 and x=2) must no longer reference the original
+	// endpoint POSITIONS: their corners were replaced by the offset verts.
+	// (Compare by position - compaction may reuse old indices.)
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		LocalVector<int> loop = brush->get_face(f);
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			const Vector3 v = brush->get_vertex(loop[i]);
+			CHECK(!v.is_equal_approx(Vector3(0, 2, 0)));
+			CHECK(!v.is_equal_approx(Vector3(2, 2, 0)));
+		}
+	}
+
+	// Each side cap is now a pentagon (quad with one corner clipped).
+	int pentagons = 0;
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		if (brush->get_face(f).size() == 5) {
+			pentagons++;
+		}
+	}
+	CHECK(pentagons == 2);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] bevel_edges_profiled segments and shapes the strip") {
+	Vector<LevelBrush::EdgeKey> edges;
+	edges.push_back(LevelBrush::EdgeKey(3, 2)); // Top-front edge of a 2-box.
+
+	// steps=1, shape 0 (flat chamfer): 2 band quads spanning the whole
+	// cross-section, coplanar with each other (straight chord).
+	LevelBrush *flat = memnew(LevelBrush);
+	flat->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+	CHECK(flat->bevel_edges_profiled(edges, 1.0, 1, 0.0) == 1);
+	CHECK(flat->get_face_count() == 8); // 6 + 2 bands.
+	// Iso verts: (2*bands-1)*2 endpoints = 2, at chord mid u=0.5:
+	// top outer (x,2,1) and front outer (x,1,0) -> mid (x,1.5,0.5).
+	// 8 + 4 outer + 2 iso = 14 verts; the 2 consumed endpoints compacted.
+	CHECK(flat->get_vertex_count() == 8 + 4 + 2 - 2);
+	int found_mid = 0;
+	for (int i = 0; i < flat->get_vertex_count(); i++) {
+		const Vector3 v = flat->get_vertex(i);
+		if (v.is_equal_approx(Vector3(0, 1.5, 0.5)) || v.is_equal_approx(Vector3(2, 1.5, 0.5))) {
+			found_mid++;
+		}
+	}
+	CHECK(found_mid == 2);
+	// The two band quads are coplanar (same Newell normal direction).
+	Vector3 n6 = flat->get_face_normal(6);
+	Vector3 n7 = flat->get_face_normal(7);
+	CHECK(n6.dot(n7) > 0.999);
+
+	memdelete(flat);
+
+	// steps=1, shape 0.5 (quadratic Bezier through the original corner):
+	// the mid iso vert sits at 0.25*A + 0.5*C + 0.25*B = halfway between
+	// the chord mid and the corner: (x, 1.75, 0.25).
+	LevelBrush *round = memnew(LevelBrush);
+	round->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+	CHECK(round->bevel_edges_profiled(edges, 1.0, 1, 0.5) == 1);
+	found_mid = 0;
+	for (int i = 0; i < round->get_vertex_count(); i++) {
+		const Vector3 v = round->get_vertex(i);
+		if (v.is_equal_approx(Vector3(0, 1.75, 0.25)) || v.is_equal_approx(Vector3(2, 1.75, 0.25))) {
+			found_mid++;
+		}
+	}
+	CHECK(found_mid == 2);
+
+	memdelete(round);
+
+	// steps=1, shape 1 (full bulge): mid iso vert ON the original corner
+	// (segment path A -> C -> B): (x, 2, 0) - visually no beveling.
+	LevelBrush *full = memnew(LevelBrush);
+	full->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+	CHECK(full->bevel_edges_profiled(edges, 1.0, 1, 1.0) == 1);
+	found_mid = 0;
+	for (int i = 0; i < full->get_vertex_count(); i++) {
+		const Vector3 v = full->get_vertex(i);
+		if (v.is_equal_approx(Vector3(0, 2, 0)) || v.is_equal_approx(Vector3(2, 2, 0))) {
+			found_mid++;
+		}
+	}
+	CHECK(found_mid == 2);
+
+	memdelete(full);
+
+	// steps=0 matches bevel_edges(): single quad, edge consumed, endpoints
+	// compacted away (8 + 4 outer - 2 consumed = 10 verts).
+	LevelBrush *zero = memnew(LevelBrush);
+	zero->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+	CHECK(zero->bevel_edges_profiled(edges, 0.5, 0, 0.5) == 1);
+	CHECK(zero->get_face_count() == 7);
+	CHECK(zero->get_vertex_count() == 10);
+	for (int f = 0; f < zero->get_face_count(); f++) {
+		LocalVector<int> loop = zero->get_face(f);
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			const Vector3 v = zero->get_vertex(loop[i]);
+			CHECK(!v.is_equal_approx(Vector3(0, 2, 0)));
+			CHECK(!v.is_equal_approx(Vector3(2, 2, 0)));
+		}
+	}
+
+	memdelete(zero);
 }
 
 TEST_CASE("[LevelBrush] bevel_edges rejects open edges and zero distance") {
@@ -965,6 +1142,40 @@ TEST_CASE("[LevelBrush] bevel_edges rejects open edges and zero distance") {
 	brush->delete_faces(del);
 	REQUIRE(brush->get_face_count() == 5);
 	CHECK(brush->bevel_edges(edges, 0.25) == 0);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] mirror reflects verts and flips winding") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+
+	// Mirror across the plane x = 3 (normal +X): the box lands at x in
+	// [4, 6], face normals still outward.
+	brush->mirror(Plane(Vector3(1, 0, 0), 3.0));
+	AABB bb;
+	bb.position = brush->get_vertex(0);
+	bb.size = Vector3();
+	for (int i = 1; i < brush->get_vertex_count(); i++) {
+		bb.expand_to(brush->get_vertex(i));
+	}
+	CHECK(bb.position.is_equal_approx(Vector3(4, 0, 0)));
+	CHECK(bb.size.is_equal_approx(Vector3(2, 2, 2)));
+
+	// Winding reversed: the +X face (now at x=6) still reports +X normal.
+	bool found_px = false;
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		LocalVector<int> loop = brush->get_face(f);
+		bool all_x6 = true;
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			all_x6 = all_x6 && Math::is_equal_approx(brush->get_vertex(loop[i]).x, (real_t)6.0);
+		}
+		if (all_x6) {
+			found_px = true;
+			CHECK(brush->get_face_normal(f).x > 0.99);
+		}
+	}
+	CHECK(found_px);
 
 	memdelete(brush);
 }

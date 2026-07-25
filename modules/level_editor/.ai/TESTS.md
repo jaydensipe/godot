@@ -32,8 +32,9 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
 - `extrude_face` (cap + side walls, counts)
 - `clip` (front kept + cap with correct outward normal; no-cap variant)
 - `split_faces` (subdivide in place, no clipping, no caps)
-- `subdivide_face` (quad -> 4 quads with material inheritance; n-gon ->
-  triangle fan; invalid-index rejection)
+- `subdivide_face` (quad -> 4 quads with material inheritance AND
+  neighbor boundary edges split at the new midpoints - no T-junctions;
+  n-gon -> triangle fan; invalid-index rejection)
 - `flip_faces` / `faces_flipped` (flag-only; bake data inverts)
 - `bridge_edges` (quad span, winding, rejection cases)
 - `delete_faces` (materials stay aligned after removal)
@@ -49,6 +50,13 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
   boundary edges; corners shared/mitred between meeting edges; collinear
   chains produce one continuous strip with shared corner verts; rejection
   of open edges and zero/negative distance)
+- `bevel_edges_profiled` (segments + shape: steps=0 == bevel_edges single
+  cut; steps>=1 subdivides the WHOLE cross-section into 2N band quads;
+  shape profiles it: 0 = straight chord (flat chamfer), 0.5 = quadratic
+  Bezier through the original corner (apex halfway between chord and
+  corner), 1 = original face segments (bulge back to the corner))
+- `mirror` (verts reflected across the plane, winding reversed so normals
+  stay outward - reflection flips chirality)
 - `get_face_center` / `get_center` (unit-box geometry)
 - serialization round-trip (`vertices`/`faces`/`face_materials` properties)
 - bake/collision triangle counts
@@ -81,8 +89,11 @@ physics server for `StaticBody3D` construction — untagged cases crash):
   must be tagged `[SceneTree]` (or `[Editor]`) — the harness only starts a
   physics server for those tags. Otherwise you get a SIGSEGV in
   `PhysicsBody3D::PhysicsBody3D`.
-- `clip()` leaves orphaned vertices in the array (faces don't reference
-  them). Assert on face-referenced verts, not the whole array.
+- ~~`clip()` leaves orphaned vertices in the array~~ (fixed) and bevel
+  consumed-edge endpoints (fixed): both now call `compact_vertices()`
+  which drops unreferenced verts and remaps face indices. CONSEQUENCE
+  for tests: never assert on raw vertex INDICES after these ops -
+  compaction reuses indices; compare positions instead.
 - `LevelMap::bake()` falls back to local transforms when detached from the
   tree, but in `[SceneTree]` tests the map/brushes are in-tree and use
   globals — write assertions accordingly.

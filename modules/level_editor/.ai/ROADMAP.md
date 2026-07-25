@@ -87,9 +87,11 @@ split (`tools/select/`); mode-specific input handling still lives in
   (wasted work) and material grouping is O(m²) - both known, deferred until a
   benchmark proves it matters on real levels. `bake()` returns nullptr when
   there's no renderable geometry (all faces deleted).
-- **Brush `verts` array never compacts** - clip/weld/collapse leave orphaned
-  entries, so long edit sessions bloat serialized brush data. Needs a
-  compaction pass (remap face indices) at some point.
+- **Brush vert compaction**: clip/bevel/weld/collapse call
+  `compact_vertices()` (drops unreferenced verts, remaps loops) - vert
+  indices shift afterward, so no caller may hold indices across these
+  ops (editor selections are cleared; undo stores serialized arrays).
+  Remaining orphans: none known from editor paths.
 - **Clip cap is a possibly non-convex n-gon** fan-triangulated downstream;
   non-convex cuts can produce overlapping tris (accepted, matches the
   no-convexity-guarantee data model).
@@ -100,6 +102,17 @@ split (`tools/select/`); mode-specific input handling still lives in
 
 ## Discussed but not built yet
 
+- **Per-action settings panels in the dock** (DONE for Bevel): arming an
+  action (Edge > Bevel) shows its options in `LevelEditorDock`; Enter
+  applies, Esc cancels. Bevel options: width (defaults to grid size),
+  steps (0 = single cut, edge consumed; >=1 = band quads per side, edge
+  retained as centerline), shape 0..1 - all wired through
+  `LevelBrush::bevel_edges_profiled` (Blender profile schedule). A live
+  wireframe preview of the armed bevel draws in the viewports and updates
+  on every dock edit (cached on brush/selection/values). The dock's
+  old active-material picker was removed; material logic pending rework
+  (`_action_apply_material` still reachable from the Face menu but
+  `current_material` is never set).
 - Proper Hammer extrude semantics for edges/vertices.
 - Blender-style dissolve (vs current collapse) for edge/vertex delete.
 - Vertex merge/weld tool (weld_vertices exists in LevelBrush, no UI yet).
@@ -157,7 +170,11 @@ split (`tools/select/`); mode-specific input handling still lives in
   `editor/gizmos/level_editor_gizmos.cpp`.
 - Edge double-click selection: collinear chain by default, Blender-style
   edge loop on Alt+double-click (`get_edge_chain`/`get_edge_loop`).
-- Bevel (chamfer) tool: Edge menu, `LevelBrush::bevel_edges` (grid-size cut).
+- Mirror tool (MODE_MIRROR, toolbar next to Clip): clip-style 2-point plane,
+  live reflected preview, Enter duplicates the brush mirrored as a new node.
+- Bevel tool: Edge menu, `LevelBrush::bevel_edges` (Blender-style
+  offset-line bevel - edge consumed, one strip quad per edge, mitred
+  shared corners, continuous collinear-chain strips; grid-size default).
 - Vertex/Edge/Face toolbar menus with `_action_*` tool actions; Subdivide
   (quad grid / n-gon fan) on Face menu; Flip Faces moved into Face menu.
 - Mode shortcuts: Q/E/R/B/C + 1/2/3; menu shortcuts Ctrl+D subdivide, F flip.

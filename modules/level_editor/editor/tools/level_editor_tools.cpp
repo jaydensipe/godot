@@ -224,6 +224,18 @@ void LevelEditorScreen::_action_bevel_edges() {
 		return;
 	}
 
+	// Armed via the Edge menu: first click arms (dock shows Width/Steps/
+	// Shape); Enter applies. Direct calls (apply path) run with the armed
+	// values.
+	if (armed_action != ACTION_BEVEL_EDGES) {
+		_arm_action(ACTION_BEVEL_EDGES);
+		return;
+	}
+
+	const real_t width = get_armed_value(StringName("width"), grid_size);
+	const int steps = (int)get_armed_value(StringName("steps"), 0.0);
+	const real_t shape = get_armed_value(StringName("shape"), 0.5);
+
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	undo_redo->create_action(TTR("Bevel Edges"));
 	bool did = false;
@@ -239,7 +251,7 @@ void LevelEditorScreen::_action_bevel_edges() {
 		}
 
 		LevelBrush *working = target->duplicate_brush();
-		if (working->bevel_edges(edges, grid_size) > 0) {
+		if (working->bevel_edges_profiled(edges, width, steps, shape) > 0) {
 			undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
 			undo_redo->add_do_property(target, "faces", working->get_faces_data());
 			undo_redo->add_do_property(target, "face_materials", working->get_face_materials_data());

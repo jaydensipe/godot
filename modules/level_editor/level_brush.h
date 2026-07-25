@@ -138,6 +138,17 @@ public:
 	// Delete faces by index (any order; sorted internally).
 	void delete_faces(const Vector<int> &p_faces);
 
+	// Mirror the brush across a plane (local space): reflects all verts and
+	// reverses every face's winding (reflection flips chirality - without
+	// the reversal normals point inward). Materials unchanged.
+	void mirror(const Plane &p_plane);
+
+	// Drop verts not referenced by any face and remap face indices.
+	// Geometry ops that replace verts in loops (clip, bevel, weld,
+	// collapse) leave orphans; compacting keeps the serialized array from
+	// growing monotonically and dead verts out of vertex picking.
+	void compact_vertices();
+
 	// Join (weld) vertices: all listed vertices are moved to their average
 	// and merged into the first listed vertex. Degenerate faces are removed.
 	void weld_vertices(const Vector<int> &p_vertices);
@@ -165,6 +176,15 @@ public:
 	// per face; collinear chains (e.g. both halves of a subdivided edge)
 	// produce one continuous strip. Returns the number of edges beveled.
 	int bevel_edges(const Vector<EdgeKey> &p_edges, real_t p_distance);
+
+	// Full bevel with segments + profile (dock Bevel action). p_steps is
+	// the number of SEGMENTS MINUS ONE: 0 consumes the edge into one flat
+	// strip quad; N >= 1 subdivides the strip cross-section into 2N band
+	// quads following the p_shape profile: 0 = flat chamfer, 0.5 =
+	// quadratic-Bezier round-over (apex approaches but never reaches the
+	// original corner), 1 = full bulge back to the original corner
+	// (visually no beveling).
+	int bevel_edges_profiled(const Vector<EdgeKey> &p_edges, real_t p_width, int p_steps, real_t p_shape);
 
 	// Collapse vertices: moves each to the average position of its edge
 	// neighbors and welds duplicates. Degenerate faces (< 3 unique verts)

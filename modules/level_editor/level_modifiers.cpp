@@ -33,8 +33,8 @@
 
 #include "level_brush.h"
 
+#include "core/math/math_defs.h"
 #include "core/templates/hash_map.h"
-
 #include "scene/resources/material.h"
 
 Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_loop(const EdgeKey &p_edge) const {
@@ -197,6 +197,54 @@ Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_chain(const EdgeKey &p_edge) co
 	return chain;
 }
 
+void LevelBrush::mirror(const Plane &p_plane) {
+	for (uint32_t i = 0; i < verts.size(); i++) {
+		// Reflect: p' = p - 2 * distance_to(p) * normal.
+		verts[i] -= p_plane.normal * (2.0 * p_plane.distance_to(verts[i]));
+	}
+	for (uint32_t f = 0; f < faces.size(); f++) {
+		LocalVector<int> &l = faces[f];
+		LocalVector<int> rev;
+		for (int i = (int)l.size() - 1; i >= 0; i--) {
+			rev.push_back(l[i]);
+		}
+		l = rev;
+	}
+	_notify_map_changed();
+}
+
+void LevelBrush::compact_vertices() {
+	LocalVector<int> remap;
+	remap.resize(verts.size());
+	for (uint32_t i = 0; i < remap.size(); i++) {
+		remap[i] = -1;
+	}
+	for (uint32_t f = 0; f < faces.size(); f++) {
+		LocalVector<int> &l = faces[f];
+		for (uint32_t i = 0; i < l.size(); i++) {
+			remap[l[i]] = 0; // Mark referenced.
+		}
+	}
+	int next = 0;
+	LocalVector<Vector3> new_verts;
+	for (uint32_t i = 0; i < verts.size(); i++) {
+		if (remap[i] >= 0) {
+			remap[i] = next++;
+			new_verts.push_back(verts[i]);
+		}
+	}
+	if (next == (int)verts.size()) {
+		return; // Nothing orphaned.
+	}
+	for (uint32_t f = 0; f < faces.size(); f++) {
+		LocalVector<int> &l = faces[f];
+		for (uint32_t i = 0; i < l.size(); i++) {
+			l[i] = remap[l[i]];
+		}
+	}
+	verts = new_verts;
+}
+
 void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 	// Solid clip: keep only the front side, capping the cut.
 	const real_t eps = 0.0005;
@@ -279,6 +327,7 @@ void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 		faces.push_back(LocalVector<int>(cap));
 		face_materials.push_back(Ref<Material>());
 	}
+	compact_vertices();
 	_notify_map_changed();
 }
 
@@ -354,6 +403,7 @@ void LevelBrush::weld_vertices(const Vector<int> &p_vertices) {
 			loop = clean;
 		}
 	}
+	compact_vertices();
 	_notify_map_changed();
 }
 
@@ -468,6 +518,7 @@ void LevelBrush::collapse_vertices(const Vector<int> &p_vertices) {
 			}
 		}
 	}
+	compact_vertices();
 	_notify_map_changed();
 }
 
@@ -668,9 +719,10 @@ bool LevelBrush::subdivide_face(int p_face) {
 		// Hammer-style quad grid: edge midpoints + centroid, 4 quads keeping
 		// the source winding (corner, next midpoint, centroid, prev midpoint).
 		int mid[4];
-		for (uint32_t i = 0; i < 4; i++) {
+		for (int i = 0; i < 4; i++) {
 			uint32_t j = (i + 1) % 4;
 			mid[i] = (int)verts.size();
+
 			verts.push_back((verts[src[i]] + verts[src[j]]) * 0.5);
 		}
 
@@ -679,6 +731,32 @@ bool LevelBrush::subdivide_face(int p_face) {
 		faces.push_back({ src[1], mid[1], ci, mid[0] });
 		faces.push_back({ src[2], mid[2], ci, mid[1] });
 		faces.push_back({ src[3], mid[3], ci, mid[2] });
+
+		// Split the shared boundary edges in the NEIGHBORING faces too:
+		// any other face whose loop contains src[i] -> src[j] (or the
+		// reverse) consecutively must pass through mid[i] - otherwise the
+		// midpoint is a T-junction (render cracks, broken edge adjacency
+		// for bevel/loop walks).
+		const uint32_t first_new = (uint32_t)faces.size() - 3; // New sub-quads
+		// (q0 replaced p_face in place; the other 3 were appended).
+		for (uint32_t f = 0; f < faces.size(); f++) {
+			if ((int)f == p_face || f >= first_new) {
+				continue; // Sub-quads already reference the midpoints.
+			}
+			LocalVector<int> &l = faces[f];
+			for (int i = 0; i < 4; i++) {
+				const int a = src[i];
+				const int b = src[(i + 1) % 4];
+				for (uint32_t k = 0; k < l.size(); k++) {
+					const int ia = l[k];
+					const int ib = l[(k + 1) % l.size()];
+					if ((ia == a && ib == b) || (ia == b && ib == a)) {
+						l.insert(k + 1, mid[i]);
+						break; // One insertion per neighbor edge run.
+					}
+				}
+			}
+		}
 	} else {
 		// N-gon fallback: one triangle per edge, fanning from the centroid.
 		LocalVector<int> t0 = { src[0], src[1], ci };
@@ -700,25 +778,38 @@ bool LevelBrush::subdivide_face(int p_face) {
 }
 
 int LevelBrush::bevel_edges(const Vector<EdgeKey> &p_edges, real_t p_distance) {
-	if (p_distance <= CMP_EPSILON) {
+	return bevel_edges_profiled(p_edges, p_distance, 0, 0.5);
+}
+
+int LevelBrush::bevel_edges_profiled(const Vector<EdgeKey> &p_edges, real_t p_width, int p_steps, real_t p_shape) {
+	if (p_width <= CMP_EPSILON) {
 		return 0;
 	}
+	const bool single_cut = (p_steps <= 0);
+	const int bands = MAX(p_steps, 1); // Band quads per side (steps >= 1).
 
-	// Blender-style bevel (width = p_distance, 1 segment):
-	//  - Each beveled edge is CONSUMED. In every adjacent face, the edge's
-	//    boundary run is replaced by an offset line parallel to the edge at
-	//    distance p_distance (measured perpendicular within the face).
-	//  - The gap between the two offset lines is bridged by ONE strip face
-	//    per edge.
-	//  - Where several beveled edges meet at a vertex, their offset lines
-	//    in a shared face are intersected (mitred) into ONE corner point,
-	//    so strips join cleanly instead of crossing. Collinear
+	// Blender-style bevel (width = p_width):
+	//  - The edge is CONSUMED; every adjacent face gets an offset line at
+	//    distance p_width (measured along the boundary edges).
+	//  - p_steps == 0 (single cut): ONE strip quad bridges the offset lines.
+	//  - p_steps >= 1: the strip cross-section (outer line A -> outer line
+	//    B) is subdivided into 2*p_steps band quads whose iso verts follow
+	//    the p_shape profile: 0 = straight chord (flat chamfer), 0.5 =
+	//    quadratic Bezier through the original corner (round-over; apex
+	//    approaches but never reaches the corner), 1 = the original face
+	//    segments (full bulge, visually no beveling).
+	//  - Faces touching an endpoint are trimmed along the same profile
+	//    polyline (polyline inserted into the end cap's loop).
+	//  - Where several beveled edges meet at a vertex, their outer offset
+	//    lines in a shared face are intersected (mitred) into ONE corner
+	//    point, so strips join cleanly instead of crossing. Collinear
 	//    continuations share the point naturally.
 	//
 	// Pass 1 gathers topology (all reads on the ORIGINAL loops), pass 2
 	// creates corner verts, pass 3 rewrites loops and emits strips. All
 	// corner positions are computed from pre-mutation data, so multi-edge
 	// selections can't poison each other.
+	const real_t shape_t = CLAMP(p_shape, 0.0, 1.0);
 
 	struct EdgeInfo {
 		int adj[2] = { -1, -1 };
@@ -809,32 +900,53 @@ int LevelBrush::bevel_edges(const Vector<EdgeKey> &p_edges, real_t p_distance) {
 			// collinear chain passing through): the corner point is the
 			// intersection of the two offset lines - on the angle bisector at
 			// distance p_distance from each edge line. t = d / sin(angle
-			// between bisector and edge). Flat 180-degree "corner" (collinear
-			// chain midpoint): bisector is perpendicular, sin = 1, t = d.
+			// between bisector and edge).
 			Vector3 bisector = to_prev + to_next;
 			if (bisector.length_squared() < CMP_EPSILON) {
-				corner_ok[corner_key(vert, face)] = false;
-				continue;
+				// Collinear runs (flat 180-degree corner, e.g. a chain
+				// midpoint in a subdivided face): no geometric bisector, but
+				// both offset lines are the SAME line - slide perpendicular
+				// to the edge within the face plane (face normal x edge).
+				Vector3 fn;
+				for (uint32_t i = 0; i < n; i++) {
+					const Vector3 &c = verts[l[i]];
+					const Vector3 &nx = verts[l[(i + 1) % n]];
+					fn.x += (c.y - nx.y) * (c.z + nx.z);
+					fn.y += (c.z - nx.z) * (c.x + nx.x);
+					fn.z += (c.x - nx.x) * (c.y + nx.y);
+				}
+				bisector = fn.normalized().cross(dirs[0]);
+				if (bisector.length_squared() < CMP_EPSILON) {
+					corner_ok[corner_key(vert, face)] = false;
+					continue;
+				}
+				bisector.normalize();
+				// Point INTO the face (toward the face centroid).
+				Vector3 centroid;
+				for (uint32_t i = 0; i < n; i++) {
+					centroid += verts[l[i]];
+				}
+				centroid /= (real_t)n;
+				if (bisector.dot(centroid - vp) < 0.0) {
+					bisector = -bisector;
+				}
+				offset = bisector * p_width;
+			} else {
+				bisector.normalize();
+				real_t along = Math::abs(bisector.dot(dirs[0]));
+				real_t denom = Math::sqrt(MAX(1.0 - along * along, 0.0));
+				if (denom < 0.05) {
+					corner_ok[corner_key(vert, face)] = false; // Nearly parallel.
+					continue;
+				}
+				offset = bisector * (p_width / denom);
 			}
-			bisector.normalize();
-			real_t along = Math::abs(bisector.dot(dirs[0]));
-			real_t denom = Math::sqrt(MAX(1.0 - along * along, 0.0));
-			if (denom < 0.05) {
-				corner_ok[corner_key(vert, face)] = false; // Nearly parallel.
-				continue;
-			}
-			offset = bisector * (p_distance / denom);
 		} else {
 			// ONE boundary run beveled: the new corner point sits ON the
-			// other (unbeveled) boundary ray at exactly p_distance from the
+			// other (unbeveled) boundary ray at exactly p_width from the
 			// vertex (Blender measures the offset along the boundary edge).
-			// That point lies on the offset line parallel to the beveled
-			// edge at perpendicular distance p_distance * sin(corner)...
-			// NO - it anchors the offset polyline end at the corner, which
-			// is what Hammer/Blender show: the cut runs from boundary point
-			// to boundary point, parallel to the edge at distance d.
 			const Vector3 &ray = prev_beveled ? to_next : to_prev;
-			offset = ray * p_distance;
+			offset = ray * p_width;
 		}
 		CornerInfo ci;
 		ci.pos = vp + offset;
@@ -911,7 +1023,7 @@ int LevelBrush::bevel_edges(const Vector<EdgeKey> &p_edges, real_t p_distance) {
 		}
 
 		// Cut the edge out of each adjacent face: ...prev, a, b, next...
-		// becomes ...prev, a_offset, b_offset, next... . If a corner vert is
+		// becomes ...prev, a_outer, b_outer, next... . If a corner vert is
 		// shared with an already-processed edge, the loop may already
 		// contain it - skip duplicates.
 		Ref<Material> bevel_mat;
@@ -938,53 +1050,213 @@ int LevelBrush::bevel_edges(const Vector<EdgeKey> &p_edges, real_t p_distance) {
 			}
 		}
 
-		// One strip face bridging the two offset lines, wound to continue
-		// the original surface (normal matched against face slot 0's Newell
-		// normal, which is the same side of the surface).
-		LocalVector<int> strip;
-		strip.push_back(nv[0][0]);
-		strip.push_back(nv[0][1]);
-		strip.push_back(nv[1][1]);
-		strip.push_back(nv[1][0]);
-		// Degenerate guard: fully-shared corners (closed ring bevel) can
-		// collapse the strip to < 3 distinct verts.
-		{
+		// Inner iso verts across the strip cross-section: iso k (1..2*bands-1)
+		// at u = k/(2*bands), blended per shape between the chord (flat),
+		// the quadratic Bezier through the original corner (round), and the
+		// original face segments (full bulge). iso_verts[k-1][endpoint].
+		// Created BEFORE the end-face trim, which inserts this polyline.
+		LocalVector<LocalVector<int>> iso_verts;
+		if (!single_cut) {
+			iso_verts.resize(2 * bands - 1);
+			const real_t round_w = MIN(shape_t * 2.0, 1.0); // chord -> bezier.
+			const real_t bulge_w = MAX(shape_t * 2.0 - 1.0, 0.0); // bezier -> segments.
+			for (int k = 1; k < 2 * bands; k++) {
+				const real_t u = (real_t)k / (real_t)(2 * bands);
+				iso_verts[k - 1].resize(2);
+				for (int e = 0; e < 2; e++) {
+					const Vector3 &A = verts[nv[0][e]];
+					const Vector3 &B = verts[nv[1][e]];
+					const Vector3 &C = verts[e == 0 ? edge.a : edge.b]; // Original corner.
+					const Vector3 chord = A.lerp(B, u);
+					const Vector3 bez = A * ((1.0 - u) * (1.0 - u)) + C * (2.0 * u * (1.0 - u)) + B * (u * u);
+					const Vector3 seg = (u <= 0.5) ? A.lerp(C, 2.0 * u) : C.lerp(B, 2.0 * u - 1.0);
+					Vector3 pos = chord.lerp(bez, round_w);
+					if (bulge_w > 0.0) {
+						pos = pos.lerp(seg, bulge_w);
+					}
+					iso_verts[k - 1][e] = (int)verts.size();
+					verts.push_back(pos);
+				}
+			}
+		}
+
+		// Trim the END faces: every non-adjacent face touching an endpoint
+		// of the beveled edge must also lose that corner - otherwise its
+		// original corner vert sticks through the chamfer as a fin. The
+		// corner is replaced by the two offset verts (one per adjacent
+		// face), ordered to match the end face's winding; with steps >= 1
+		// the endpoint is retained (centerline), so it stays between them.
+		for (int e = 0; e < 2; e++) {
+			const int orig[2] = { edge.a, edge.b };
+			const int v = orig[e];
+			for (uint32_t f = 0; f < faces.size(); f++) {
+				if ((int)f == einfo[ei].adj[0] || (int)f == einfo[ei].adj[1]) {
+					continue; // Adjacent faces already handled.
+				}
+				LocalVector<int> &l = faces[f];
+				const uint32_t n = l.size();
+				// Find v in this loop, and determine on which side of the
+				// beveled edge this face lies (does its corner at v run along
+				// the edge direction or away from it?).
+				int pos = -1;
+				for (uint32_t i = 0; i < n; i++) {
+					if (l[i] == v) {
+						pos = (int)i;
+						break;
+					}
+				}
+				if (pos < 0) {
+					continue;
+				}
+				// Already trimmed by an earlier edge of the same bevel action
+				// (e.g. the middle of a collinear chain with steps >= 1): the
+				// offset verts are already in the loop.
+				bool already = false;
+				for (uint32_t i = 0; i < n; i++) {
+					if (l[i] == nv[0][e] || l[i] == nv[1][e]) {
+						already = true;
+						break;
+					}
+				}
+				if (already) {
+					continue;
+				}
+				// Skip faces that border ANOTHER selected edge at this same
+				// vertex: that edge's own trim (and the corner weld) handles
+				// this face - trimming here would insert a zigzag across the
+				// shared vertex (the bowtie X on collinear chains).
+				bool touches_other_selected = false;
+				for (int oi = 0; oi < p_edges.size(); oi++) {
+					if (oi == ei || einfo[oi].adj[1] < 0) {
+						continue;
+					}
+					if (p_edges[oi].a != v && p_edges[oi].b != v) {
+						continue; // Not incident at this vertex.
+					}
+					// Does face f border edge oi at all?
+					for (uint32_t i = 0; i < n; i++) {
+						int ia = l[i];
+						int ib = l[(i + 1) % n];
+						if ((ia == p_edges[oi].a && ib == p_edges[oi].b) || (ia == p_edges[oi].b && ib == p_edges[oi].a)) {
+							touches_other_selected = true;
+							break;
+						}
+					}
+					if (touches_other_selected) {
+						break;
+					}
+				}
+				if (touches_other_selected) {
+					continue;
+				}
+				// Insert the strip's end polyline where v was: outerA, iso
+				// verts (in cross-section order), outerB - so the cap follows
+				// the profile curve. Order outerA/outerB to match the winding:
+				// the vert closer to the PREV boundary ray goes first.
+				const Vector3 prev_dir = (verts[l[(pos + n - 1) % n]] - verts[v]).normalized();
+				const Vector3 off0 = verts[nv[0][e]] - verts[v];
+				const Vector3 off1 = verts[nv[1][e]] - verts[v];
+				const bool first0 = off0.normalized().dot(prev_dir) >= off1.normalized().dot(prev_dir);
+				LocalVector<int> nl;
+				for (uint32_t i = 0; i < n; i++) {
+					if ((int)i == pos) {
+						nl.push_back(first0 ? nv[0][e] : nv[1][e]);
+						// Iso verts run A -> B; append forward or reversed.
+						for (int k = 0; k < (int)iso_verts.size(); k++) {
+							const int idx = first0 ? k : (int)iso_verts.size() - 1 - k;
+							nl.push_back(iso_verts[idx][e]);
+						}
+						nl.push_back(first0 ? nv[1][e] : nv[0][e]);
+					} else {
+						nl.push_back(l[i]);
+					}
+				}
+				l = nl;
+			}
+		}
+
+		// Strip faces, wound to continue the original surface (normal
+		// matched against face slot 0's Newell normal).
+		//
+		// p_steps == 0: ONE quad bridging the two outer offset lines (the
+		// classic single-cut bevel; the original edge is fully consumed).
+		//
+		// p_steps >= 1: 2*p_steps band quads across the whole cross-section
+		// (iso 0 = outer line A, iso 2*bands = outer line B); the original
+		// edge is consumed from the adjacent faces - the profile CURVE is
+		// what approaches or reaches the corner, not a retained centerline.
+		const LocalVector<int> &src = faces[einfo[ei].adj[0]];
+		Vector3 src_normal;
+		for (uint32_t i = 0; i < src.size(); i++) {
+			const Vector3 &c = verts[src[i]];
+			const Vector3 &nx = verts[src[(i + 1) % src.size()]];
+			src_normal.x += (c.y - nx.y) * (c.z + nx.z);
+			src_normal.y += (c.z - nx.z) * (c.x + nx.x);
+			src_normal.z += (c.x - nx.x) * (c.y + nx.y);
+		}
+
+		LocalVector<LocalVector<int>> strip_faces;
+		if (single_cut) {
+			LocalVector<int> strip;
+			strip.push_back(nv[0][0]);
+			strip.push_back(nv[0][1]);
+			strip.push_back(nv[1][1]);
+			strip.push_back(nv[1][0]);
+			strip_faces.push_back(LocalVector<int>(strip));
+		} else {
+			auto iso_vert = [&](int p_k, int p_end) -> int {
+				if (p_k == 0) {
+					return nv[0][p_end];
+				}
+				if (p_k == 2 * bands) {
+					return nv[1][p_end];
+				}
+				return iso_verts[p_k - 1][p_end];
+			};
+			for (int k = 0; k < 2 * bands; k++) {
+				LocalVector<int> band;
+				band.push_back(iso_vert(k, 0));
+				band.push_back(iso_vert(k, 1));
+				band.push_back(iso_vert(k + 1, 1));
+				band.push_back(iso_vert(k + 1, 0));
+				strip_faces.push_back(LocalVector<int>(band));
+			}
+		}
+
+		for (uint32_t bi = 0; bi < strip_faces.size(); bi++) {
+			LocalVector<int> strip;
+			strip = strip_faces[bi];
+			// Degenerate guard: fully-shared corners (closed ring bevel)
+			// can collapse a strip to < 3 distinct verts.
 			int distinct = 1;
-			for (uint32_t i = 1; i < 4; i++) {
+			for (uint32_t i = 1; i < strip.size(); i++) {
 				bool seen = false;
 				for (uint32_t j = 0; j < i; j++) {
 					seen = seen || strip[j] == strip[i];
 				}
 				distinct += seen ? 0 : 1;
 			}
-			if (distinct >= 3) {
-				const LocalVector<int> &src = faces[einfo[ei].adj[0]];
-				Vector3 src_normal;
-				for (uint32_t i = 0; i < src.size(); i++) {
-					const Vector3 &c = verts[src[i]];
-					const Vector3 &nx = verts[src[(i + 1) % src.size()]];
-					src_normal.x += (c.y - nx.y) * (c.z + nx.z);
-					src_normal.y += (c.z - nx.z) * (c.x + nx.x);
-					src_normal.z += (c.x - nx.x) * (c.y + nx.y);
-				}
-				Vector3 e1 = verts[strip[1]] - verts[strip[0]];
-				Vector3 e2 = verts[strip[strip.size() - 1]] - verts[strip[0]];
-				if (e1.cross(e2).dot(src_normal) < 0.0) {
-					LocalVector<int> rev;
-					for (int i = (int)strip.size() - 1; i >= 0; i--) {
-						rev.push_back(strip[i]);
-					}
-					strip = rev;
-				}
-				faces.push_back(LocalVector<int>(strip));
-				face_materials.push_back(bevel_mat);
+			if (distinct < 3) {
+				continue;
 			}
+			Vector3 e1 = verts[strip[1]] - verts[strip[0]];
+			Vector3 e2 = verts[strip[strip.size() - 1]] - verts[strip[0]];
+			if (e1.cross(e2).dot(src_normal) < 0.0) {
+				LocalVector<int> rev;
+				for (int i = (int)strip.size() - 1; i >= 0; i--) {
+					rev.push_back(strip[i]);
+				}
+				strip = rev;
+			}
+			faces.push_back(LocalVector<int>(strip));
+			face_materials.push_back(bevel_mat);
 		}
 
 		beveled++;
 	}
 
 	if (beveled > 0) {
+		compact_vertices();
 		_notify_map_changed();
 	}
 	return beveled;

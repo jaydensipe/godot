@@ -16,9 +16,6 @@
 /* permit persons to whom the Software is furnished to do so, subject to  */
 /* the following conditions:                                              */
 /*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
 /* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
 /* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
 /* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
@@ -32,28 +29,51 @@
 
 #include "scene/gui/box_container.h"
 
-class Button;
-class EditorResourcePicker;
 class LevelEditorScreen;
+class SpinBox;
 
-// Right-side dock for the Level editor: per-tool settings. Currently houses
-// the active material picker + apply button (moved off the toolbar).
+// Right-side dock for the Level editor: settings panels for ARMED actions.
+//
+// An action with configurable options (bevel, ...) is "armed" by its toolbar
+// menu item instead of applying immediately. The dock then builds a settings
+// form from the action's LevelActionSetting descriptor list, edits write back
+// into LevelEditorScreen's armed-action state, and Enter applies / Esc
+// cancels (same pattern as the clip tool).
+//
+// To give a new action settings:
+//   1. Add an ActionId entry in level_editor_screen.h.
+//   2. Add its LevelActionSetting list to get_action_settings() (dock .cpp).
+//   3. Implement its apply in the screen's _action_apply_armed().
+
+// One configurable value of an armed action.
+struct LevelActionSetting {
+	StringName id; // Key written back to the screen's armed-action values.
+	String label;
+	double min = 0.0;
+	double max = 1.0;
+	double step = 0.01;
+	double value = 0.0;
+	bool rounded = false; // Whole-number SpinBox (e.g. segment counts).
+};
+
 class LevelEditorDock : public VBoxContainer {
 	GDCLASS(LevelEditorDock, VBoxContainer);
 
 	LevelEditorScreen *screen = nullptr;
 
-	EditorResourcePicker *material_picker = nullptr;
-	Button *apply_material_button = nullptr;
+	VBoxContainer *form = nullptr; // Rebuilt per armed action.
 
-	void _material_changed(const Ref<Resource> &p_resource);
-	void _action_apply_material();
+	void _setting_changed(double p_value, const StringName &p_id);
+	void _cancel_pressed();
 
 protected:
 	static void _bind_methods();
 
 public:
 	void set_screen(LevelEditorScreen *p_screen) { screen = p_screen; }
+
+	// Rebuilds the form for the armed action (or shows the idle hint).
+	void refresh();
 
 	LevelEditorDock();
 };
