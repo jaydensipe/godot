@@ -723,6 +723,173 @@ int LevelBrush::extrude_face(int p_face, real_t p_distance) {
 	return p_face;
 }
 
+bool LevelBrush::extrude_edge(const EdgeKey &p_edge, const Vector3 &p_offset, int r_new[2]) {
+	if (p_edge.a < 0 || p_edge.b < 0 || p_edge.a >= (int)verts.size() || p_edge.b >= (int)verts.size()) {
+		return false;
+	}
+
+	// Faces that contain BOTH endpoints consecutively (the edge's faces).
+	// Source faces are NEVER rewired - the extrude appends new geometry and
+	// the original brush stays put (Hammer-style edge pull).
+	LocalVector<int> using_faces;
+	Vector3 normal_sum;
+	for (int f = 0; f < (int)faces.size(); f++) {
+		const LocalVector<int> &loop = faces[f];
+		const uint32_t n = loop.size();
+		for (uint32_t i = 0; i < n; i++) {
+			const int a = loop[i];
+			const int b = loop[(i + 1) % n];
+			if ((a == p_edge.a && b == p_edge.b) || (a == p_edge.b && b == p_edge.a)) {
+				using_faces.push_back(f);
+				normal_sum += get_face_normal(f);
+				break;
+			}
+		}
+	}
+	if (using_faces.is_empty()) {
+		return false; // Dangling verts - no face to anchor the wall to.
+	}
+
+	// Duplicate the two verts (the wall's far edge; the drag moves these).
+	const int new_a = (int)verts.size();
+	verts.push_back(verts[p_edge.a] + p_offset);
+	const int new_b = (int)verts.size();
+	verts.push_back(verts[p_edge.b] + p_offset);
+	r_new[0] = new_a;
+	r_new[1] = new_b;
+
+	// Append ONE wall quad spanning (a, b, b', a'). The wall must face OUT
+	// of the solid. The reliable test is which side of the wall plane the
+	// brush body lies on: the centroid is strictly inside for any real
+	// pull, so the wall normal points AWAY from it. (Every normal-based
+	// rule tried here - edge_dir x pull signed toward normal_sum, the edge
+	// bisector cross, and hybrids - had a degenerate case: flat quads,
+	// bisector-parallel pulls, or diagonal bevels. History: GOTCHAS #43.)
+	// Degenerate fallback (centroid in the wall plane, e.g. a begin-drag
+	// stub along the bisector): face the edge-bisector side.
+	const Vector3 pts[4] = { verts[p_edge.a], verts[p_edge.b], verts[new_b], verts[new_a] };
+	Vector3 wn;
+	for (int i = 0; i < 4; i++) {
+		const Vector3 &c = pts[i];
+		const Vector3 &nx = pts[(i + 1) % 4];
+		wn.x += (c.y - nx.y) * (c.z + nx.z);
+		wn.y += (c.z - nx.z) * (c.x + nx.x);
+		wn.z += (c.x - nx.x) * (c.y + nx.y);
+	}
+	const Vector3 edge_dir = (verts[p_edge.b] - verts[p_edge.a]).normalized();
+	Vector3 out = normal_sum - edge_dir * normal_sum.dot(edge_dir);
+	if (out.is_zero_approx()) {
+		out = normal_sum;
+	}
+	real_t side = wn.dot(get_center() - verts[p_edge.a]);
+	if (Math::abs(side) < wn.length() * 0.001) {
+		side = -wn.dot(out); // Ambiguous: prefer the bisector-facing order.
+	}
+	if (side > 0.0) {
+		// Centroid on the +wn side: this order faces inward; swap it.
+		faces.push_back({ p_edge.a, new_a, new_b, p_edge.b });
+	} else {
+		faces.push_back({ p_edge.a, p_edge.b, new_b, new_a });
+	}
+
+	_update_face_count_storage();
+	_notify_map_changed();
+	return true;
+}
+
+int LevelBrush::extrude_vertex(int p_vertex, const Vector3 &p_offset) {
+	if (p_vertex < 0 || p_vertex >= (int)verts.size()) {
+		return -1;
+	}
+
+	// Faces using the vertex, with the loop position (needed for neighbors).
+	struct VertUse {
+		int face;
+		int pos;
+	};
+	LocalVector<VertUse> uses;
+	for (int f = 0; f < (int)faces.size(); f++) {
+		const LocalVector<int> &loop = faces[f];
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			if (loop[i] == p_vertex) {
+				uses.push_back({ f, (int)i });
+				break;
+			}
+		}
+	}
+	if (uses.is_empty()) {
+		return -1;
+	}
+
+	// Duplicate the vert. Source faces keep the original corner; one wedge
+	// per using face stitches (prev, v, next) to the duplicate.
+	const int new_v = (int)verts.size();
+	verts.push_back(verts[p_vertex] + p_offset);
+
+	// Out-of-solid test for each wedge: the wall plane side of the brush
+	// centroid (reliable for any real pull; see extrude_edge / GOTCHAS #43),
+	// with the all-face normal sum as the degenerate fallback.
+	const Vector3 center = get_center();
+	Vector3 vert_normal_sum;
+	for (const VertUse &u : uses) {
+		vert_normal_sum += get_face_normal(u.face);
+	}
+
+	for (const VertUse &u : uses) {
+		const LocalVector<int> &loop = faces[u.face];
+		const uint32_t n = loop.size();
+		const int prev = loop[(u.pos + n - 1) % n];
+		const int next = loop[(u.pos + 1) % n];
+
+		// Wedge wound so its normal sits on the out-of-solid side.
+		const Vector3 pts[4] = { verts[prev], verts[p_vertex], verts[new_v], verts[next] };
+		Vector3 wn;
+		for (int i = 0; i < 4; i++) {
+			const Vector3 &c = pts[i];
+			const Vector3 &nx = pts[(i + 1) % 4];
+			wn.x += (c.y - nx.y) * (c.z + nx.z);
+			wn.y += (c.z - nx.z) * (c.x + nx.x);
+			wn.z += (c.x - nx.x) * (c.y + nx.y);
+		}
+		real_t side = wn.dot(center - verts[prev]);
+		if (Math::abs(side) < wn.length() * 0.001) {
+			side = -wn.dot(vert_normal_sum);
+		}
+		if (side > 0.0) {
+			faces.push_back({ prev, next, new_v, p_vertex });
+		} else {
+			faces.push_back({ prev, p_vertex, new_v, next });
+		}
+	}
+
+	_update_face_count_storage();
+	_notify_map_changed();
+	return new_v;
+}
+
+void LevelBrush::rewind_face_outward(int p_face) {
+	ERR_FAIL_INDEX(p_face, (int)faces.size());
+	const LocalVector<int> &loop = faces[p_face];
+	if (loop.size() < 3) {
+		return;
+	}
+	const Vector3 n = get_face_normal(p_face);
+	if (n.is_zero_approx()) {
+		return; // Degenerate face: no meaningful side.
+	}
+	// Centroid strictly inside the solid => the face must point away from it.
+	// Silent (no _notify_map_changed): callers batch this per drag frame and
+	// refresh the map themselves.
+	if (n.dot(get_center() - verts[loop[0]]) > 0.0) {
+		LocalVector<int> rev;
+		rev.resize(loop.size());
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			rev[i] = loop[loop.size() - 1 - i];
+		}
+		faces[p_face] = rev;
+	}
+}
+
 bool LevelBrush::subdivide_face(int p_face) {
 	ERR_FAIL_INDEX_V(p_face, (int)faces.size(), false);
 

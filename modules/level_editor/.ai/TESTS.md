@@ -32,6 +32,10 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
 - `move_vertices` isolation (only the moved vertex changes; incident faces tilt)
 - `ray_intersect` (entry face, distance, miss)
 - `extrude_face` (cap + side walls, counts)
+- `extrude_edge` (edge dup + one wall per using face, winding verified
+  outward via Newell-vs-center flip; duplicated vert positions)
+- `extrude_vertex` (vert dup + one wedge per using face, same outward
+  verification)
 - `clip` (front kept + cap with correct outward normal; no-cap variant)
 - `split_faces` (subdivide in place, no clipping, no caps)
 - `subdivide_face` (quad -> 4 quads with material inheritance AND

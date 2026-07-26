@@ -93,6 +93,19 @@ overlay draw. (Fixed since: weld epsilon + parallel-dot constants live in
   Blender-dissolve approximation). Could be refined.
 - **Non-planar faces** get a single Newell normal for shading - fine for
   mild deformation; per-triangle smooth normals could come later.
+
+## RESOLVED: extrude_edge wall texture flip (2026-07)
+
+Fixed. Full history and the final rule are in GOTCHAS #43 - read it
+before touching `extrude_edge`/`extrude_vertex` or wall winding.
+
+Related recent fixes (this session, all landed):
+- extrude_edge/extrude_vertex ops + Shift+drag in edge/vertex targets.
+- Extrude undo clears the selection (stale remapped indices read OOB).
+- Paint-select drag (LMB drag over elements in vertex/edge/face targets).
+- Tool x SelectionTarget state split (Q/E/R + 1/2/3/4) replacing Mode enum.
+- Block-tool Brush Type (Block/Quad) + quad ghost handle rules
+  (`_ghost_handle_usable` single predicate).
 - **Preview rebuild** runs a full `bake()` (incl. StaticBody/Occluder
   allocation) on every edit - fine for small levels, will need
   incremental/dirty-face updates for large ones. DECISION: before optimizing,

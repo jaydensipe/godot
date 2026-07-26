@@ -89,7 +89,12 @@ SubViewportContainer
 - Serialized: `vertices` (PackedVector3Array), `faces` (Array of
   PackedInt32Array), `face_materials` (Array), `faces_flipped` (bool).
 - `get_face_normal()` = Newell's method (robust for non-planar n-gons).
-- Geometry ops: `setup_box`, `move_vertices`, `extrude_face` (cap + walls),
+- Geometry ops: `setup_box`, `setup_quad` (single-face flat brush),
+  `move_vertices`, `extrude_face` (cap + walls),
+  `extrude_edge`/`extrude_vertex` (duplicate the element's verts with an
+  offset, rewire using faces to the dupes, stitch one wall quad/wedge per
+  face; wall winding is verified against the brush center and flipped if
+  inward - using faces may traverse the element in either direction),
   `clip(plane)` (solid clip + cap), `split_faces(plane)` (subdivide in place),
   `mirror(plane)` (reflect verts + reverse winding - reflection flips
   chirality), `compact_vertices` (drop unreferenced verts, remap loops),
@@ -203,7 +208,11 @@ SubViewportContainer
   closest-point-on-axis drag), rotate gizmo (3 rings, ortho views restrict to
   the view axis + click-anywhere), scale (axis handles + off-gizmo uniform
   mouse-X), select-mode AABB handles (resize via `_apply_brush_aabb`).
-  Element-mode drags snapshot `gizmo_drag_brush_verts` (per-brush map) and
+  Shift+drag in ANY element target extrudes: faces pull caps along their
+  normals (`extrude_face`), edges/vertices duplicate + stitch
+  (`extrude_edge`/`extrude_vertex`) and the drag moves the duplicated
+  verts freely; the selection tracks the new geometry so chained extrudes
+  work. Element-mode drags snapshot `gizmo_drag_brush_verts` (per-brush map) and
   apply absolute deltas to each brush's selected vertices; whole-brush modes
   use `gizmo_drag_original_verts`. Undo = property pair across all dragged
   brushes in ONE action, `commit_action(false)`.

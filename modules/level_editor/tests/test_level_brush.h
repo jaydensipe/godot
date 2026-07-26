@@ -151,6 +151,190 @@ TEST_CASE("[LevelBrush] ray_intersect hits the entry face") {
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] extrude_edge duplicates the edge and stitches walls") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Top-front edge of the box: verts 7 (0,1,1) and 6 (1,1,1) (from
+	// setup_box corner ordering). Pull it straight UP (a pull exactly along
+	// the source-normal bisector would make every normal-based outward
+	// check degenerate by construction).
+	int new_ids[2] = { -1, -1 };
+	LevelBrush::EdgeKey e;
+	e.a = 6;
+	e.b = 7;
+	REQUIRE(brush->extrude_edge(e, Vector3(0, 0.5, 0), new_ids));
+
+	// 8 original + 2 duplicated verts.
+	CHECK(brush->get_vertex_count() == 10);
+	CHECK(brush->get_vertex(new_ids[0]).is_equal_approx(Vector3(1, 1.5, 1)));
+	CHECK(brush->get_vertex(new_ids[1]).is_equal_approx(Vector3(0, 1.5, 1)));
+
+	// The edge borders 2 faces (top + front): 6 originals + ONE wall (the
+	// bevel face Hammer creates between the two planes).
+	CHECK(brush->get_face_count() == 7);
+
+	// The source faces are untouched: the top face still ends at z=1.
+	real_t max_z = -(real_t)Math::INF;
+	LocalVector<int> front = brush->get_face(0); // +Z face (setup_box order).
+	for (int idx : front) {
+		max_z = MAX(max_z, brush->get_vertex(idx).z);
+	}
+	CHECK(Math::is_equal_approx(max_z, (real_t)1.0));
+
+	// The wall (appended last) faces outward: pulled straight up from the
+	// top-front edge, the wall is horizontal (spans the old edge and the
+	// raised duplicate) and its outward normal points UP (+Y), away from
+	// the solid below.
+	Vector3 wn = brush->get_face_normal(6);
+	CHECK(wn.y > 0.9);
+	// And it is perpendicular to the extruded edge (which runs along X).
+	CHECK(Math::is_zero_approx(wn.x));
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] extrude_edge on an open edge (quad) hangs one wall") {
+	LevelBrush *brush = memnew(LevelBrush);
+	// Floor quad at y=0 (single face, normal +Y).
+	Vector3 corners[4] = {
+		Vector3(0, 0, 0),
+		Vector3(0, 0, 2),
+		Vector3(2, 0, 2),
+		Vector3(2, 0, 0),
+	};
+	brush->setup_quad(corners);
+
+	// Extrude the z=0 edge (verts 0 and 3) downward -> a wall hanging off
+	// the quad's edge, like Hammer's edge drag on a plane.
+	int new_ids[2] = { -1, -1 };
+	LevelBrush::EdgeKey e;
+	e.a = 0;
+	e.b = 3;
+	REQUIRE(brush->extrude_edge(e, Vector3(0, -1, 0), new_ids));
+
+	CHECK(brush->get_vertex_count() == 6);
+	// Open edge: exactly ONE stitched wall (the quad has only one face).
+	CHECK(brush->get_face_count() == 2);
+	CHECK(brush->get_vertex(new_ids[0]).is_equal_approx(Vector3(0, -1, 0)));
+	CHECK(brush->get_vertex(new_ids[1]).is_equal_approx(Vector3(2, -1, 0)));
+
+	// The wall must be vertical (its normal lies in the XZ plane).
+	Vector3 wall_n = brush->get_face_normal(1);
+	CHECK(Math::is_zero_approx(wall_n.y));
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] extrude_edge quad walls face out of the solid for every edge") {
+	// Regression: the old pull-based winding (edge_dir x pull, sign-flipped
+	// toward normal_sum) was a no-op for a flat quad - normal_sum (+Y) is
+	// perpendicular to every possible wall normal - so only the -Z wall
+	// faced outward. Hammer's walls face out of the solid on ALL sides.
+	LevelBrush *brush = memnew(LevelBrush);
+	Vector3 corners[4] = {
+		Vector3(0, 0, 0),
+		Vector3(0, 0, 2),
+		Vector3(2, 0, 2),
+		Vector3(2, 0, 0),
+	};
+	brush->setup_quad(corners);
+
+	// Extrude all 4 edges downward (like Shift+dragging each side of a floor
+	// quad to form an open box). Quad loop order: (0,1),(1,2),(2,3),(3,0).
+	const int edge_verts[4][2] = { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 } };
+	const Vector3 out_dirs[4] = {
+		Vector3(-1, 0, 0), // x=0 edge -> -X
+		Vector3(0, 0, 1), // z=2 edge -> +Z
+		Vector3(1, 0, 0), // x=2 edge -> +X
+		Vector3(0, 0, -1), // z=0 edge -> -Z
+	};
+	for (int i = 0; i < 4; i++) {
+		int new_ids[2] = { -1, -1 };
+		LevelBrush::EdgeKey e;
+		e.a = edge_verts[i][0];
+		e.b = edge_verts[i][1];
+		REQUIRE(brush->extrude_edge(e, Vector3(0, -1, 0), new_ids));
+
+		// Each wall (appended last) is vertical and faces AWAY from the quad.
+		const int wall = brush->get_face_count() - 1;
+		const Vector3 wn = brush->get_face_normal(wall);
+		CHECK(Math::is_zero_approx(wn.y));
+		CHECK_MESSAGE(wn.dot(out_dirs[i]) > 0.9, "wall ", i, " normal ", wn, " should face ", out_dirs[i]);
+	}
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] extrude_edge cube top edge wall faces outward for every pull direction") {
+	// Regression for the gizmo stub-freeze: the wall winding is decided once
+	// from the begin-drag stub, then the drag moves the wall elsewhere. A -X
+	// pull on a top edge ended up back-facing (the "flipped texture" report).
+	// Whatever the pull, the wall normal must point AWAY from the solid.
+	const Vector3 pulls[4] = {
+		Vector3(1, 0, 0),
+		Vector3(-1, 0, 0),
+		Vector3(0, 0, 1),
+		Vector3(0, 0, -1),
+	};
+	for (int p = 0; p < 4; p++) {
+		LevelBrush *brush = memnew(LevelBrush);
+		brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+		// Top-front edge (verts 6,7 at y=1,z=1), pulled horizontally.
+		int new_ids[2] = { -1, -1 };
+		LevelBrush::EdgeKey e;
+		e.a = 6;
+		e.b = 7;
+		REQUIRE(brush->extrude_edge(e, pulls[p] * 0.5, new_ids));
+
+		const int wall = brush->get_face_count() - 1;
+		const Vector3 wn = brush->get_face_normal(wall);
+		const Vector3 outward = brush->get_face_center(wall) - brush->get_center();
+		CHECK_MESSAGE(wn.dot(outward) > 0.0, "pull ", pulls[p], " wall normal ", wn, " faces into the solid");
+
+		memdelete(brush);
+	}
+}
+
+TEST_CASE("[LevelBrush] extrude_vertex duplicates the vert and stitches wedges") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Corner vert 6 = (1,1,1); it touches 3 faces. Pull it outward.
+	int new_v = brush->extrude_vertex(6, Vector3(0.5, 0.5, 0.5));
+	REQUIRE(new_v >= 0);
+
+	CHECK(brush->get_vertex_count() == 9);
+	CHECK(brush->get_vertex(new_v).is_equal_approx(Vector3(1.5, 1.5, 1.5)));
+	// 6 original faces + 3 stitched wedges.
+	CHECK(brush->get_face_count() == 9);
+
+	// No face may be degenerate, and the three wedges (appended last) must
+	// face outward - their normals point away from the brush center.
+	Vector3 center = brush->get_center();
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		CHECK(brush->get_face_normal(f).length() > 0.99);
+	}
+	for (int f = 6; f < 9; f++) {
+		CHECK(brush->get_face_normal(f).dot(brush->get_face_center(f) - center) > 0.0);
+	}
+
+	// The source faces are untouched: the +X face (index 2) must still
+	// contain the ORIGINAL corner 6, not the duplicate.
+	LocalVector<int> right = brush->get_face(2);
+	bool has_orig = false;
+	bool has_dupe = false;
+	for (int idx : right) {
+		has_orig = has_orig || idx == 6;
+		has_dupe = has_dupe || idx == new_v;
+	}
+	CHECK(has_orig);
+	CHECK(!has_dupe);
+
+	memdelete(brush);
+}
+
 TEST_CASE("[LevelBrush] extrude_face creates cap and side walls") {
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));

@@ -469,14 +469,15 @@ private:
 	PackedVector3Array gizmo_drag_original_verts; // Brush vertices at drag start.
 	Vector3 gizmo_drag_original_position; // Brush node position at drag start (Select mode).
 	bool gizmo_drag_uniform_scale = false; // Scale drag started off-gizmo (mouse-X uniform).
-	bool gizmo_extrude_drag = false; // Shift+drag in Face mode: extrude instead of move.
-	// Face-mode extrude-drag snapshots (indices shift after extruding, so the
+	bool gizmo_extrude_drag = false; // Shift+drag in an element target: extrude instead of move.
+	// Element extrude-drag snapshots (indices shift after extruding, so the
 	// generic vertex snapshot can't restore them).
 	HashMap<LevelBrush *, PackedVector3Array> gizmo_extrude_orig_verts;
 	HashMap<LevelBrush *, Array> gizmo_extrude_orig_faces;
 	HashMap<LevelBrush *, Array> gizmo_extrude_orig_mats;
-	HashMap<LevelBrush *, Vector<int>> gizmo_extrude_cap_faces; // Cap face per brush, in extrude order.
-	Vector<Vector3> gizmo_extrude_normals; // Brush-local cap normals, same order.
+	HashMap<LevelBrush *, Vector<int>> gizmo_extrude_cap_faces; // Face target: cap face per brush, in extrude order.
+	HashMap<LevelBrush *, Vector<int>> gizmo_extrude_elem_verts; // Edge/vertex targets: duplicated vert indices per brush (flat list).
+	Vector<Vector3> gizmo_extrude_normals; // Brush-local cap normals, same order (face target).
 	HashMap<LevelBrush *, PackedVector3Array> gizmo_extrude_moved_verts; // Post-extrude topology at drag start.
 
 	Vector3 _get_gizmo_origin() const; // World-space pivot of current selection.
@@ -601,6 +602,10 @@ public:
 
 	// Sync the level-editor brush selection with the editor's node selection.
 	void set_selected_brush_from_editor(LevelBrush *p_brush);
+
+	// Bound for undo actions: undoing a topology op that remapped the
+	// selection must drop it (its indices no longer exist).
+	void clear_selection() { _clear_selection(); }
 
 	void set_dock(LevelEditorDock *p_dock) { dock = p_dock; }
 

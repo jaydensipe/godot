@@ -130,6 +130,25 @@ public:
 	// normal, and stitches side quads. Returns the new cap face index (or -1).
 	int extrude_face(int p_face, real_t p_distance);
 
+	// Extrude an edge: duplicates the edge's two verts (offset by p_offset),
+	// rewires every face using them to the duplicates, and stitches one new
+	// quad per rewired face spanning old->new (the "pull" wall). Returns the
+	// duplicated verts in r_new (same order: a, b), false if the edge is
+	// invalid or unused.
+	bool extrude_edge(const EdgeKey &p_edge, const Vector3 &p_offset, int r_new[2]);
+
+	// Extrude a vertex: duplicates the vert (offset by p_offset), rewires
+	// every face using it to the duplicate, and stitches one new triangle fan
+	// wedge per rewired face (old neighbor verts + old vert + new vert).
+	// Returns the new vertex index, or -1 if invalid/unused.
+	int extrude_vertex(int p_vertex, const Vector3 &p_offset);
+
+	// Re-orient a face loop so its normal points away from the brush
+	// centroid (out of the solid). Used to keep extruded walls correctly
+	// wound as a gizmo drag moves them (their winding is decided at
+	// extrude time from a stub offset and can go stale - GOTCHAS #43).
+	void rewind_face_outward(int p_face);
+
 	// Subdivide a face: quads split into 4 quads via edge midpoints + centroid
 	// (Hammer-style); n-gons fall back to a triangle fan from the centroid.
 	// New faces inherit the face's material. Returns true on success.

@@ -81,13 +81,19 @@ Bugs that cost real debugging time. Read before touching the module.
     created by the do side). (`_ghost_commit` / `_bake_pressed` have it;
     `_delete_selection` uses `add_undo_reference`.)
 
-14. **Face-index selections go stale after topology ops.** Any action that
-    adds/removes faces (subdivide, delete, clip) invalidates
-    `selected_faces`/`selected_edges` indices. Either clear the selection
-    after the op (subdivide/delete do this) or remap it (the gizmo extrude
-    updates selection to the new cap faces). EXCEPTION: `extrude_face`
-    replaces each source face with its cap in place, so a face selection
-    stays valid across extrudes (chained extrude relies on this).
+14. **Face/vertex-index selections go stale after topology ops.** Any action
+    that adds/removes verts/faces (subdivide, delete, clip, extrude)
+    invalidates `selected_faces`/`selected_edges`/`selected_vertices`
+    indices. Either clear the selection after the op (subdivide/delete do
+    this) or remap it (the gizmo extrude updates selection to the new cap
+    faces / duplicated verts). EXCEPTION: `extrude_face` replaces each
+    source face with its cap in place, so a face selection stays valid
+    across extrudes (chained extrude relies on this). UNDO SIDE: an op
+    that remaps the selection to NEW indices must also record
+    `add_undo_method(screen, "clear_selection")` - undo restores the
+    pre-op `vertices`/`faces` arrays (fewer elements), and the stale
+    remapped indices then read out of bounds in every draw/pick (the
+    "Index p_index is out of bounds" spam after undoing an extrude).
 
 15. **`_set_tool`/`_set_target` must interrupt active drags.** Tool/target
     shortcuts can fire mid-drag; the drag's undo action commits against the
@@ -174,6 +180,35 @@ Bugs that cost real debugging time. Read before touching the module.
     `clip()` keeps `distance >= -eps`. A clip plane at +X normal, d=5 keeps
     only x>=5 (clips a unit box at origin AWAY) - the tests got this wrong
     once (no-op plane needs the brush fully on the keep side).
+43. **Stitched-wall winding: test the centroid's SIDE of the wall plane,
+    and re-wind as the drag moves.** Getting `extrude_edge`/
+    `extrude_vertex` walls to face out of the solid (Hammer behavior,
+    user-verified in Hammer 2) burned FIVE sign rules before landing:
+    - Every rule built from `edge_dir x pull` / `edge_dir x bisector` /
+      dots against `normal_sum` has a degenerate case: flat quads
+      (normal_sum perpendicular to every wall -> sign flip is a no-op,
+      3 of 4 walls arbitrary), convex edges (bisector cross points
+      inward depending on loop order), bisector-parallel pulls (cross
+      perpendicular to the wall, useless).
+    - `normal.dot(centroid - wall_center)` (direction dot) is ALSO
+      degenerate: the 45-degree bevel plane from a bisector pull passes
+      exactly through the centroid.
+    What works: `wn.dot(centroid - wall_point)` - the wall normal must
+    point AWAY from the brush centroid as a PLANE-SIDE test. The
+    centroid is strictly inside for any real pull, so it never
+    degenerates except the begin-drag stub (bisector bevel through the
+    centroid), which falls back to the bisector side.
+    **The stub freeze is the second half of the bug**: winding is decided
+    at extrude time from the 0.001 stub while the drag rotates the wall
+    plane, so NO once-computed rule is correct for all final positions.
+    `_apply_gizmo_delta` (edge/vertex extrude branch) re-winds every
+    appended wall face (indices >= pre-extrude face count) each frame via
+    `LevelBrush::rewind_face_outward()`. Undo is safe because
+    `_add_brush_undo_pair` reads the CURRENT faces for the do-side.
+    Reminder: a mirrored-looking texture is always a WINDING problem -
+    bake UVs are position-based planar projections, loop-order
+    independent. Don't touch the UV code for this (one speculative UV
+    "fix" was already reverted).
 
 ## Serialization
 

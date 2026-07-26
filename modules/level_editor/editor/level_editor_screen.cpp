@@ -38,6 +38,7 @@ using namespace LevelHelpers;
 using LevelEditorColors::GIZMO_PLANE_EXTENT;
 
 #include "core/object/callable_mp.h"
+#include "core/object/class_db.h"
 #include "core/math/geometry_2d.h"
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
@@ -612,6 +613,7 @@ void LevelEditorViewport::gui_input(const Ref<InputEvent> &p_event) {
 // ---------------------------------------------------------------------------
 
 void LevelEditorScreen::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("clear_selection"), &LevelEditorScreen::clear_selection);
 }
 
 LevelEditorScreen::LevelEditorScreen() {

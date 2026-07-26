@@ -279,41 +279,125 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 		}
 	}
 
-	// Shift+drag in Face mode: extrude the selected faces once, then the drag
-	// moves the new cap faces along their normals (Hammer-style pull).
+	// Shift+drag in an element target: extrude the selected elements once,
+	// then the drag moves the duplicated geometry (Hammer-style pull).
 	gizmo_extrude_cap_faces.clear();
+	gizmo_extrude_elem_verts.clear();
 	gizmo_extrude_normals.clear();
 	gizmo_extrude_orig_verts.clear();
 	gizmo_extrude_orig_faces.clear();
 	gizmo_extrude_orig_mats.clear();
 	gizmo_extrude_moved_verts.clear();
 	if (gizmo_extrude_drag) {
-		for (KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
-			LevelBrush *b = E.key;
-			gizmo_extrude_orig_verts[b] = b->get_vertices_data();
-			gizmo_extrude_orig_faces[b] = b->get_faces_data();
-			gizmo_extrude_orig_mats[b] = b->get_face_materials_data();
+		switch (selection_target) {
+			case TARGET_FACE: {
+				for (KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
+					LevelBrush *b = E.key;
+					gizmo_extrude_orig_verts[b] = b->get_vertices_data();
+					gizmo_extrude_orig_faces[b] = b->get_faces_data();
+					gizmo_extrude_orig_mats[b] = b->get_face_materials_data();
 
-			// Highest index first so earlier indices stay valid as faces append.
-			Vector<int> sorted;
-			for (int f : E.value) {
-				sorted.push_back(f);
-			}
-			sorted.sort();
-			Vector<int> caps;
-			for (int i = sorted.size() - 1; i >= 0; i--) {
-				gizmo_extrude_normals.push_back(b->get_face_normal(sorted[i]));
-				b->extrude_face(sorted[i], 0.001); // Minimal stub; the drag sets the real distance.
-				caps.push_back(sorted[i]); // extrude_face replaces src with the cap in place.
-			}
-			gizmo_extrude_cap_faces[b] = caps;
-			gizmo_extrude_moved_verts[b] = b->get_vertices_data();
+					// Highest index first so earlier indices stay valid as faces append.
+					Vector<int> sorted;
+					for (int f : E.value) {
+						sorted.push_back(f);
+					}
+					sorted.sort();
+					Vector<int> caps;
+					for (int i = sorted.size() - 1; i >= 0; i--) {
+						gizmo_extrude_normals.push_back(b->get_face_normal(sorted[i]));
+						b->extrude_face(sorted[i], 0.001); // Minimal stub; the drag sets the real distance.
+						caps.push_back(sorted[i]); // extrude_face replaces src with the cap in place.
+					}
+					gizmo_extrude_cap_faces[b] = caps;
+					gizmo_extrude_moved_verts[b] = b->get_vertices_data();
 
-			// Update the selection to the caps so overlays track the extrusion.
-			E.value.clear();
-			for (int c : caps) {
-				E.value.insert(c);
-			}
+					// Update the selection to the caps so overlays track the extrusion.
+					E.value.clear();
+					for (int c : caps) {
+						E.value.insert(c);
+					}
+				}
+			} break;
+			case TARGET_EDGE: {
+				for (KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
+					LevelBrush *b = E.key;
+					gizmo_extrude_orig_verts[b] = b->get_vertices_data();
+					gizmo_extrude_orig_faces[b] = b->get_faces_data();
+					gizmo_extrude_orig_mats[b] = b->get_face_materials_data();
+
+					Vector<int> new_verts;
+					HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> new_edges;
+					for (const LevelBrush::EdgeKey &e : E.value) {
+						// Stub offset along the average normal of the edge's faces,
+						// so the stub wall is never degenerate; the drag replaces it.
+						Vector3 dir;
+						for (int f = 0; f < b->get_face_count(); f++) {
+							LocalVector<int> loop = b->get_face(f);
+							bool has_a = false, has_bv = false;
+							for (int idx : loop) {
+								has_a = has_a || idx == e.a;
+								has_bv = has_bv || idx == e.b;
+							}
+							if (has_a && has_bv) {
+								dir += b->get_face_normal(f);
+							}
+						}
+						if (dir.is_zero_approx()) {
+							dir = Vector3(0, 1, 0);
+						}
+						int ids[2];
+						if (b->extrude_edge(e, dir.normalized() * 0.001, ids)) {
+							new_verts.push_back(ids[0]);
+							new_verts.push_back(ids[1]);
+							LevelBrush::EdgeKey ne;
+							ne.a = ids[0];
+							ne.b = ids[1];
+							new_edges.insert(ne);
+						}
+					}
+					gizmo_extrude_elem_verts[b] = new_verts;
+					gizmo_extrude_moved_verts[b] = b->get_vertices_data();
+					E.value = new_edges; // Selection tracks the duplicated edges.
+				}
+			} break;
+			case TARGET_VERTEX: {
+				for (KeyValue<LevelBrush *, HashSet<int>> &E : selected_vertices) {
+					LevelBrush *b = E.key;
+					gizmo_extrude_orig_verts[b] = b->get_vertices_data();
+					gizmo_extrude_orig_faces[b] = b->get_faces_data();
+					gizmo_extrude_orig_mats[b] = b->get_face_materials_data();
+
+					Vector<int> new_verts;
+					HashSet<int> new_sel;
+					for (int v : E.value) {
+						// Stub along the average normal of the vertex's faces.
+						Vector3 dir;
+						for (int f = 0; f < b->get_face_count(); f++) {
+							LocalVector<int> loop = b->get_face(f);
+							for (int idx : loop) {
+								if (idx == v) {
+									dir += b->get_face_normal(f);
+									break;
+								}
+							}
+						}
+						if (dir.is_zero_approx()) {
+							dir = Vector3(0, 1, 0);
+						}
+						int nv = b->extrude_vertex(v, dir.normalized() * 0.001);
+						if (nv >= 0) {
+							new_verts.push_back(nv);
+							new_sel.insert(nv);
+						}
+					}
+					gizmo_extrude_elem_verts[b] = new_verts;
+					gizmo_extrude_moved_verts[b] = b->get_vertices_data();
+					E.value = new_sel; // Selection tracks the duplicated verts.
+				}
+			} break;
+			default:
+				break;
 		}
 		_refresh_map();
 	}
@@ -869,24 +953,45 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 	}
 
 	if (gizmo_extrude_drag) {
-		// Extrude drag: reset to the post-extrude topology, then offset each
-		// cap face along its own normal by the delta's signed distance onto it.
-		int order = 0;
-		for (KeyValue<LevelBrush *, Vector<int>> &E : gizmo_extrude_cap_faces) {
-			LevelBrush *brush = E.key;
-			brush->set_vertices_data(gizmo_extrude_moved_verts[brush]);
+		// Extrude drag: reset to the post-extrude topology, then offset the
+		// duplicated geometry by the delta (face caps slide along their own
+		// normals; edges/verts move freely).
+		if (selection_target == TARGET_FACE) {
+			int order = 0;
+			for (KeyValue<LevelBrush *, Vector<int>> &E : gizmo_extrude_cap_faces) {
+				LevelBrush *brush = E.key;
+				brush->set_vertices_data(gizmo_extrude_moved_verts[brush]);
 
-			Transform3D inv = brush->get_global_transform().affine_inverse();
-			Vector3 local_delta = inv.basis.xform(p_world_delta);
+				Transform3D inv = brush->get_global_transform().affine_inverse();
+				Vector3 local_delta = inv.basis.xform(p_world_delta);
 
-			for (int cap : E.value) {
-				const Vector3 &n = gizmo_extrude_normals[order++];
-				Vector<int> loop_verts;
-				LocalVector<int> loop = brush->get_face(cap);
-				for (int idx : loop) {
-					loop_verts.push_back(idx);
+				for (int cap : E.value) {
+					const Vector3 &n = gizmo_extrude_normals[order++];
+					Vector<int> loop_verts;
+					LocalVector<int> loop = brush->get_face(cap);
+					for (int idx : loop) {
+						loop_verts.push_back(idx);
+					}
+					brush->move_vertices(loop_verts, n * local_delta.dot(n));
 				}
-				brush->move_vertices(loop_verts, n * local_delta.dot(n));
+			}
+		} else {
+			for (KeyValue<LevelBrush *, Vector<int>> &E : gizmo_extrude_elem_verts) {
+				LevelBrush *brush = E.key;
+				brush->set_vertices_data(gizmo_extrude_moved_verts[brush]);
+
+				Transform3D inv = brush->get_global_transform().affine_inverse();
+				Vector3 local_delta = inv.basis.xform(p_world_delta);
+				brush->move_vertices(E.value, local_delta);
+
+				// The extruded walls were wound at begin-drag from a stub offset;
+				// the drag rotates their planes, which can flip which side faces
+				// out (GOTCHAS #43). Re-wind them against the current geometry.
+				// Walls are the faces appended after the pre-extrude topology.
+				const int first_wall = gizmo_extrude_orig_faces[brush].size();
+				for (int f = first_wall; f < brush->get_face_count(); f++) {
+					brush->rewind_face_outward(f);
+				}
 			}
 		}
 		_refresh_map();
@@ -956,7 +1061,7 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		// Commit the extrusion (topology change at drag start + cap pull) as a
 		// single undo action, recorded against the pre-extrude snapshots.
 		EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-		undo_redo->create_action(TTR("Extrude Faces"));
+		undo_redo->create_action(selection_target == TARGET_FACE ? TTR("Extrude Faces") : (selection_target == TARGET_EDGE ? TTR("Extrude Edges") : TTR("Extrude Vertices")));
 		bool any = false;
 		for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_extrude_orig_verts) {
 			any = true;
@@ -965,12 +1070,18 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		if (any) {
 			undo_redo->add_do_method(current_map, "refresh");
 			undo_redo->add_undo_method(current_map, "refresh");
+			// The selection was remapped to the NEW geometry during the drag
+			// (indices that don't exist in the pre-extrude snapshot). Undoing
+			// would leave those stale indices in the selection (out-of-bounds
+			// in every draw/pick) - clear it on undo.
+			undo_redo->add_undo_method(this, "clear_selection");
 			undo_redo->commit_action(false);
 		}
 		gizmo_extrude_orig_verts.clear();
 		gizmo_extrude_orig_faces.clear();
 		gizmo_extrude_orig_mats.clear();
 		gizmo_extrude_cap_faces.clear();
+		gizmo_extrude_elem_verts.clear();
 		gizmo_extrude_normals.clear();
 		gizmo_extrude_moved_verts.clear();
 		gizmo_drag_brush_verts.clear();
@@ -1188,7 +1299,7 @@ bool LevelEditorScreen::_gizmo_input(LevelEditorViewport *p_vp, Camera3D *p_came
 			if (part != GIZMO_NONE) {
 				gizmo_drag_uniform_scale = false;
 				gizmo_drag_part = (GizmoPart)part;
-				gizmo_extrude_drag = (selection_target == TARGET_FACE && mb->is_shift_pressed());
+				gizmo_extrude_drag = (_is_element_target() && mb->is_shift_pressed());
 				_gizmo_begin_drag(p_vp, mb->get_position());
 				return true; // Consumed by gizmo.
 			}
