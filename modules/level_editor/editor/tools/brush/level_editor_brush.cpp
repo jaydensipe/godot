@@ -312,8 +312,7 @@ void LevelEditorScreen::_ghost_commit() {
 	undo_redo->add_do_reference(brush); // Keep the node alive across undo.
 	undo_redo->commit_action();
 
-	selected_brush = brush;
-	_edit_brush_node(brush);
+	_mesh_selection_set(brush);
 	_refresh_map();
 }
 

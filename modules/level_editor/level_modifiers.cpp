@@ -703,15 +703,23 @@ int LevelBrush::extrude_face(int p_face, real_t p_distance) {
 	// on that side either way.
 	faces[p_face] = cap;
 
-	// Append side quads stitching the source loop to the cap (wound outward).
-	// For negative (inward) extrudes the wall order must swap to keep normals
-	// pointing out of the solid.
+	// Append side quads stitching the source loop to the cap. Winding must
+	// keep normals pointing out of the solid: test each quad against the
+	// brush centroid (same rule as extrude_edge, GOTCHAS #43) instead of
+	// the extrude sign - interior brushes extrude along the NEGATED stored
+	// normal, which inverts the old p_distance>0 rule.
+	const Vector3 center = get_center();
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t j = (i + 1) % n;
-		if (p_distance > 0) {
-			faces.push_back({ src[i], src[j], (int)(base + j), (int)(base + i) });
-		} else {
+		const Vector3 &pa = verts[src[i]];
+		const Vector3 &pb = verts[src[j]];
+		const Vector3 &pc = verts[base + j];
+		const Vector3 quad_n = (pb - pa).cross(pc - pa);
+		if (quad_n.dot(center - pa) > 0.0) {
+			// Normal points at the interior: use the opposite winding.
 			faces.push_back({ src[i], (int)(base + i), (int)(base + j), src[j] });
+		} else {
+			faces.push_back({ src[i], src[j], (int)(base + j), (int)(base + i) });
 		}
 	}
 

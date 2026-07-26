@@ -182,12 +182,12 @@ TEST_CASE("[LevelBrush] extrude_edge duplicates the edge and stitches walls") {
 	}
 	CHECK(Math::is_equal_approx(max_z, (real_t)1.0));
 
-	// The wall (appended last) faces outward: pulled straight up from the
-	// top-front edge, the wall is horizontal (spans the old edge and the
-	// raised duplicate) and its outward normal points UP (+Y), away from
-	// the solid below.
+	// The wall (appended last) faces outward: pulled straight UP from the
+	// top-front edge, the wall is VERTICAL (it spans the old edge and the
+	// raised duplicate), and its outward normal points forward (+Z, the
+	// side the solid does not extend to above the front face).
 	Vector3 wn = brush->get_face_normal(6);
-	CHECK(wn.y > 0.9);
+	CHECK(wn.z > 0.9);
 	// And it is perpendicular to the extruded edge (which runs along X).
 	CHECK(Math::is_zero_approx(wn.x));
 
@@ -724,6 +724,36 @@ TEST_CASE("[LevelBrush] extrude_face with negative distance keeps outward normal
 			continue; // Face centered on the brush centroid: no outward direction.
 		}
 		CHECK(n.dot(out) > 0.0);
+	}
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] extrude_face on an interior brush keeps stored-normal direction") {
+	// Interior (flipped) brush: stored loops keep solid-outward normals, and
+	// extrude_face stubs along the STORED normal like any solid. (The gizmo
+	// decides the visual extrude direction; the op stays flip-agnostic.)
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+	brush->set_faces_flipped(true);
+
+	int cap = brush->extrude_face(3, 0.5); // -X face.
+	REQUIRE(cap >= 0);
+
+	LocalVector<int> cap_loop = brush->get_face(cap);
+	for (int idx : cap_loop) {
+		CHECK(brush->get_vertex(idx).x == doctest::Approx(-0.5));
+	}
+	CHECK(brush->get_face_normal(cap).is_equal_approx(Vector3(-1, 0, 0)));
+
+	// Side walls face out of the solid (away from the centroid).
+	Vector3 center = brush->get_center();
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		Vector3 out = brush->get_face_center(f) - center;
+		if (out.length_squared() < 0.0001) {
+			continue;
+		}
+		CHECK(brush->get_face_normal(f).dot(out) > 0.0);
 	}
 
 	memdelete(brush);

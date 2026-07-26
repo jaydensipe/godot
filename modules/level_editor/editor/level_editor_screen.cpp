@@ -402,6 +402,73 @@ bool LevelEditorViewport::project(const Vector3 &p_world, Vector2 &r_screen) con
 	return true;
 }
 
+bool LevelEditorViewport::project_segment(const Vector3 &p_a, const Vector3 &p_b, Vector2 &r_a, Vector2 &r_b) const {
+	// Ortho cameras have no near-plane crossing issue (parallel rays).
+	if (camera->get_projection() != Camera3D::PROJECTION_PERSPECTIVE) {
+		return project(p_a, r_a) && project(p_b, r_b);
+	}
+	// Clip in camera space: forward is -Z, so a point is visible when
+	// z <= -near. Move behind-camera endpoints to the near plane along the
+	// segment (GOTCHAS #22: projecting a behind-camera point mirrors it).
+	const Transform3D cam = camera->get_global_transform();
+	const real_t nz = -camera->get_near();
+	Vector3 a = cam.affine_inverse().xform(p_a);
+	Vector3 b = cam.affine_inverse().xform(p_b);
+	const bool a_vis = a.z <= nz;
+	const bool b_vis = b.z <= nz;
+	if (!a_vis && !b_vis) {
+		return false;
+	}
+	if (a_vis != b_vis) {
+		const real_t t = (nz - a.z) / (b.z - a.z);
+		const Vector3 cross = a + (b - a) * t;
+		if (!a_vis) {
+			a = cross;
+		} else {
+			b = cross;
+		}
+	}
+	r_a = camera->unproject_position(cam.xform(a));
+	r_b = camera->unproject_position(cam.xform(b));
+	return true;
+}
+
+bool LevelEditorViewport::project_polygon(const Vector<Vector3> &p_world, PackedVector2Array &r_screen) const {
+	r_screen.clear();
+	if (p_world.size() < 3) {
+		return false;
+	}
+	if (camera->get_projection() != Camera3D::PROJECTION_PERSPECTIVE) {
+		for (const Vector3 &w : p_world) {
+			Vector2 sp;
+			if (!project(w, sp)) {
+				return false;
+			}
+			r_screen.push_back(sp);
+		}
+		return true;
+	}
+	const Transform3D cam = camera->get_global_transform();
+	const real_t nz = -camera->get_near();
+	const Transform3D inv = cam.affine_inverse();
+	// Sutherland-Hodgman against the single near plane (z <= -near).
+	for (int i = 0; i < p_world.size(); i++) {
+		const Vector3 cur = inv.xform(p_world[i]);
+		const Vector3 prev = inv.xform(p_world[(i + p_world.size() - 1) % p_world.size()]);
+		const bool cur_vis = cur.z <= nz;
+		const bool prev_vis = prev.z <= nz;
+		if (cur_vis != prev_vis) {
+			const real_t t = (nz - prev.z) / (cur.z - prev.z);
+			const Vector3 cross = prev + (cur - prev) * t;
+			r_screen.push_back(camera->unproject_position(cam.xform(cross)));
+		}
+		if (cur_vis) {
+			r_screen.push_back(camera->unproject_position(p_world[i]));
+		}
+	}
+	return r_screen.size() >= 3;
+}
+
 void LevelEditorViewport::queue_overlay_redraw() {
 	if (overlay) {
 		overlay->update();
@@ -1010,12 +1077,43 @@ void LevelEditorScreen::_edit_brush_node(LevelBrush *p_brush) {
 	call_deferred("grab_focus");
 }
 
+bool LevelEditorScreen::_mesh_selection_has(LevelBrush *p_brush) const {
+	return selected_brushes.has(p_brush);
+}
+
+void LevelEditorScreen::_mesh_selection_set(LevelBrush *p_brush) {
+	selected_brushes.clear();
+	selected_brushes.push_back(p_brush);
+	if (selected_brush != p_brush) {
+		selected_brush = p_brush;
+		_edit_brush_node(p_brush);
+	}
+}
+
+void LevelEditorScreen::_mesh_selection_toggle(LevelBrush *p_brush) {
+	const int at = selected_brushes.find(p_brush);
+	if (at >= 0) {
+		selected_brushes.remove_at(at);
+		// Keep the primary valid: fall back to the last remaining brush.
+		if (selected_brush == p_brush) {
+			selected_brush = selected_brushes.is_empty() ? nullptr : selected_brushes[selected_brushes.size() - 1];
+			if (selected_brush) {
+				_edit_brush_node(selected_brush);
+			}
+		}
+	} else {
+		selected_brushes.push_back(p_brush);
+		selected_brush = p_brush;
+		_edit_brush_node(p_brush);
+	}
+}
+
 void LevelEditorScreen::set_selected_brush_from_editor(LevelBrush *p_brush) {
 	if (!p_brush || p_brush == selected_brush) {
 		return;
 	}
 	// Adopt the brush and, if it belongs to a map, adopt that map too.
-	selected_brush = p_brush;
+	_mesh_selection_set(p_brush);
 	LevelMap *map = Object::cast_to<LevelMap>(p_brush->get_parent());
 	if (map && map != current_map) {
 		current_map = map;
@@ -1182,18 +1280,28 @@ void LevelEditorScreen::_set_tool(Tool p_tool) {
 		// End the whole-brush move like an LMB release: commit the position
 		// undo, or a mid-move shortcut makes the move un-undoable.
 		select_moving = false;
-		if (selected_brush) {
-			Vector3 new_pos = selected_brush->get_position();
-			if (!new_pos.is_equal_approx(select_move_original_position)) {
-				LevelBrush *target_brush = selected_brush;
-				Vector3 old_pos = select_move_original_position;
-				EditorUndoRedoManager::get_singleton()->create_action(TTR("Move Brush"));
-				EditorUndoRedoManager::get_singleton()->add_do_property(target_brush, "position", new_pos);
-				EditorUndoRedoManager::get_singleton()->add_undo_property(target_brush, "position", old_pos);
-				EditorUndoRedoManager::get_singleton()->commit_action(false);
+		EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+		bool created = false;
+		for (const KeyValue<LevelBrush *, Vector3> &E : select_move_original_positions) {
+			LevelBrush *b = E.key;
+			if (!b->is_inside_tree()) {
+				continue;
+			}
+			const Vector3 new_pos = b->get_position();
+			if (!new_pos.is_equal_approx(E.value)) {
+				if (!created) {
+					undo_redo->create_action(TTR("Move Brush"));
+					created = true;
+				}
+				undo_redo->add_do_property(b, "position", new_pos);
+				undo_redo->add_undo_property(b, "position", E.value);
 			}
 		}
+		if (created) {
+			undo_redo->commit_action(false);
+		}
 		select_move_viewport = nullptr;
+		select_move_original_positions.clear();
 	}
 	paint_select_active = false;
 	paint_select_viewport = nullptr;
@@ -1455,23 +1563,25 @@ void LevelEditorScreen::_delete_selection() {
 
 	switch (selection_target) {
 		case TARGET_MESH: {
-			if (!selected_brush) {
+			if (selected_brushes.is_empty()) {
 				return;
 			}
-			// Delete the whole brush node.
-			LevelBrush *target = selected_brush;
+			// Delete all selected brush nodes in one undo action.
 			LevelMap *map = current_map;
 			Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
+			Vector<LevelBrush *> doomed = selected_brushes;
 			_clear_selection();
 
 			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 			undo_redo->create_action(TTR("Delete Brush"));
-			undo_redo->add_do_method(map, "remove_child", target);
+			for (LevelBrush *target : doomed) {
+				undo_redo->add_do_method(map, "remove_child", target);
+				undo_redo->add_undo_method(map, "add_child", target);
+				undo_redo->add_undo_method(target, "set_owner", root);
+				undo_redo->add_undo_reference(target);
+			}
 			undo_redo->add_do_method(map, "refresh");
-			undo_redo->add_undo_method(map, "add_child", target);
-			undo_redo->add_undo_method(target, "set_owner", root);
 			undo_redo->add_undo_method(map, "refresh");
-			undo_redo->add_undo_reference(target);
 			undo_redo->commit_action();
 			_refresh_map();
 		} break;
@@ -1502,10 +1612,12 @@ void LevelEditorScreen::_commit_brush_undo(const String &p_action, LevelBrush *p
 
 void LevelEditorScreen::_clear_selection() {
 	selected_brush = nullptr;
+	selected_brushes.clear();
 	select_handle_hover = GHOST_NONE;
 	select_handle_drag = GHOST_NONE;
 	select_moving = false;
 	select_move_viewport = nullptr;
+	select_move_original_positions.clear();
 	paint_select_active = false;
 	paint_select_viewport = nullptr;
 	rotate_hover_axis = -1;
@@ -1842,7 +1954,7 @@ void LevelEditorScreen::_apply_brush_aabb(LevelBrush *p_brush, const AABB &p_aab
 }
 
 int LevelEditorScreen::_pick_select_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
-	if (!selected_brush) {
+	if (!selected_brush || selected_brushes.size() != 1) {
 		return GHOST_NONE;
 	}
 	return _pick_box_handle(p_vp, p_screen, _get_brush_local_aabb(selected_brush), selected_brush->get_global_transform());
@@ -1931,7 +2043,8 @@ void LevelEditorScreen::_select_handle_end_drag() {
 }
 
 void LevelEditorScreen::_draw_select_handles(LevelEditorViewport *p_vp, Control *p_canvas) {
-	if (tool != TOOL_SELECT || selection_target != TARGET_MESH || !selected_brush) {
+	// Resize handles are single-brush only (per-brush local AABB).
+	if (tool != TOOL_SELECT || selection_target != TARGET_MESH || !selected_brush || selected_brushes.size() != 1) {
 		return;
 	}
 
@@ -1983,8 +2096,14 @@ void LevelEditorScreen::_notification(int p_what) {
 		case NOTIFICATION_PROCESS: {
 			// Drop dangling selection if the brush was deleted externally.
 			bool pruned = false;
+			for (int i = selected_brushes.size() - 1; i >= 0; i--) {
+				if (!selected_brushes[i]->is_inside_tree()) {
+					selected_brushes.remove_at(i);
+					pruned = true;
+				}
+			}
 			if (selected_brush && !selected_brush->is_inside_tree()) {
-				selected_brush = nullptr;
+				selected_brush = selected_brushes.is_empty() ? nullptr : selected_brushes[selected_brushes.size() - 1];
 				pruned = true;
 			}
 			// Prune element selections whose brush was deleted.
@@ -2012,15 +2131,16 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 
 	Vector<LevelBrush *> brushes = current_map->get_brushes();
 	for (LevelBrush *b : brushes) {
-		_draw_brush_outline(p_vp, p_canvas, b, b == selected_brush);
+		_draw_brush_outline(p_vp, p_canvas, b, _mesh_selection_has(b));
 	}
-	if (selection_target == TARGET_MESH && tool == TOOL_SELECT && hover_brush && hover_brush != selected_brush) {
-		// Hover highlight (thin white).
+	if (selection_target == TARGET_MESH && !_is_drawing_tool() && hover_brush && !_mesh_selection_has(hover_brush)) {
+		// Hover highlight (thin white) - in every transform tool, not just
+		// Select, so the user can see what a click would pick.
 		Transform3D gt = hover_brush->get_global_transform();
 		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = hover_brush->get_edges();
 		for (const LevelBrush::EdgeKey &e : edges) {
 			Vector2 a, b;
-			if (p_vp->project(gt.xform(hover_brush->get_vertex(e.a)), a) && p_vp->project(gt.xform(hover_brush->get_vertex(e.b)), b)) {
+			if (p_vp->project_segment(gt.xform(hover_brush->get_vertex(e.a)), gt.xform(hover_brush->get_vertex(e.b)), a, b)) {
 				p_canvas->draw_line(a, b, LevelEditorColors::BRUSH_OUTLINE_HOVER, 1.0);
 			}
 		}
@@ -2068,7 +2188,7 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 			HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = brush->get_edges();
 			for (const LevelBrush::EdgeKey &e : edges) {
 				Vector2 a, b;
-				if (!p_vp->project(gt.xform(brush->get_vertex(e.a)), a) || !p_vp->project(gt.xform(brush->get_vertex(e.b)), b)) {
+				if (!p_vp->project_segment(gt.xform(brush->get_vertex(e.a)), gt.xform(brush->get_vertex(e.b)), a, b)) {
 					continue;
 				}
 				if (selection_target == TARGET_EDGE) {
@@ -2084,17 +2204,12 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 				// Hovered face: green fill + outline.
 				LocalVector<int> poly = brush->get_face(hover_face);
 				if (poly.size() >= 3) {
-					PackedVector2Array pts;
-					bool ok = true;
+					Vector<Vector3> world;
 					for (int idx : poly) {
-						Vector2 sp;
-						if (!p_vp->project(gt.xform(brush->get_vertex(idx)), sp)) {
-							ok = false;
-							break;
-						}
-						pts.push_back(sp);
+						world.push_back(gt.xform(brush->get_vertex(idx)));
 					}
-					if (ok) {
+					PackedVector2Array pts;
+					if (p_vp->project_polygon(world, pts)) {
 						// The projected polygon can be degenerate (face viewed edge-on,
 						// or a concave/self-intersecting outline after vertex edits) -
 						// pre-flight the same triangulation the renderer does and skip
@@ -2205,17 +2320,12 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 			if (poly.size() < 3) {
 				continue;
 			}
-			PackedVector2Array pts;
-			bool all_front = true;
+			Vector<Vector3> world;
 			for (int idx : poly) {
-				Vector2 sp;
-				if (!p_vp->project(gt.xform(E.key->get_vertex(idx)), sp)) {
-					all_front = false;
-					break;
-				}
-				pts.push_back(sp);
+				world.push_back(gt.xform(E.key->get_vertex(idx)));
 			}
-			if (all_front) {
+			PackedVector2Array pts;
+			if (p_vp->project_polygon(world, pts)) {
 				// Same degenerate-projection guard as the hover fill.
 				if (!Geometry2D::triangulate_polygon(pts).is_empty()) {
 					p_canvas->draw_colored_polygon(pts, face_col);
@@ -2235,7 +2345,7 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 			Transform3D gt = E.key->get_global_transform();
 			for (const LevelBrush::EdgeKey &e : E.value) {
 				Vector2 a, b;
-				if (p_vp->project(gt.xform(E.key->get_vertex(e.a)), a) && p_vp->project(gt.xform(E.key->get_vertex(e.b)), b)) {
+				if (p_vp->project_segment(gt.xform(E.key->get_vertex(e.a)), gt.xform(E.key->get_vertex(e.b)), a, b)) {
 					p_canvas->draw_line(a, b, edge_col, 3.0);
 				}
 			}

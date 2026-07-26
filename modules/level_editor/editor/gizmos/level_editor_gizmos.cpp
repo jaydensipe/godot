@@ -47,7 +47,7 @@ using LevelEditorColors::GIZMO_PLANE_EXTENT;
 bool LevelEditorScreen::_has_selection() const {
 	switch (selection_target) {
 		case TARGET_MESH:
-			return selected_brush != nullptr; // Whole brush is the selection.
+			return !selected_brushes.is_empty(); // Whole brushes are the selection.
 		case TARGET_FACE:
 			return !selected_faces.is_empty();
 		case TARGET_EDGE:
@@ -61,11 +61,15 @@ bool LevelEditorScreen::_has_selection() const {
 
 Vector3 LevelEditorScreen::_get_gizmo_origin() const {
 	if (selection_target == TARGET_MESH) {
-		if (!selected_brush) {
+		if (selected_brushes.is_empty()) {
 			return Vector3();
 		}
-		// Gizmo at the brush's geometry center, in world space.
-		return selected_brush->get_global_transform().xform(selected_brush->get_center());
+		// Gizmo at the combined world-space center of all selected brushes.
+		Vector3 sum;
+		for (LevelBrush *b : selected_brushes) {
+			sum += b->get_global_transform().xform(b->get_center());
+		}
+		return sum / (real_t)selected_brushes.size();
 	}
 
 	Vector3 sum;
@@ -250,8 +254,11 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 	// Snapshot brush vertices for absolute drags + undo.
 	gizmo_drag_brush_verts.clear();
 	if (selection_target == TARGET_MESH) {
-		gizmo_drag_original_verts = selected_brush->get_vertices_data();
-		gizmo_drag_original_position = selected_brush->get_position();
+		for (LevelBrush *b : selected_brushes) {
+			gizmo_drag_brush_verts[b] = b->get_vertices_data();
+		}
+		gizmo_drag_original_verts = selected_brush ? selected_brush->get_vertices_data() : PackedVector3Array();
+		gizmo_drag_original_position = selected_brush ? selected_brush->get_position() : Vector3();
 	} else {
 		// Element targets: one snapshot per selected brush.
 		HashSet<LevelBrush *> brushes;
@@ -282,8 +289,8 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 	// Shift+drag in an element target: extrude the selected elements once,
 	// then the drag moves the duplicated geometry (Hammer-style pull).
 	gizmo_extrude_cap_faces.clear();
+	gizmo_extrude_cap_normals.clear();
 	gizmo_extrude_elem_verts.clear();
-	gizmo_extrude_normals.clear();
 	gizmo_extrude_orig_verts.clear();
 	gizmo_extrude_orig_faces.clear();
 	gizmo_extrude_orig_mats.clear();
@@ -304,12 +311,25 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 					}
 					sorted.sort();
 					Vector<int> caps;
+					Vector<Vector3> cap_normals;
 					for (int i = sorted.size() - 1; i >= 0; i--) {
-						gizmo_extrude_normals.push_back(b->get_face_normal(sorted[i]));
-						b->extrude_face(sorted[i], 0.001); // Minimal stub; the drag sets the real distance.
+						// Slide direction = the cap's stored normal (same direction
+						// extrude_face stubs along).
+						const Vector3 n = b->get_face_normal(sorted[i]);
+						if (b->extrude_face(sorted[i], 0.001) < 0) {
+							continue; // Degenerate face: no extrude, skip its cap.
+						}
 						caps.push_back(sorted[i]); // extrude_face replaces src with the cap in place.
+						cap_normals.push_back(n);
+					}
+					if (caps.is_empty()) {
+						gizmo_extrude_orig_verts.erase(b);
+						gizmo_extrude_orig_faces.erase(b);
+						gizmo_extrude_orig_mats.erase(b);
+						continue;
 					}
 					gizmo_extrude_cap_faces[b] = caps;
+					gizmo_extrude_cap_normals[b] = cap_normals;
 					gizmo_extrude_moved_verts[b] = b->get_vertices_data();
 
 					// Update the selection to the caps so overlays track the extrusion.
@@ -512,7 +532,10 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 	}
 
 	// Scale mode: axis drag distance -> scale factor along that axis.
-	if (tool == TOOL_SCALE) {
+	// EXTRUDE drags (Shift+drag) always go through _apply_gizmo_delta: the
+	// scale paths restore the PRE-extrude vertex snapshot, which shrinks the
+	// brush below the extruded faces' vert indices (bake crash, GOTCHAS #45).
+	if (tool == TOOL_SCALE && !gizmo_extrude_drag) {
 		if (gizmo_drag_uniform_scale) {
 			// Click-anywhere uniform drag (started off-gizmo): use mouse X.
 			// 400px of drag = 2x scale (100px = 2x felt twitchy).
@@ -694,22 +717,25 @@ void LevelEditorScreen::_rotate_end_drag() {
 	rotate_drag_axis = -1;
 
 	if (selection_target == TARGET_MESH) {
-		if (!selected_brush) {
-			return;
+		// One undo action across all rotated brushes.
+		EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+		undo_redo->create_action(TTR("Rotate Brush"));
+		bool any = false;
+		for (const KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
+			LevelBrush *target_brush = E.key;
+			if (target_brush->get_vertices_data() == E.value) {
+				continue;
+			}
+			any = true;
+			_add_brush_undo_pair(undo_redo, target_brush, E.value, target_brush->get_faces_data(), target_brush->get_face_materials_data());
 		}
-		// Commit as undo: vertices before vs after.
-		LevelBrush *target_brush = selected_brush;
-
-		PackedVector3Array new_verts = target_brush->get_vertices_data();
-		if (new_verts == gizmo_drag_original_verts) {
-			return;
+		if (any) {
+			undo_redo->add_do_method(current_map, "refresh");
+			undo_redo->add_undo_method(current_map, "refresh");
+			undo_redo->commit_action(false);
 		}
-
-		Array cur_faces = target_brush->get_faces_data();
-		Array cur_mats = target_brush->get_face_materials_data();
-		_commit_brush_undo(TTR("Rotate Brush"), target_brush, gizmo_drag_original_verts, cur_faces, cur_mats);
-
 		gizmo_drag_original_verts.clear();
+		gizmo_drag_brush_verts.clear();
 		return;
 	}
 
@@ -739,19 +765,18 @@ void LevelEditorScreen::_apply_gizmo_rotate(int p_axis, real_t p_angle) {
 	axis[p_axis] = 1.0;
 
 	if (selection_target == TARGET_MESH) {
-		if (!selected_brush) {
-			return;
-		}
-		// Rotate original vertices around the brush center, absolute per drag.
-		selected_brush->set_vertices_data(gizmo_drag_original_verts);
-
-		Vector3 center = selected_brush->get_center();
+		// Each selected brush rotates around its OWN center (individual
+		// origins), absolute per drag.
 		Basis rot(axis, p_angle);
-
-		for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
-			Vector3 v = selected_brush->get_vertex(i);
-			v = center + rot.xform(v - center);
-			selected_brush->set_vertex(i, v);
+		for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
+			LevelBrush *brush = E.key;
+			brush->set_vertices_data(E.value);
+			const Vector3 center = brush->get_center();
+			for (int i = 0; i < brush->get_vertex_count(); i++) {
+				Vector3 v = brush->get_vertex(i);
+				v = center + rot.xform(v - center);
+				brush->set_vertex(i, v);
+			}
 		}
 		_refresh_map();
 		return;
@@ -780,7 +805,8 @@ void LevelEditorScreen::_apply_gizmo_rotate(int p_axis, real_t p_angle) {
 void LevelEditorScreen::_apply_gizmo_scale_uniform(real_t p_factor) {
 	if (selection_target != TARGET_MESH) {
 		// Element targets: uniform scale of the selected vertices around the
-		// drag-start selection pivot.
+		// drag-start selection pivot. Scaled positions snap to the world grid
+		// (same as whole-brush scale), keeping Hammer-style alignment.
 		real_t f = MAX(p_factor, 0.01);
 		Vector3 pivot = gizmo_drag_start_origin;
 		for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
@@ -791,48 +817,61 @@ void LevelEditorScreen::_apply_gizmo_scale_uniform(real_t p_factor) {
 			Vector<int> indices = _get_gizmo_vertex_indices(brush);
 			for (int idx : indices) {
 				Vector3 v = gt.xform(brush->get_vertex(idx));
-				v = pivot + (v - pivot) * f;
+				v = _snap(pivot + (v - pivot) * f);
 				brush->set_vertex(idx, inv.xform(v));
 			}
 		}
 		_refresh_map();
 		return;
 	}
-	if (!selected_brush) {
+	// Mesh target: ONE snapped uniform factor for all selected brushes,
+	// derived from the PRIMARY brush (Hammer-style group scale). Each brush
+	// scales around its OWN AABB center; only the primary's edges are
+	// guaranteed to land on grid lines.
+	if (!selected_brush || !gizmo_drag_brush_verts.has(selected_brush)) {
 		return;
 	}
-	selected_brush->set_vertices_data(gizmo_drag_original_verts);
-
-	// Scale around the center with the raw factor, then snap the resulting
-	// AABB edges to the grid (same as axis scale).
-	AABB bb;
-	for (int i = 0; i < gizmo_drag_original_verts.size(); i++) {
+	const PackedVector3Array &primary_orig = gizmo_drag_brush_verts[selected_brush];
+	AABB pbb;
+	for (int i = 0; i < primary_orig.size(); i++) {
 		if (i == 0) {
-			bb.position = gizmo_drag_original_verts[0];
+			pbb.position = primary_orig[0];
 		} else {
-			bb.expand_to(gizmo_drag_original_verts[i]);
+			pbb.expand_to(primary_orig[i]);
 		}
 	}
-	Vector3 center = bb.get_center();
-
+	// Snap the primary's SIZE to whole grid units, derive the factor from
+	// the largest-extent axis so thin axes don't explode the factor.
 	real_t f = MAX(p_factor, 0.01);
-	Vector3 mins = center + (bb.position - center) * f;
-	Vector3 maxs = center + (bb.position + bb.size - center) * f;
-	for (int axis = 0; axis < 3; axis++) {
-		mins[axis] = _snap(mins[axis]);
-		maxs[axis] = _snap(maxs[axis]);
-		if (maxs[axis] - mins[axis] < grid_size) {
-			maxs[axis] = mins[axis] + grid_size;
+	int ref_axis = 0;
+	for (int axis = 1; axis < 3; axis++) {
+		if (pbb.size[axis] > pbb.size[ref_axis]) {
+			ref_axis = axis;
 		}
 	}
+	if (pbb.size[ref_axis] > CMP_EPSILON) {
+		real_t snapped_size = MAX(_snap(pbb.size[ref_axis] * f), grid_size);
+		f = snapped_size / pbb.size[ref_axis];
+	}
+	for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
+		LevelBrush *brush = E.key;
+		brush->set_vertices_data(E.value);
 
-	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
-		Vector3 v = selected_brush->get_vertex(i);
-		for (int axis = 0; axis < 3; axis++) {
-			real_t t = (bb.size[axis] > CMP_EPSILON) ? (v[axis] - bb.position[axis]) / bb.size[axis] : 0.0;
-			v[axis] = mins[axis] + t * (maxs[axis] - mins[axis]);
+		AABB bb;
+		for (int i = 0; i < E.value.size(); i++) {
+			if (i == 0) {
+				bb.position = E.value[0];
+			} else {
+				bb.expand_to(E.value[i]);
+			}
 		}
-		selected_brush->set_vertex(i, v);
+		const Vector3 center = bb.get_center();
+
+		for (int i = 0; i < brush->get_vertex_count(); i++) {
+			Vector3 v = brush->get_vertex(i);
+			v = center + (v - center) * f;
+			brush->set_vertex(i, v);
+		}
 	}
 	_refresh_map();
 }
@@ -840,8 +879,8 @@ void LevelEditorScreen::_apply_gizmo_scale_uniform(real_t p_factor) {
 void LevelEditorScreen::_apply_gizmo_scale(const Vector3 &p_world_delta) {
 	if (selection_target != TARGET_MESH) {
 		// Element targets: per-axis scale of the selected vertices around the
-		// drag-start selection pivot (no grid snapping - freeform deform, same
-		// spirit as moving vertices).
+		// drag-start selection pivot, snapped to the world grid (same rule as
+		// whole-brush scale).
 		const real_t SCALE_RATE = 0.25; // 4 world units of drag = 2x scale.
 		Vector3 factors(1, 1, 1);
 		if (gizmo_drag_part == GIZMO_XY || gizmo_drag_part == GIZMO_XZ || gizmo_drag_part == GIZMO_YZ) {
@@ -865,77 +904,84 @@ void LevelEditorScreen::_apply_gizmo_scale(const Vector3 &p_world_delta) {
 			for (int idx : indices) {
 				Vector3 v = gt.xform(brush->get_vertex(idx));
 				Vector3 rel = v - pivot;
-				v = pivot + Vector3(rel.x * factors.x, rel.y * factors.y, rel.z * factors.z);
+				v = _snap(pivot + Vector3(rel.x * factors.x, rel.y * factors.y, rel.z * factors.z));
 				brush->set_vertex(idx, inv.xform(v));
 			}
 		}
 		_refresh_map();
 		return;
 	}
-	if (!selected_brush) {
+	// Mesh target: ONE per-axis factor set for all selected brushes, snapped
+	// against the PRIMARY brush's size (Hammer-style group scale). Each
+	// brush scales around its OWN AABB center; only the primary's scaled
+	// edges land exactly on grid-size multiples.
+	if (!selected_brush || !gizmo_drag_brush_verts.has(selected_brush)) {
 		return;
 	}
-	// Restore, then scale original vertices around the brush center (same
-	// pivot as uniform scale).
-	selected_brush->set_vertices_data(gizmo_drag_original_verts);
-
-	Transform3D inv = selected_brush->get_global_transform().affine_inverse();
-	Vector3 local_delta = inv.basis.xform(p_world_delta);
-
-	// Original size from the drag-start snapshot (the live brush is already
-	// restored above, but the AABB must come from the ORIGINAL geometry).
-	AABB bb;
-	for (int i = 0; i < gizmo_drag_original_verts.size(); i++) {
+	const PackedVector3Array &primary_orig = gizmo_drag_brush_verts[selected_brush];
+	AABB pbb;
+	for (int i = 0; i < primary_orig.size(); i++) {
 		if (i == 0) {
-			bb.position = gizmo_drag_original_verts[0];
+			pbb.position = primary_orig[0];
 		} else {
-			bb.expand_to(gizmo_drag_original_verts[i]);
+			pbb.expand_to(primary_orig[i]);
 		}
 	}
+	const Transform3D primary_inv = selected_brush->get_global_transform().affine_inverse();
+	const Vector3 primary_delta = primary_inv.basis.xform(p_world_delta);
 
-	// Scale around the center with the raw factor, then snap the resulting
-	// min/max of each axis to the grid independently - the brush grows from
-	// its center AND its edges land on grid lines (the snapped size may be
-	// asymmetric per side, which is expected at grid boundaries).
 	const real_t SCALE_RATE = 0.25; // 4 world units of drag = 2x scale.
-	Vector3 center = bb.get_center();
 	Vector3 factors(1, 1, 1);
 	if (gizmo_drag_part == GIZMO_XY || gizmo_drag_part == GIZMO_XZ || gizmo_drag_part == GIZMO_YZ) {
-		// Center/plane drag: uniform scale by the largest dragged component.
-		real_t f = 1.0 + MAX(local_delta.x, MAX(local_delta.y, local_delta.z)) * SCALE_RATE;
+		// Center/plane drag: uniform scale by the largest dragged component,
+		// snapped against the primary's largest extent.
+		real_t f = 1.0 + MAX(primary_delta.x, MAX(primary_delta.y, primary_delta.z)) * SCALE_RATE;
+		f = MAX(f, 0.01);
+		int ref_axis = 0;
+		for (int axis = 1; axis < 3; axis++) {
+			if (pbb.size[axis] > pbb.size[ref_axis]) {
+				ref_axis = axis;
+			}
+		}
+		if (pbb.size[ref_axis] > CMP_EPSILON) {
+			f = MAX(_snap(pbb.size[ref_axis] * f), grid_size) / pbb.size[ref_axis];
+		}
 		factors = Vector3(f, f, f);
 	} else if (gizmo_drag_part >= GIZMO_X && gizmo_drag_part <= GIZMO_Z) {
-		factors[gizmo_drag_part] = 1.0 + local_delta[gizmo_drag_part] * SCALE_RATE;
-	}
-	factors.x = MAX(factors.x, 0.01);
-	factors.y = MAX(factors.y, 0.01);
-	factors.z = MAX(factors.z, 0.01);
-
-	// Scaled AABB around the center, edges snapped to the grid.
-	Vector3 mins = center + (bb.position - center) * factors;
-	Vector3 maxs = center + (bb.position + bb.size - center) * factors;
-	for (int axis = 0; axis < 3; axis++) {
-		mins[axis] = _snap(mins[axis]);
-		maxs[axis] = _snap(maxs[axis]);
-		if (maxs[axis] - mins[axis] < grid_size) {
-			maxs[axis] = mins[axis] + grid_size;
+		const int axis = gizmo_drag_part;
+		real_t f = MAX(1.0 + primary_delta[axis] * SCALE_RATE, 0.01);
+		if (pbb.size[axis] > CMP_EPSILON) {
+			f = MAX(_snap(pbb.size[axis] * f), grid_size) / pbb.size[axis];
 		}
+		factors[axis] = f;
 	}
 
-	// Remap original verts from the original AABB into the snapped one.
-	for (int i = 0; i < selected_brush->get_vertex_count(); i++) {
-		Vector3 v = selected_brush->get_vertex(i);
-		for (int axis = 0; axis < 3; axis++) {
-			real_t t = (bb.size[axis] > CMP_EPSILON) ? (v[axis] - bb.position[axis]) / bb.size[axis] : 0.0;
-			v[axis] = mins[axis] + t * (maxs[axis] - mins[axis]);
+	for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
+		LevelBrush *brush = E.key;
+		brush->set_vertices_data(E.value);
+
+		AABB bb;
+		for (int i = 0; i < E.value.size(); i++) {
+			if (i == 0) {
+				bb.position = E.value[0];
+			} else {
+				bb.expand_to(E.value[i]);
+			}
 		}
-		selected_brush->set_vertex(i, v);
+		const Vector3 center = bb.get_center();
+
+		for (int i = 0; i < brush->get_vertex_count(); i++) {
+			Vector3 v = brush->get_vertex(i);
+			Vector3 rel = v - center;
+			v = center + Vector3(rel.x * factors.x, rel.y * factors.y, rel.z * factors.z);
+			brush->set_vertex(i, v);
+		}
 	}
 	_refresh_map();
 }
 
 void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
-	if (!selected_brush) {
+	if (!_has_selection()) {
 		return;
 	}
 
@@ -957,7 +1003,6 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 		// duplicated geometry by the delta (face caps slide along their own
 		// normals; edges/verts move freely).
 		if (selection_target == TARGET_FACE) {
-			int order = 0;
 			for (KeyValue<LevelBrush *, Vector<int>> &E : gizmo_extrude_cap_faces) {
 				LevelBrush *brush = E.key;
 				brush->set_vertices_data(gizmo_extrude_moved_verts[brush]);
@@ -965,14 +1010,33 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 				Transform3D inv = brush->get_global_transform().affine_inverse();
 				Vector3 local_delta = inv.basis.xform(p_world_delta);
 
-				for (int cap : E.value) {
-					const Vector3 &n = gizmo_extrude_normals[order++];
+				// All caps share ONE signed amount: the drag projected on a
+				// reference normal (the last cap = lowest face index, the +axis
+				// face for box topology). Each cap then slides along its OWN
+				// normal by that amount - opposing faces both move outward
+				// together instead of one going inward (per-face projection
+				// made an opposing pair slide the same world direction).
+				// The amount snaps to the grid (Hammer extrudes in grid steps).
+				const Vector<Vector3> &normals = gizmo_extrude_cap_normals[brush];
+				const real_t amount = _snap(local_delta.dot(normals[normals.size() - 1]));
+				for (int ci = 0; ci < E.value.size(); ci++) {
+					const Vector3 &n = normals[ci];
 					Vector<int> loop_verts;
-					LocalVector<int> loop = brush->get_face(cap);
+					LocalVector<int> loop = brush->get_face(E.value[ci]);
 					for (int idx : loop) {
 						loop_verts.push_back(idx);
 					}
-					brush->move_vertices(loop_verts, n * local_delta.dot(n));
+					brush->move_vertices(loop_verts, n * amount);
+				}
+
+				// The side walls were wound at begin-drag from the 0.001 stub;
+				// the drag can move the cap to the opposite side of the source
+				// plane, flipping which way the walls face (GOTCHAS #43). Re-wind
+				// them against the current geometry. Walls are the faces appended
+				// after the pre-extrude topology.
+				const int first_wall = gizmo_extrude_orig_faces[brush].size();
+				for (int f = first_wall; f < brush->get_face_count(); f++) {
+					brush->rewind_face_outward(f);
 				}
 			}
 		} else {
@@ -981,7 +1045,7 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 				brush->set_vertices_data(gizmo_extrude_moved_verts[brush]);
 
 				Transform3D inv = brush->get_global_transform().affine_inverse();
-				Vector3 local_delta = inv.basis.xform(p_world_delta);
+				Vector3 local_delta = _snap(inv.basis.xform(p_world_delta));
 				brush->move_vertices(E.value, local_delta);
 
 				// The extruded walls were wound at begin-drag from a stub offset;
@@ -1022,7 +1086,7 @@ void LevelEditorScreen::_gizmo_end_drag() {
 	gizmo_dragging = false;
 	gizmo_drag_uniform_scale = false;
 
-	if (!selected_brush) {
+	if (!_has_selection()) {
 		return;
 	}
 
@@ -1041,18 +1105,26 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		return;
 	}
 
-	// Scale tool + Mesh target: commit against the drag-start vertex snapshot
-	// (the shared element-path map is unused in this case).
+	// Scale tool + Mesh target: one undo action across all scaled brushes.
 	if (tool == TOOL_SCALE && selection_target == TARGET_MESH) {
-		LevelBrush *target = selected_brush;
-		PackedVector3Array old_verts = gizmo_drag_original_verts;
-		PackedVector3Array new_verts = target->get_vertices_data();
-		if (new_verts != old_verts) {
-			Array cur_faces = target->get_faces_data();
-			Array cur_mats = target->get_face_materials_data();
-			_commit_brush_undo(TTR("Scale Brush"), target, old_verts, cur_faces, cur_mats);
+		EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+		undo_redo->create_action(TTR("Scale Brush"));
+		bool any = false;
+		for (const KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
+			LevelBrush *target = E.key;
+			if (target->get_vertices_data() == E.value) {
+				continue;
+			}
+			any = true;
+			_add_brush_undo_pair(undo_redo, target, E.value, target->get_faces_data(), target->get_face_materials_data());
+		}
+		if (any) {
+			undo_redo->add_do_method(current_map, "refresh");
+			undo_redo->add_undo_method(current_map, "refresh");
+			undo_redo->commit_action(false);
 		}
 		gizmo_drag_original_verts.clear();
+		gizmo_drag_brush_verts.clear();
 		return;
 	}
 
@@ -1081,8 +1153,8 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		gizmo_extrude_orig_faces.clear();
 		gizmo_extrude_orig_mats.clear();
 		gizmo_extrude_cap_faces.clear();
+		gizmo_extrude_cap_normals.clear();
 		gizmo_extrude_elem_verts.clear();
-		gizmo_extrude_normals.clear();
 		gizmo_extrude_moved_verts.clear();
 		gizmo_drag_brush_verts.clear();
 		return;
@@ -1231,7 +1303,10 @@ bool LevelEditorScreen::_rotate_input(LevelEditorViewport *p_vp, Camera3D *p_cam
 				rotate_drag_viewport = p_vp;
 				rotate_drag_start_angle = _rotate_screen_angle(p_vp, mb->get_position(), axis);
 				if (selection_target == TARGET_MESH) {
-					gizmo_drag_original_verts = selected_brush->get_vertices_data();
+					gizmo_drag_brush_verts.clear();
+					for (LevelBrush *b : selected_brushes) {
+						gizmo_drag_brush_verts[b] = b->get_vertices_data();
+					}
 				} else {
 					// Element targets: snapshot every selected brush, and the drag
 					// pivot (selection center) for world-axis rotation.
@@ -1303,14 +1378,9 @@ bool LevelEditorScreen::_gizmo_input(LevelEditorViewport *p_vp, Camera3D *p_came
 				_gizmo_begin_drag(p_vp, mb->get_position());
 				return true; // Consumed by gizmo.
 			}
-			if (tool == TOOL_SCALE) {
-				// Off-gizmo click in Scale mode: drag anywhere to scale
-				// uniformly via mouse X.
-				gizmo_drag_uniform_scale = true;
-				gizmo_drag_part = GIZMO_NONE;
-				_gizmo_begin_drag(p_vp, mb->get_position());
-				return true;
-			}
+			// Off-gizmo clicks fall through to _selection_input in EVERY tool -
+			// the Scale tool's old "click anywhere to uniform-scale" swallow
+			// made already-selected brushes un-reselectable (GOTCHAS #44).
 		} else if (gizmo_dragging) {
 			_gizmo_end_drag();
 			return true;

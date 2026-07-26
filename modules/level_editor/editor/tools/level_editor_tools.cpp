@@ -618,33 +618,49 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 	Ref<InputEventMouseButton> mb = p_event;
 	Ref<InputEventMouseMotion> mm = p_event;
 
-	// Whole-brush drag in Select mode.
+	// Whole-brush drag in Select mode (moves ALL selected brushes).
 	if (select_moving) {
 		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT && !mb->is_pressed()) {
-			// Release: commit undo.
-			Vector3 new_pos = selected_brush ? selected_brush->get_position() : select_move_original_position;
-			if (selected_brush && !new_pos.is_equal_approx(select_move_original_position)) {
-				LevelBrush *target = selected_brush;
-				Vector3 old_pos = select_move_original_position;
-				EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-				undo_redo->create_action(TTR("Move Brush"));
-				undo_redo->add_do_property(target, "position", new_pos);
-				undo_redo->add_undo_property(target, "position", old_pos);
+			// Release: commit one undo action covering every moved brush.
+			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+			bool created = false;
+			for (const KeyValue<LevelBrush *, Vector3> &E : select_move_original_positions) {
+				LevelBrush *b = E.key;
+				if (!b->is_inside_tree()) {
+					continue;
+				}
+				const Vector3 new_pos = b->get_position();
+				if (!new_pos.is_equal_approx(E.value)) {
+					if (!created) {
+						undo_redo->create_action(TTR("Move Brush"));
+						created = true;
+					}
+					undo_redo->add_do_property(b, "position", new_pos);
+					undo_redo->add_undo_property(b, "position", E.value);
+				}
+			}
+			if (created) {
 				undo_redo->commit_action(false);
 			}
 			select_moving = false;
 			select_move_viewport = nullptr;
+			select_move_original_positions.clear();
 			return true;
 		}
 		if (mm.is_valid() && select_move_viewport == p_vp && selected_brush) {
 			Vector3 grab;
 			if (_select_ray_to_edit_plane(p_vp, mm->get_position(), grab)) {
-				Vector3 new_world = _snap(grab - select_move_offset);
+				const Vector3 new_world = _snap(grab - select_move_offset);
 				Node3D *parent = Object::cast_to<Node3D>(selected_brush->get_parent());
+				Vector3 new_primary = new_world;
 				if (parent) {
-					selected_brush->set_position(parent->get_global_transform().affine_inverse().xform(new_world));
-				} else {
-					selected_brush->set_position(new_world);
+					new_primary = parent->get_global_transform().affine_inverse().xform(new_world);
+				}
+				const Vector3 delta = new_primary - select_move_original_position;
+				for (const KeyValue<LevelBrush *, Vector3> &E : select_move_original_positions) {
+					if (E.key->is_inside_tree()) {
+						E.key->set_position(E.value + delta);
+					}
 				}
 				_refresh_map();
 				_update_overlays();
@@ -671,18 +687,25 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 		bool add = mb->is_shift_pressed();
 		switch (selection_target) {
 			case TARGET_MESH: {
-				// Click a brush to select it; re-clicking the already-selected
-				// brush in the Select tool starts a whole-brush drag (like the
-				// ghost move).
+				// Click a brush to select it (Shift toggles it in/out of the
+				// multi-selection); re-clicking the already-selected primary in
+				// the Select tool starts a whole-brush drag of ALL selected
+				// brushes (like the ghost move).
 				Vector3 hit;
 				LevelBrush *brush = nullptr;
 				int f;
 				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
-					if (brush == selected_brush && tool == TOOL_SELECT) {
+					if (add) {
+						_mesh_selection_toggle(brush);
+					} else if (brush == selected_brush && tool == TOOL_SELECT && _mesh_selection_has(brush)) {
 						// Begin drag on the edit plane at the grab depth.
 						select_moving = true;
 						select_move_viewport = p_vp;
 						select_move_original_position = selected_brush->get_position();
+						select_move_original_positions.clear();
+						for (LevelBrush *b : selected_brushes) {
+							select_move_original_positions[b] = b->get_position();
+						}
 						Vector3 grab;
 						if (_select_ray_to_edit_plane(p_vp, mb->get_position(), grab)) {
 							select_move_offset = grab - selected_brush->get_global_position();
@@ -690,8 +713,7 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 							select_move_offset = Vector3();
 						}
 					} else {
-						selected_brush = brush;
-						_edit_brush_node(brush);
+						_mesh_selection_set(brush);
 					}
 				} else if (!add) {
 					_clear_selection();
@@ -716,6 +738,9 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 					}
 					if (brush != selected_brush) {
 						selected_brush = brush;
+						if (!_mesh_selection_has(brush)) {
+							selected_brushes.push_back(brush);
+						}
 						_edit_brush_node(brush);
 					}
 					paint_select_active = true;
@@ -754,6 +779,9 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 					}
 					if (brush != selected_brush) {
 						selected_brush = brush;
+						if (!_mesh_selection_has(brush)) {
+							selected_brushes.push_back(brush);
+						}
 						_edit_brush_node(brush);
 					}
 					paint_select_active = true;
@@ -786,6 +814,9 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 					}
 					if (brush != selected_brush) {
 						selected_brush = brush;
+						if (!_mesh_selection_has(brush)) {
+							selected_brushes.push_back(brush);
+						}
 						_edit_brush_node(brush);
 					}
 					paint_select_active = true;

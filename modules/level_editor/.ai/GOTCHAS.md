@@ -94,6 +94,14 @@ Bugs that cost real debugging time. Read before touching the module.
     pre-op `vertices`/`faces` arrays (fewer elements), and the stale
     remapped indices then read out of bounds in every draw/pick (the
     "Index p_index is out of bounds" spam after undoing an extrude).
+    MULTI-ELEMENT SIDE: parallel per-element arrays keyed by SEPARATE
+    HashMaps (`gizmo_extrude_cap_faces` vs a flat
+    `gizmo_extrude_normals`) silently misalign once two elements are
+    involved - HashMap iteration order is per-map, and a shared flat
+    counter walked off the end (OOB in `get_face_normal` when Shift+
+    dragging two faces). Keep per-element data in ONE per-brush struct
+    (`gizmo_extrude_cap_normals` alongside `gizmo_extrude_cap_faces`),
+    iterated in lockstep.
 
 15. **`_set_tool`/`_set_target` must interrupt active drags.** Tool/target
     shortcuts can fire mid-drag; the drag's undo action commits against the
@@ -137,9 +145,16 @@ Bugs that cost real debugging time. Read before touching the module.
     FIX: use the `EditorPlugin::edited_scene_changed()` virtual override
     instead - called via `EditorData::notify_edited_scene_changed()`.
 
-22. **Grid lines vanish when flying low** in the perspective view: projecting
-    a segment with an endpoint behind the camera fails. FIX: clip segments
-    against the camera near plane in camera space before projecting.
+22. **Projecting a behind-camera point mirrors it.** `Camera3D::
+    unproject_position` on a point past the near plane returns a mirrored
+    screen position, and `is_position_behind` rejects it - so any overlay
+    that projects per-vertex vanishes ENTIRELY when one endpoint goes
+    behind (grid lines once did; selected-face fills did). FIX: clip in
+    camera space against the near plane before projecting. Use the shared
+    helpers `LevelEditorViewport::project_segment` (lines) and
+    `project_polygon` (face loops, Sutherland-Hodgman) - never raw
+    `project()` per vertex in overlay draw code. Ortho cameras short-
+    circuit (parallel rays can't cross the near plane).
 
 23. **Module editor icons**: add `get_icons_path()` to `config.py` and drop
     SVGs in that folder - `editor/icons/SCsub` embeds them by filename into
@@ -209,6 +224,33 @@ Bugs that cost real debugging time. Read before touching the module.
     bake UVs are position-based planar projections, loop-order
     independent. Don't touch the UV code for this (one speculative UV
     "fix" was already reverted).
+
+44. **Off-gizmo LMB swallows block selection clicks.** `_gizmo_input` runs
+    BEFORE `_selection_input` in `forward_input`. The Scale tool had a
+    "click anywhere to uniform-scale" affordance that consumed EVERY LMB
+    press when a selection was active - so once a brush was selected, no
+    other brush could be clicked (selection worked only while empty).
+    FIX: the off-gizmo uniform-scale swallow was REMOVED; off-gizmo clicks
+    fall through to `_selection_input` in every transform tool, and
+    uniform scale lives on the gizmo's center handle (plane pick ->
+    uniform factor). Any future "click anywhere to drag" affordance must
+    not eat plain clicks that the user needs for selection. Also: the
+    Mesh-target hover highlight was gated on `tool == TOOL_SELECT`, which
+    made it look like picking itself was broken in Rotate/Scale -
+    diagnostic prints on INPUT are useless when the bug is in DRAWING.
+
+45. **Scale-tool paths must not run during an extrude drag.** Shift+drag
+    extrude duplicates topology at begin-drag; the drag then restores
+    `gizmo_extrude_moved_verts` (POST-extrude count) each frame. The
+    Scale tool's `_apply_gizmo_scale`/`_apply_gizmo_scale_uniform`
+    instead restored `gizmo_drag_brush_verts` - the PRE-extrude snapshot
+    - shrinking `verts` below the extruded faces' loop indices; the next
+    `_refresh_map()` crashed in bake (`verts[f[i]]` OOB in
+    `get_face_normal`). FIX: `_gizmo_drag_to` routes ALL extrude drags to
+    `_apply_gizmo_delta` (which has the extrude-aware restore) regardless
+    of tool. RULE: any per-frame drag-apply path that restores a vertex
+    snapshot must know whether the drag extruded - check
+    `gizmo_extrude_drag` before touching `set_vertices_data`.
 
 ## Serialization
 

@@ -150,6 +150,14 @@ public:
 
 	void queue_overlay_redraw();
 	bool project(const Vector3 &p_world, Vector2 &r_screen) const;
+	// Near-plane-safe projection: clips the world segment against the camera
+	// near plane in camera space before unprojecting, so overlay lines don't
+	// vanish when ONE endpoint goes behind the camera (GOTCHAS #22).
+	bool project_segment(const Vector3 &p_a, const Vector3 &p_b, Vector2 &r_a, Vector2 &r_b) const;
+	// Same for a polygon loop: clips each edge against the near plane and
+	// rebuilds the loop (a vert behind the camera inserts the two crossing
+	// points instead of dropping the whole face).
+	bool project_polygon(const Vector<Vector3> &p_world, PackedVector2Array &r_screen) const;
 
 	void set_grid_mesh_size(real_t p_grid_size);
 	void set_grid_3d_visible(bool p_visible);
@@ -387,6 +395,7 @@ private:
 	Vector3 select_move_offset; // Grab point minus brush world position.
 	LevelEditorViewport *select_move_viewport = nullptr;
 	Vector3 select_move_original_position;
+	HashMap<LevelBrush *, Vector3> select_move_original_positions; // All selected brushes at drag start (multi-brush move).
 
 	// Paint selection: holding LMB and dragging in an element mode selects
 	// each element the cursor passes over (no toggle-off while painting).
@@ -426,9 +435,13 @@ private:
 	bool _mirror_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event);
 	bool _selection_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event);
 
-	// Selection state. Whole-brush: selected_brush. Element modes select
-	// across brushes: each set is keyed by the owning brush.
+	// Selection state. Whole-brush (Mesh target): selected_brushes is the
+	// authoritative multi-selection; selected_brush is the PRIMARY (last
+	// clicked) - it drives the inspector and the single-brush paths (resize
+	// handles, grab-drag), and is kept in sync as brushes are added/removed.
+	// Element modes select across brushes: each set is keyed by the owner.
 	LevelBrush *selected_brush = nullptr;
+	Vector<LevelBrush *> selected_brushes;
 	HashMap<LevelBrush *, HashSet<int>> selected_faces;
 	HashMap<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> selected_edges;
 	HashMap<LevelBrush *, HashSet<int>> selected_vertices;
@@ -476,8 +489,8 @@ private:
 	HashMap<LevelBrush *, Array> gizmo_extrude_orig_faces;
 	HashMap<LevelBrush *, Array> gizmo_extrude_orig_mats;
 	HashMap<LevelBrush *, Vector<int>> gizmo_extrude_cap_faces; // Face target: cap face per brush, in extrude order.
+	HashMap<LevelBrush *, Vector<Vector3>> gizmo_extrude_cap_normals; // Cap normals per brush, same order as cap_faces (per-brush so HashMap order can't misalign them).
 	HashMap<LevelBrush *, Vector<int>> gizmo_extrude_elem_verts; // Edge/vertex targets: duplicated vert indices per brush (flat list).
-	Vector<Vector3> gizmo_extrude_normals; // Brush-local cap normals, same order (face target).
 	HashMap<LevelBrush *, PackedVector3Array> gizmo_extrude_moved_verts; // Post-extrude topology at drag start.
 
 	Vector3 _get_gizmo_origin() const; // World-space pivot of current selection.
@@ -526,6 +539,12 @@ private:
 	void _set_target(SelectionTarget p_target);
 	void _update_mode_icons();
 	void _edit_brush_node(LevelBrush *p_brush);
+
+	// Mesh-target multi-selection helpers (keep selected_brushes and the
+	// selected_brush primary in sync, and the inspector on the primary).
+	void _mesh_selection_set(LevelBrush *p_brush); // Replace with one.
+	void _mesh_selection_toggle(LevelBrush *p_brush); // Shift+click add/remove.
+	bool _mesh_selection_has(LevelBrush *p_brush) const;
 
 	void _action_extrude_faces();
 	void _action_extrude_edges();

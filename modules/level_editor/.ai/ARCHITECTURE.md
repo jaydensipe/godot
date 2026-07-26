@@ -161,12 +161,19 @@ SubViewportContainer
   auto-creates); `LevelEditorPlugin::edited_scene_changed()` override
   re-resolves on scene switch. The map is only created by the button
   (`_get_or_create_map`).
-- Selection: `LevelBrush *selected_brush` (always the most-recent brush,
-  even in element targets - clip/mirror/menus rely on it) + per-brush
-  element sets: `HashMap<LevelBrush *, HashSet<...>> selected_faces /
-  selected_edges / selected_vertices` - element targets select across
-  brushes. `_set_target` clears selection; switching among the three
-  transform tools keeps it.
+- Selection: Mesh target is MULTI-select - `Vector<LevelBrush *>
+  selected_brushes` is authoritative, with `LevelBrush *selected_brush`
+  as the PRIMARY (last clicked: drives the inspector via
+  `_edit_brush_node`, the single-brush resize handles, and clip/mirror/
+  menus). Click = replace (`_mesh_selection_set`), Shift+click = toggle
+  (`_mesh_selection_toggle`). Move/Rotate/Scale/Delete and the
+  click-drag (`select_moving`) act on ALL selected brushes; Rotate/Scale
+  pivot per-brush around its own center (individual origins); the gizmo
+  sits at the combined center. Per-brush AABB resize handles draw only
+  when exactly one brush is selected. Element targets keep the per-brush
+  `HashMap<LevelBrush *, HashSet<...>>` sets (select across brushes).
+  `_set_target` clears selection; switching among the three transform
+  tools keeps it.
 - Element picking scans ALL brushes in the map (`_pick_vertex`/`_pick_edge`/
   `_pick_face`). Hover shows the hovered brush (light-blue outline) + its
   pickable elements: green vertices (vertex target only), green hovered edge,
