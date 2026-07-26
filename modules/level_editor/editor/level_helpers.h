@@ -32,6 +32,7 @@
 
 #include "core/math/aabb.h"
 #include "core/math/plane.h"
+#include "core/variant/variant.h"
 
 // Shared box helpers for the level editor (ghost block, select handles,
 // drag feedback). Corner indexing is a bitmask: x|y|z (bit 0/1/2).
@@ -75,6 +76,19 @@ inline Vector3 aabb_face_center(const AABB &p_aabb, int p_face) {
 	const Vector3 c = p_aabb.get_center();
 	const Vector3 hs = p_aabb.size * 0.5;
 	return c + AABB_FACE_DIRS[p_face] * Vector3(hs.x, hs.y, hs.z);
+}
+
+// AABB enclosing a vertex array (empty for 0 points).
+inline AABB aabb_from_points(const PackedVector3Array &p_points) {
+	AABB bb;
+	for (int i = 0; i < p_points.size(); i++) {
+		if (i == 0) {
+			bb.position = p_points[0];
+		} else {
+			bb.expand_to(p_points[i]);
+		}
+	}
+	return bb;
 }
 
 // Plane containing p_axis through p_point, oriented to face p_cam_pos as

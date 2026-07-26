@@ -121,7 +121,7 @@ void LevelEditorScreen::_draw_mirror(LevelEditorViewport *p_vp, Control *p_canva
 		Vector2 sp;
 		if (p_vp->project(mirror_points[i], sp)) {
 			bool hot = (mirror_drag_point == i);
-			real_t hs_px = 4.0 * EDSCALE;
+			real_t hs_px = LevelEditorHandles::POINT_SIZE * EDSCALE;
 			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hot ? LevelEditorColors::CLIP_POINT_HOT : LevelEditorColors::CLIP);
 		}
 	}
@@ -167,7 +167,7 @@ bool LevelEditorScreen::_mirror_input(LevelEditorViewport *p_vp, Camera3D *p_cam
 				// Grab a mirror point to adjust.
 				for (int i = 0; i < 2; i++) {
 					Vector2 sp;
-					if (vp->project(mirror_points[i], sp) && sp.distance_to(mb->get_position()) < 10.0 * EDSCALE) {
+					if (vp->project(mirror_points[i], sp) && sp.distance_to(mb->get_position()) < LevelEditorHandles::POINT_PICK_TOL * EDSCALE) {
 						mirror_drag_point = i;
 						mirror_viewport = vp;
 						return true;

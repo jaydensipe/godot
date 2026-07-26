@@ -30,6 +30,8 @@
 
 #include "level_brush.h"
 
+#include "level_constants.h"
+
 #include "core/config/engine.h"
 #include "core/object/class_db.h"
 #include "scene/resources/material.h"
@@ -99,6 +101,9 @@ Vector3 LevelBrush::get_vertex(int p_index) const {
 void LevelBrush::set_vertex(int p_index, const Vector3 &p_pos) {
 	ERR_FAIL_INDEX(p_index, (int)verts.size());
 	verts[p_index] = p_pos;
+	// Deferred (coalescing): gizmo drags call this per-vertex per-frame and
+	// a single refresh results; inspector edits refresh too.
+	_notify_map_changed();
 }
 
 LocalVector<int> LevelBrush::get_face(int p_face) const {
@@ -293,7 +298,7 @@ void LevelBrush::get_bake_surface_data(int p_face, Vector<Vector3> &r_vertices, 
 		axis_v = Vector3(0, 1, 0);
 	}
 
-	const real_t uv_scale = 0.25;
+	const real_t uv_scale = LevelBrushConstants::BAKE_UV_SCALE;
 
 	for (uint32_t i = 0; i + 2 < loop.size(); i++) {
 		int tri[3];

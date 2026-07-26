@@ -30,6 +30,8 @@
 
 #include "level_map.h"
 
+#include "level_constants.h"
+
 #include "core/config/engine.h"
 #include "core/object/class_db.h"
 #include "scene/3d/occluder_instance_3d.h"
@@ -275,7 +277,7 @@ Node3D *LevelMap::bake() const {
 
 LevelMap::LevelMap() {
 	default_material.instantiate();
-	default_material->set_albedo(Color(0.7, 0.7, 0.7));
+	default_material->set_albedo(LevelEditorColors::DEFAULT_BRUSH_ALBEDO);
 	// Standard back-face culling: the bake emits Vulkan-style clockwise-front
 	// triangles (see get_bake_surface_data), so exteriors draw and interiors cull.
 	default_material->set_cull_mode(BaseMaterial3D::CULL_BACK);

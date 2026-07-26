@@ -1,5 +1,9 @@
 # Level Editor - Tests
 
+Note: when a bug is fixed or a feature lands, if it can be tested headlessly
+(pure geometry / logic), please add a test in the same change - a regression
+test for fixes, invariant tests for features.
+
 ## Where
 
 `modules/level_editor/tests/` — picked up automatically by the engine's test
@@ -71,6 +75,20 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
 - `bevel_edges_profiled` collinear chain with steps>=1 (bounds sanity -
   guards the bowtie regression)
 - `get_face_center` / `get_center` (unit-box geometry)
+- `get_face_normal` invariants (unit length, planar cross match, bent
+  quad robustness, degenerate-face (0,1,0) fallback)
+- `ray_intersect` edge cases (miss leaves r_dist untouched, inside-out
+  exit-face hit, face-parallel miss)
+- `clip` with a diagonal plane (cap is planar, on-plane verts, stored
+  normal faces the removed side)
+- `rewind_face_outward` (no-op on outward face, reverses an inward one)
+- `mirror` round-trip (double mirror = identity; face materials survive)
+- `compact_vertices` no-op stability (verts + loop indices untouched when
+  nothing is orphaned)
+- extrude winding regressions: quad extruded downward on all 4 sides
+  (every wall faces out - the flat-quad degenerate case, GOTCHAS #43);
+  cube top edge x 4 pull directions (centroid-side rule);
+  `extrude_face` on an interior (flipped) brush
 - serialization round-trip (`vertices`/`faces`/`face_materials` properties)
 - bake/collision triangle counts
 
@@ -108,7 +126,8 @@ physics server for `StaticBody3D` construction — untagged cases crash):
   INDICES after these ops - compaction reuses indices; compare positions.
 - Geometry tolerances live in `LevelBrushConstants` (level_constants.h,
   module root): `PLANE_EPSILON` 0.0005, `WELD_DIST` = 4x that,
-  `PARALLEL_DOT` 0.999.
+  `PARALLEL_DOT` 0.999, `WINDING_SIDE_EPS` 0.001, `BEVEL_MITRE_MIN_SIN`
+  0.05, `BAKE_UV_SCALE` 0.25.
 - `LevelMap::bake()` falls back to local transforms when detached from the
   tree, but in `[SceneTree]` tests the map/brushes are in-tree and use
   globals — write assertions accordingly.

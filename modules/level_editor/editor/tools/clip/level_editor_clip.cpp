@@ -62,7 +62,7 @@ void LevelEditorScreen::_clip_update_second(const Vector3 &p_point) {
 int LevelEditorScreen::_pick_clip_point(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
 	for (int i = 0; i < 2; i++) {
 		Vector2 sp;
-		if (p_vp->project(clip_points[i], sp) && sp.distance_to(p_screen) < 10.0 * EDSCALE) {
+		if (p_vp->project(clip_points[i], sp) && sp.distance_to(p_screen) < LevelEditorHandles::POINT_PICK_TOL * EDSCALE) {
 			return i;
 		}
 	}
@@ -169,7 +169,7 @@ void LevelEditorScreen::_draw_clip(LevelEditorViewport *p_vp, Control *p_canvas)
 		Vector2 sp;
 		if (p_vp->project(clip_points[i], sp)) {
 			bool hot = (clip_drag_point == i);
-			real_t hs_px = 4.0 * EDSCALE;
+			real_t hs_px = LevelEditorHandles::POINT_SIZE * EDSCALE;
 			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hot ? LevelEditorColors::CLIP_POINT_HOT : pt_col);
 		}
 	}

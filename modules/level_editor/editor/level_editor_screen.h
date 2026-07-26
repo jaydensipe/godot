@@ -396,7 +396,7 @@ private:
 	AABB select_drag_original_aabb; // Brush-local AABB at drag start.
 	PackedVector3Array select_drag_original_verts; // Brush vertices at drag start.
 
-	// Select-mode whole-brush drag (click selected brush, move like ghost).
+	// Move-tool whole-brush drag (click selected brush, move like ghost).
 	bool select_moving = false;
 	Vector3 select_move_offset; // Grab point minus brush world position.
 	LevelEditorViewport *select_move_viewport = nullptr;
@@ -460,8 +460,6 @@ private:
 	int hover_vertex = -1;
 	bool has_hover_vertex = false;
 
-	Ref<Material> current_material;
-
 	// Per-brush snapshot at gizmo drag start (multi-brush element moves).
 	HashMap<LevelBrush *, PackedVector3Array> gizmo_drag_brush_verts;
 
@@ -485,9 +483,7 @@ private:
 	LevelEditorViewport *gizmo_drag_viewport = nullptr;
 	Vector3 gizmo_drag_plane_normal;
 	Vector3 gizmo_drag_plane_point;
-	PackedVector3Array gizmo_drag_original_verts; // Brush vertices at drag start.
-	Vector3 gizmo_drag_original_position; // Brush node position at drag start (Select mode).
-	bool gizmo_drag_uniform_scale = false; // Scale drag started off-gizmo (mouse-X uniform).
+	HashMap<LevelBrush *, Vector3> gizmo_drag_original_positions; // ALL selected brushes' node positions (multi-brush gizmo move).
 	bool gizmo_extrude_drag = false; // Shift+drag in an element target: extrude instead of move.
 	// Element extrude-drag snapshots (indices shift after extruding, so the
 	// generic vertex snapshot can't restore them).
@@ -507,7 +503,6 @@ private:
 	void _gizmo_end_drag();
 	void _apply_gizmo_delta(const Vector3 &p_world_delta);
 	void _apply_gizmo_rotate(int p_axis, real_t p_angle);
-	void _apply_gizmo_scale_uniform(real_t p_factor);
 	void _apply_gizmo_scale(const Vector3 &p_world_delta);
 	void _draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas);
 
@@ -555,7 +550,6 @@ private:
 	void _action_extrude_faces();
 	void _action_extrude_edges();
 	void _action_extrude_vertices();
-	void _action_apply_material();
 	void _action_flip_faces();
 	void _action_subdivide_faces();
 	void _bake_pressed();
@@ -589,6 +583,9 @@ private:
 	// Undo helper: records the brush's current vertices/faces/materials as the
 	// "do" state against previously-snapshotted data, in one action.
 	void _commit_brush_undo(const String &p_action, LevelBrush *p_brush, const PackedVector3Array &p_old_verts, const Array &p_old_faces, const Array &p_old_mats, bool p_execute = false);
+	// Multi-brush variant: one action across every brush whose verts changed
+	// vs the snapshot map (skips unchanged brushes; no-op if none changed).
+	void _commit_brush_verts_undo(const String &p_action, const HashMap<LevelBrush *, PackedVector3Array> &p_old_verts);
 	// Records one brush's current topology as the do-state against the given
 	// snapshot, into an already-created undo action. Shared by tool actions
 	// that span multiple brushes in one undo action.
@@ -620,10 +617,6 @@ public:
 	real_t get_grid_size() const { return grid_size; }
 	bool is_grid_2d_enabled() const { return grid_2d_enabled; }
 	bool is_grid_3d_enabled() const { return grid_3d_enabled; }
-
-	// Dock hooks (LevelEditorDock forwards its UI events here).
-	void _material_changed(const Ref<Resource> &p_resource);
-	void apply_material_from_dock() { _action_apply_material(); }
 
 	// Sync the level-editor brush selection with the editor's node selection.
 	void set_selected_brush_from_editor(LevelBrush *p_brush);

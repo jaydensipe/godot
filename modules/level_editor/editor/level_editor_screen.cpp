@@ -700,7 +700,7 @@ LevelEditorScreen::LevelEditorScreen() {
 	toolbar = memnew(HBoxContainer);
 	toolbar_margin->add_child(toolbar);
 
-	// Tool modes in button-group panels (Select, Rotate, Scale) / (Block, Clip)...
+	// Tool modes in button-group panels (Select, Move, Rotate, Scale) / (Block, Clip, Mirror)...
 	PanelContainer *tool_panel = memnew(PanelContainer);
 	tool_panel->set_theme_type_variation("PanelContainerButtonGroup");
 	toolbar->add_child(tool_panel);
@@ -777,8 +777,9 @@ LevelEditorScreen::LevelEditorScreen() {
 	tool_buttons[TOOL_ROTATE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_rotate", TTRC("Rotate Mode"), Key::E, true));
 	tool_buttons[TOOL_SCALE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_scale", TTRC("Scale Mode"), Key::R, true));
 
-	tool_buttons[TOOL_BLOCK]->set_shortcut(ED_SHORTCUT("level_editor/tool_block", TTRC("Block Mode"), Key::B, true));
-	tool_buttons[TOOL_CLIP]->set_shortcut(ED_SHORTCUT("level_editor/tool_clip", TTRC("Clip Mode"), Key::C, true));
+	tool_buttons[TOOL_BLOCK]->set_shortcut(ED_SHORTCUT("level_editor/tool_block", TTRC("Block Tool"), Key::B, true));
+	tool_buttons[TOOL_CLIP]->set_shortcut(ED_SHORTCUT("level_editor/tool_clip", TTRC("Clip Tool"), Key::C, true));
+	tool_buttons[TOOL_MIRROR]->set_shortcut(ED_SHORTCUT("level_editor/tool_mirror", TTRC("Mirror Tool"), Key::M, true));
 
 	target_buttons[TARGET_VERTEX]->set_shortcut(ED_SHORTCUT("level_editor/tool_vertex", TTRC("Vertex Selection"), Key::KEY_1, true));
 	target_buttons[TARGET_EDGE]->set_shortcut(ED_SHORTCUT("level_editor/tool_edge", TTRC("Edge Selection"), Key::KEY_2, true));
@@ -858,7 +859,6 @@ LevelEditorScreen::LevelEditorScreen() {
 	face_menu->set_theme_type_variation("FlatMenuButton");
 	PopupMenu *face_popup = face_menu->get_popup();
 	face_popup->add_item(TTRC("Extrude"), 0);
-	face_popup->add_item(TTRC("Apply Material"), 1);
 	face_popup->add_item(TTRC("Delete"), 2);
 	face_popup->add_shortcut(ED_SHORTCUT("level_editor/subdivide_face", TTRC("Subdivide"), KeyModifierMask::CMD_OR_CTRL | KeyModifierMask::SHIFT | Key::D, true), 4);
 	face_popup->add_separator();
@@ -1344,14 +1344,16 @@ void LevelEditorScreen::_set_tool(Tool p_tool) {
 
 	// Entering a drawing tool suspends the transform tool + selection target;
 	// leaving one restores them (Hammer remembers).
+	Tool restore_tool = p_tool;
 	if (to_drawing && !was_drawing) {
 		last_transform_tool = tool;
 		last_target = selection_target;
 	} else if (!to_drawing && was_drawing) {
+		restore_tool = last_transform_tool;
 		selection_target = last_target;
 	}
 
-	tool = p_tool;
+	tool = restore_tool;
 	if (!to_drawing) {
 		last_transform_tool = tool;
 	}
@@ -1564,10 +1566,6 @@ void LevelEditorScreen::_grid_size_selected(int p_index) {
 	_update_overlays();
 }
 
-void LevelEditorScreen::_material_changed(const Ref<Resource> &p_resource) {
-	current_material = p_resource;
-}
-
 Vector3 LevelEditorScreen::_snap(const Vector3 &p_v) const {
 	return Vector3(_snap(p_v.x), _snap(p_v.y), _snap(p_v.z));
 }
@@ -1641,6 +1639,29 @@ void LevelEditorScreen::_commit_brush_undo(const String &p_action, LevelBrush *p
 	undo_redo->add_do_method(map, "refresh");
 	undo_redo->add_undo_method(map, "refresh");
 	undo_redo->commit_action(p_execute);
+}
+
+void LevelEditorScreen::_commit_brush_verts_undo(const String &p_action, const HashMap<LevelBrush *, PackedVector3Array> &p_old_verts) {
+	// One undo action across every brush whose vertices actually changed vs
+	// the snapshot. No-op (no action created) when nothing moved.
+	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+	bool created = false;
+	for (const KeyValue<LevelBrush *, PackedVector3Array> &E : p_old_verts) {
+		LevelBrush *target = E.key;
+		if (target->get_vertices_data() == E.value) {
+			continue;
+		}
+		if (!created) {
+			undo_redo->create_action(p_action);
+			created = true;
+		}
+		_add_brush_undo_pair(undo_redo, target, E.value, target->get_faces_data(), target->get_face_materials_data());
+	}
+	if (created) {
+		undo_redo->add_do_method(current_map, "refresh");
+		undo_redo->add_undo_method(current_map, "refresh");
+		undo_redo->commit_action(false);
+	}
 }
 
 void LevelEditorScreen::_clear_selection() {
@@ -1961,15 +1982,7 @@ bool LevelEditorScreen::_select_ray_to_edit_plane(LevelEditorViewport *p_vp, con
 // ---- Select-mode box handles ------------------------------------------------
 
 AABB LevelEditorScreen::_get_brush_local_aabb(LevelBrush *p_brush) const {
-	AABB bb;
-	for (int i = 0; i < p_brush->get_vertex_count(); i++) {
-		if (i == 0) {
-			bb.position = p_brush->get_vertex(0);
-		} else {
-			bb.expand_to(p_brush->get_vertex(i));
-		}
-	}
-	return bb;
+	return LevelHelpers::aabb_from_points(p_brush->get_vertices_data());
 }
 
 void LevelEditorScreen::_apply_brush_aabb(LevelBrush *p_brush, const AABB &p_aabb) {
@@ -2107,7 +2120,7 @@ void LevelEditorScreen::_draw_select_handles(LevelEditorViewport *p_vp, Control 
 		if (p_vp->project(fc, sp)) {
 			bool hot = (select_handle_hover == GHOST_FACE_XN + i || select_handle_drag == GHOST_FACE_XN + i);
 			Color hc = hot ? LevelEditorColors::SELECT_HANDLE_HOT : LevelEditorColors::SELECT_HANDLE;
-			real_t hs_px = 4.0 * EDSCALE;
+			real_t hs_px = LevelEditorHandles::FACE_SIZE * EDSCALE;
 			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hc);
 		}
 	}
@@ -2118,7 +2131,7 @@ void LevelEditorScreen::_draw_select_handles(LevelEditorViewport *p_vp, Control 
 		if (p_vp->project(gt.xform(corners[i]), sp)) {
 			bool hot = (select_handle_hover == GHOST_CORNER_0 + i || select_handle_drag == GHOST_CORNER_0 + i);
 			Color hc = hot ? LevelEditorColors::SELECT_HANDLE_HOT : LevelEditorColors::SELECT_HANDLE;
-			real_t hs_px = 3.0 * EDSCALE;
+			real_t hs_px = LevelEditorHandles::CORNER_SIZE * EDSCALE;
 			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hc);
 		}
 	}

@@ -759,6 +759,178 @@ TEST_CASE("[LevelBrush] extrude_face on an interior brush keeps stored-normal di
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] get_face_normal invariants (unit length, planar match, bent quad, degenerate)") {
+	// Planar quad: Newell matches the cross-product normal and is unit length.
+	LevelBrush *quad = memnew(LevelBrush);
+	Vector3 corners[4] = {
+		Vector3(0, 0, 0),
+		Vector3(0, 0, 2),
+		Vector3(3, 0, 2),
+		Vector3(3, 0, 0),
+	};
+	quad->setup_quad(corners);
+	const Vector3 n = quad->get_face_normal(0);
+	CHECK(n.length() == doctest::Approx(1.0));
+	CHECK(n.is_equal_approx(Vector3(0, 1, 0)));
+	memdelete(quad);
+
+	// Non-planar (bent) quad: Newell still returns a unit-length, consistent
+	// normal (this is why Newell is used over a triangle cross).
+	LevelBrush *bent = memnew(LevelBrush);
+	Vector3 bc[4] = {
+		Vector3(0, 0, 0),
+		Vector3(0, 0, 1),
+		Vector3(1, 0.5, 1), // Raised corner bends the quad.
+		Vector3(1, 0, 0),
+	};
+	bent->setup_quad(bc);
+	const Vector3 bn = bent->get_face_normal(0);
+	CHECK(bn.length() == doctest::Approx(1.0));
+	CHECK(bn.y > 0.5); // Still mostly up.
+	memdelete(bent);
+
+	// Degenerate (collinear) face: the fallback normal, not a zero vector.
+	LevelBrush *box = memnew(LevelBrush);
+	box->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+	box->set_vertex(0, Vector3(0.5, 0.5, 0.5));
+	box->set_vertex(1, Vector3(0.5, 0.5, 0.5));
+	box->set_vertex(2, Vector3(0.5, 0.5, 0.5));
+	box->set_vertex(3, Vector3(0.5, 0.5, 0.5));
+	// Face 3 is the -X face (verts 0,3,7,4): partially collapsed, still has
+	// area. Collapse the whole brush to a point instead:
+	for (int i = 0; i < 8; i++) {
+		box->set_vertex(i, Vector3(0.5, 0.5, 0.5));
+	}
+	for (int f = 0; f < 6; f++) {
+		CHECK(box->get_face_normal(f).is_equal_approx(Vector3(0, 1, 0)));
+	}
+	memdelete(box);
+}
+
+TEST_CASE("[LevelBrush] ray_intersect edge cases (miss keeps dist, back hit, grazing)") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Miss leaves r_dist untouched (documented contract).
+	real_t dist = 123.0;
+	int face = brush->ray_intersect(Vector3(5, 5, 5), Vector3(1, 0, 0), dist);
+	CHECK(face == -1);
+	CHECK(dist == doctest::Approx(123.0));
+
+	// From inside the box outward: hits the exit face (back side of the quad).
+	dist = 0.0;
+	face = brush->ray_intersect(Vector3(0.5, 0.5, 0.5), Vector3(1, 0, 0), dist);
+	CHECK(face == 2); // +X face.
+	CHECK(dist == doctest::Approx(0.5));
+
+	// Ray parallel to a face, offset outside it: no hit.
+	dist = 0.0;
+	face = brush->ray_intersect(Vector3(0.5, 2.0, 0.5), Vector3(1, 0, 0), dist);
+	CHECK(face == -1);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] clip with a diagonal plane produces a planar, outward cap") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Diagonal cut keeping x+y+z <= 2: keep side is normal*p >= d with the
+	// normal pointing AWAY from the kept solid (same convention as the
+	// axis-aligned test: Plane(+X, 0.5) keeps x >= 0.5).
+	const Plane plane(Vector3(-1, -1, -1).normalized(), -2.0 / Math::sqrt(3.0));
+	brush->clip(plane);
+
+	// Brush stays valid; the cap is the last face, planar, and its stored
+	// normal points at the REMOVED side (opposite the keep plane's normal).
+	REQUIRE(brush->is_valid());
+	const int cap = brush->get_face_count() - 1;
+	const Vector3 cap_n = brush->get_face_normal(cap);
+	CHECK(cap_n.length() == doctest::Approx(1.0));
+	CHECK(cap_n.dot(-plane.normal) > 0.9);
+
+	// Planarity: every cap vert satisfies the plane equation.
+	LocalVector<int> loop = brush->get_face(cap);
+	REQUIRE(loop.size() >= 3);
+	for (int idx : loop) {
+		CHECK(Math::abs(plane.distance_to(brush->get_vertex(idx))) < 0.001);
+	}
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] rewind_face_outward reverses only inward faces") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Already-outward face: no-op (loop order unchanged).
+	LocalVector<int> before = brush->get_face(0);
+	brush->rewind_face_outward(0);
+	LocalVector<int> after = brush->get_face(0);
+	REQUIRE(before.size() == after.size());
+	for (uint32_t i = 0; i < before.size(); i++) {
+		CHECK(before[i] == after[i]);
+	}
+
+	// Reverse the loop by hand -> normal now points into the solid -> rewind
+	// restores an outward normal.
+	Array faces_data = brush->get_faces_data();
+	PackedInt32Array loop = faces_data[1];
+	PackedInt32Array rev;
+	for (int i = loop.size() - 1; i >= 0; i--) {
+		rev.push_back(loop[i]);
+	}
+	faces_data[1] = rev;
+	brush->set_faces_data(faces_data);
+	const Vector3 center = brush->get_center();
+	REQUIRE(brush->get_face_normal(1).dot(brush->get_face_center(1) - center) < 0.0);
+	brush->rewind_face_outward(1);
+	CHECK(brush->get_face_normal(1).dot(brush->get_face_center(1) - center) > 0.0);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] mirror round-trip is identity and keeps face materials") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 2, 3)));
+	Ref<Material> mat;
+	mat.instantiate();
+	brush->set_face_material(0, mat);
+
+	const PackedVector3Array orig_verts = brush->get_vertices_data();
+	const Plane p(Vector3(1, 1, 0).normalized(), 0.3);
+	brush->mirror(p);
+	CHECK(brush->get_face_material(0) == mat);
+	brush->mirror(p); // Mirror twice = identity.
+
+	const PackedVector3Array rt_verts = brush->get_vertices_data();
+	REQUIRE(rt_verts.size() == orig_verts.size());
+	for (int i = 0; i < orig_verts.size(); i++) {
+		CHECK(rt_verts[i].is_equal_approx(orig_verts[i]));
+	}
+	CHECK(brush->get_face_material(0) == mat);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] compact_vertices with no orphans is a stable no-op") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	const PackedVector3Array before_verts = brush->get_vertices_data();
+	const Array before_faces = brush->get_faces_data();
+	brush->compact_vertices();
+	CHECK(brush->get_vertices_data() == before_verts);
+	// Face loops unchanged (indices stable when nothing is removed).
+	const Array after_faces = brush->get_faces_data();
+	REQUIRE(after_faces.size() == before_faces.size());
+	for (int i = 0; i < after_faces.size(); i++) {
+		CHECK(PackedInt32Array(after_faces[i]) == PackedInt32Array(before_faces[i]));
+	}
+
+	memdelete(brush);
+}
+
 TEST_CASE("[LevelBrush] duplicate_brush copies topology, materials, and flipped flag") {
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 2, 3)));

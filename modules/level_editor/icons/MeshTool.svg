@@ -1,12 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
-  <!-- Top -->
-
   <polygon points="8,0.5 15,4 8,7.5 1,4" fill="#d6d6d6" stroke="#919191" stroke-width="1.0" stroke-linejoin="round" />
-
-  <!-- Left -->
   <polygon points="1,4 8,7.5 8,15.5 1,12" fill="#474747" stroke="#919191" stroke-width="1.0" stroke-linejoin="round" />
-
-  <!-- Right -->
   <polygon
 		points="8,7.5 15,4 15,12 8,15.5"
 		fill="#bfbfbf"

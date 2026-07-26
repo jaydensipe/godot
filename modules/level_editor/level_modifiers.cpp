@@ -39,6 +39,20 @@
 #include "core/templates/hash_map.h"
 #include "scene/resources/material.h"
 
+// Newell's method for a point loop (same algorithm as get_face_normal, kept
+// here so the extrude paths don't hand-roll a third copy).
+static Vector3 newell_normal(const Vector3 p_pts[], int p_count) {
+	Vector3 n;
+	for (int i = 0; i < p_count; i++) {
+		const Vector3 &c = p_pts[i];
+		const Vector3 &nx = p_pts[(i + 1) % p_count];
+		n.x += (c.y - nx.y) * (c.z + nx.z);
+		n.y += (c.z - nx.z) * (c.x + nx.x);
+		n.z += (c.x - nx.x) * (c.y + nx.y);
+	}
+	return n;
+}
+
 Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_loop(const EdgeKey &p_edge) const {
 	Vector<EdgeKey> loop;
 
@@ -330,7 +344,20 @@ void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 		center /= (real_t)cap_verts.size();
 
 		Vector3 n = -p_plane.normal;
-		Vector3 axis_u = (verts[cap_verts[0]] - center).normalized();
+		// Reference axis for the angular sort. The first cap vert can coincide
+		// with the cap centroid (clip through the exact middle of a symmetric
+		// brush) - fall back to the farthest vert, then to any perpendicular.
+		Vector3 axis_u;
+		for (int idx : cap_verts) {
+			const Vector3 d = verts[idx] - center;
+			if (d.length_squared() > axis_u.length_squared()) {
+				axis_u = d;
+			}
+		}
+		if (axis_u.length_squared() < CMP_EPSILON) {
+			axis_u = n.cross(Math::abs(n.x) < 0.9 ? Vector3(1, 0, 0) : Vector3(0, 1, 0));
+		}
+		axis_u.normalize();
 		Vector3 axis_v = n.cross(axis_u).normalized();
 
 		struct Item {
@@ -775,22 +802,15 @@ bool LevelBrush::extrude_edge(const EdgeKey &p_edge, const Vector3 &p_offset, in
 	// bisector-parallel pulls, or diagonal bevels. History: GOTCHAS #43.)
 	// Degenerate fallback (centroid in the wall plane, e.g. a begin-drag
 	// stub along the bisector): face the edge-bisector side.
-	const Vector3 pts[4] = { verts[p_edge.a], verts[p_edge.b], verts[new_b], verts[new_a] };
-	Vector3 wn;
-	for (int i = 0; i < 4; i++) {
-		const Vector3 &c = pts[i];
-		const Vector3 &nx = pts[(i + 1) % 4];
-		wn.x += (c.y - nx.y) * (c.z + nx.z);
-		wn.y += (c.z - nx.z) * (c.x + nx.x);
-		wn.z += (c.x - nx.x) * (c.y + nx.y);
-	}
 	const Vector3 edge_dir = (verts[p_edge.b] - verts[p_edge.a]).normalized();
 	Vector3 out = normal_sum - edge_dir * normal_sum.dot(edge_dir);
 	if (out.is_zero_approx()) {
 		out = normal_sum;
 	}
+	const Vector3 pts[4] = { verts[p_edge.a], verts[p_edge.b], verts[new_b], verts[new_a] };
+	const Vector3 wn = newell_normal(pts, 4);
 	real_t side = wn.dot(get_center() - verts[p_edge.a]);
-	if (Math::abs(side) < wn.length() * 0.001) {
+	if (Math::abs(side) < wn.length() * LevelBrushConstants::WINDING_SIDE_EPS) {
 		side = -wn.dot(out); // Ambiguous: prefer the bisector-facing order.
 	}
 	if (side > 0.0) {
@@ -851,16 +871,9 @@ int LevelBrush::extrude_vertex(int p_vertex, const Vector3 &p_offset) {
 
 		// Wedge wound so its normal sits on the out-of-solid side.
 		const Vector3 pts[4] = { verts[prev], verts[p_vertex], verts[new_v], verts[next] };
-		Vector3 wn;
-		for (int i = 0; i < 4; i++) {
-			const Vector3 &c = pts[i];
-			const Vector3 &nx = pts[(i + 1) % 4];
-			wn.x += (c.y - nx.y) * (c.z + nx.z);
-			wn.y += (c.z - nx.z) * (c.x + nx.x);
-			wn.z += (c.x - nx.x) * (c.y + nx.y);
-		}
+		const Vector3 wn = newell_normal(pts, 4);
 		real_t side = wn.dot(center - verts[prev]);
-		if (Math::abs(side) < wn.length() * 0.001) {
+		if (Math::abs(side) < wn.length() * LevelBrushConstants::WINDING_SIDE_EPS) {
 			side = -wn.dot(vert_normal_sum);
 		}
 		if (side > 0.0) {
@@ -1134,7 +1147,7 @@ int LevelBrush::bevel_edges_profiled(const Vector<EdgeKey> &p_edges, real_t p_wi
 				bisector.normalize();
 				real_t along = Math::abs(bisector.dot(dirs[0]));
 				real_t denom = Math::sqrt(MAX(1.0 - along * along, 0.0));
-				if (denom < 0.05) {
+				if (denom < LevelBrushConstants::BEVEL_MITRE_MIN_SIN) {
 					corner_ok[corner_key(vert, face)] = false; // Nearly parallel.
 					continue;
 				}

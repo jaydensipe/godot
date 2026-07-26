@@ -48,8 +48,8 @@ using namespace LevelHelpers;
 // Shared box-handle picking: corners (high priority) then face centers.
 // Positions are computed in world space via p_xform.
 int LevelEditorScreen::_pick_box_handle(LevelEditorViewport *p_vp, const Vector2 &p_screen, const AABB &p_aabb, const Transform3D &p_xform) const {
-	const real_t face_tol = 10.0 * EDSCALE;
-	const real_t corner_tol = 8.0 * EDSCALE;
+	const real_t face_tol = LevelEditorHandles::FACE_PICK_TOL * EDSCALE;
+	const real_t corner_tol = LevelEditorHandles::CORNER_PICK_TOL * EDSCALE;
 
 	Vector3 corners[8];
 	aabb_corners(p_aabb, corners);
@@ -303,11 +303,7 @@ void LevelEditorScreen::_ghost_commit() {
 	} else {
 		brush->setup_box(map_inv.xform(ghost_aabb));
 	}
-	if (current_material.is_valid()) {
-		for (int f = 0; f < brush->get_face_count(); f++) {
-			brush->set_face_material(f, current_material);
-		}
-	}
+	brush->set_owner(root);
 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	undo_redo->create_action(TTR("Add Level Brush"));
@@ -360,7 +356,7 @@ void LevelEditorScreen::_draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas
 		if (p_vp->project(fc, sp)) {
 			bool hot = (ghost_handle_hover == GHOST_FACE_XN + i || ghost_handle_drag == GHOST_FACE_XN + i);
 			Color hc = hot ? LevelEditorColors::GHOST_HANDLE_HOT : LevelEditorColors::GHOST_HANDLE;
-			real_t hs_px = 4.0 * EDSCALE;
+			real_t hs_px = LevelEditorHandles::FACE_SIZE * EDSCALE;
 			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hc);
 		}
 	}
@@ -374,7 +370,7 @@ void LevelEditorScreen::_draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas
 		if (p_vp->project(corners[i], sp)) {
 			bool hot = (ghost_handle_hover == GHOST_CORNER_0 + i || ghost_handle_drag == GHOST_CORNER_0 + i);
 			Color hc = hot ? LevelEditorColors::GHOST_HANDLE_HOT : LevelEditorColors::GHOST_HANDLE;
-			real_t hs_px = 3.0 * EDSCALE;
+			real_t hs_px = LevelEditorHandles::CORNER_SIZE * EDSCALE;
 			p_canvas->draw_rect(Rect2(sp - Vector2(hs_px, hs_px), Size2(hs_px * 2, hs_px * 2)), hc);
 		}
 	}

@@ -12,8 +12,9 @@ modules/level_editor/
   level_brush.{h,cpp}        # LevelBrush : Node3D - brush topology + geometry ops (runtime + editor)
   level_map.{h,cpp}          # LevelMap : Node3D - brush container, live preview, bake (runtime + editor)
   level_constants.h          # LevelBrushConstants (geometry tolerances, runtime-safe)
-                             #   + LevelEditorColors/LevelEditorGrid (editor overlay styling) - at
-                             #   module ROOT so runtime code can include it (must stay editor-free)
+                             #   + LevelEditorColors/LevelEditorGrid/LevelEditorHandles
+                             #   (editor overlay styling) - at module ROOT so runtime code
+                             #   can include it (must stay editor-free)
   icons/                     # Editor icons (LevelMap.svg = node icon, Subdivision.svg = plugin tab)
   doc_classes/
     LevelBrush.xml
@@ -30,7 +31,7 @@ modules/level_editor/
                              #   pure gizmo-drag math (axis_drag_plane, closest_point_on_line_to_ray)
     tools/
       level_editor_tools.cpp     # LevelEditorScreen tool-action members (_action_*: extrude,
-                                 #   material, flip faces, subdivide, bridge, collapse; plus
+                                 #   flip faces, subdivide, bridge, collapse; plus
                                  #   menu handlers and bake)
       clip/
         level_editor_clip.cpp    # Clip tool state machine (begin/drag/cycle/apply/cancel)
@@ -120,7 +121,7 @@ SubViewportContainer
   plus automatically from `LevelBrush` - `_notify_map_changed()` (deferred
   `refresh` on parent) fires in ALL mutating geometry ops (clip, split_faces,
   extrude_face, delete_faces, weld_vertices, collapse_vertices, move_vertices,
-  bridge_edges) and the serialized setters (covers undo/redo), and
+  set_vertex, bridge_edges) and the serialized setters (covers undo/redo), and
   `NOTIFICATION_LOCAL_TRANSFORM_CHANGED` (covers undo of node position; brush
   enables `set_notify_local_transform(true)` in editor).
 - `default_material` (StandardMaterial3D, albedo 0.7, CULL_BACK - standard
@@ -149,12 +150,14 @@ SubViewportContainer
   per-id color. Add a preview: enum entry + color case + producer.
 
 - `Tool` × `SelectionTarget` replace the old single `Mode` enum (Hammer 2
-  style). Tool = Select/Rotate/Scale + modal Block/Clip/Mirror (entering a
-  modal tool stashes `last_transform_tool`/`last_target`, restores on exit).
-  Target = Vertex/Edge/Face/Mesh (1/2/3/4) - what gets selected and
-  transformed by ANY transform tool. Toolbar: three panels (transform tools,
-  drawing tools, targets); `_set_tool`/`_set_target` end active drags first
-  (committing their undos).
+  style). Tool = Select (pure selection + single-brush AABB resize
+  handles) / Move (translate gizmo + click-drag) / Rotate / Scale + modal
+  Block/Clip/Mirror (entering a modal tool stashes
+  `last_transform_tool`/`last_target`, restores on exit). Shortcuts
+  Q/W/E/R. Target = Vertex/Edge/Face/Mesh (1/2/3/4) - what gets selected
+  and transformed by ANY transform tool. Toolbar: three panels (transform
+  tools, drawing tools, targets); `_set_tool`/`_set_target` end active
+  drags first (committing their undos).
 - **No-map gate**: if the edited scene has no `LevelMap`, the quad viewports
   are hidden and a warning panel ("Create LevelMap" button) shows instead.
   `_update_map_ui()` resolves/adopts a map found in the scene (never
@@ -201,10 +204,12 @@ SubViewportContainer
   dropdown: Block/Quad): Quad collapses the drag AABB's view axis to zero
   (`ghost_flat_axis`) and commits a single-face `setup_quad` brush on that
   plane; ALL handle rules funnel through one predicate,
-  `_ghost_handle_usable(vp, handle)` - the flat-axis (thickness) face
-  handles never exist, corner drags stay in plane, and edge-on views
-  (quad projects to a line) keep only the two endpoint face handles, no
-  corners, no inside-drag.
+  `_box_handle_usable(vp, handle, flat_axis)` (shared with the select-mode
+  AABB handles): in any ortho view the two face handles on the view axis
+  are dropped (undraggable there, stack at the box center); a flat quad
+  additionally drops its thickness handles, and edge-on views (quad
+  projects to a line) keep only the two endpoint face handles, no corners,
+  no inside-drag.
 - Clip flow: `_clip_begin` on brush click (or anywhere in ortho at brush
   depth), 2 snapped points + captured `clip_view_dir`; plane normal =
   `along × view_dir` (verified = screen-left of the drawn line). Clip toolbar
@@ -212,17 +217,20 @@ SubViewportContainer
   GUI eats it). Preview: wireframe edges split at plane, green=kept,
   red=discarded (+ white cut markers). Apply on Enter via `input()`.
 - Gizmos (screen-space, custom): move gizmo (arrows + plane quads + center,
-  closest-point-on-axis drag), rotate gizmo (3 rings, ortho views restrict to
-  the view axis + click-anywhere), scale (axis handles + off-gizmo uniform
-  mouse-X), select-mode AABB handles (resize via `_apply_brush_aabb`).
+  closest-point-on-axis drag; Move/Scale tools only - pick and draw share
+  `compute_gizmo_axes`), rotate gizmo (3 rings, ortho views restrict to
+  the view axis + click-anywhere), scale (axis handles + uniform via the
+  center/plane handles), Select-tool AABB handles (resize via
+  `_apply_brush_aabb`).
   Shift+drag in ANY element target extrudes: faces pull caps along their
   normals (`extrude_face`), edges/vertices duplicate + stitch
   (`extrude_edge`/`extrude_vertex`) and the drag moves the duplicated
   verts freely; the selection tracks the new geometry so chained extrudes
   work. Element-mode drags snapshot `gizmo_drag_brush_verts` (per-brush map) and
-  apply absolute deltas to each brush's selected vertices; whole-brush modes
-  use `gizmo_drag_original_verts`. Undo = property pair across all dragged
-  brushes in ONE action, `commit_action(false)`.
+  apply absolute deltas to each brush's selected vertices; Mesh-target
+  node moves snapshot `gizmo_drag_original_positions` (all selected
+  brushes). Undo = `_commit_brush_verts_undo` (one action across all
+  dragged brushes, `commit_action(false)`).
 - Keys (handled in `LevelEditorScreen::input()`, `_vp_input` phase, swallowed
   via `set_input_as_handled`): Delete (per-mode delete/collapse), `[`/`]`
   grid ladder (`LevelEditorGrid::STEPS`, 1/8..512), Enter/Esc (ghost/clip/

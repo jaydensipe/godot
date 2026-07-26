@@ -42,6 +42,16 @@ inline constexpr real_t PLANE_EPSILON = 0.0005;
 inline constexpr real_t WELD_DIST = PLANE_EPSILON * 4.0;
 // |dot| threshold for treating two edges as parallel/collinear.
 inline constexpr real_t PARALLEL_DOT = 0.999;
+// Winding side-test ambiguity threshold (fraction of the loop-normal length):
+// below this the centroid lies ~in the wall plane and the bisector fallback
+// decides (extrude_edge/extrude_vertex; GOTCHAS #43).
+inline constexpr real_t WINDING_SIDE_EPS = 0.001;
+// Bevel mitre: minimum sine of the angle between an edge pair before the
+// corner is rejected as nearly parallel (level_modifiers bevel).
+inline constexpr real_t BEVEL_MITRE_MIN_SIN = 0.05;
+// Baked UV scale: world units per texture tile (planar projections in
+// get_bake_surface_data).
+inline constexpr real_t BAKE_UV_SCALE = 0.25;
 } // namespace LevelBrushConstants
 
 // Shared grid ladder (power-of-two steps) used by the toolbar dropdown and
@@ -137,4 +147,19 @@ inline const Color TEXT_DIM{ 1.0f, 1.0f, 1.0f, 0.8f };
 inline const Color VIEWPORT_BG{ 0.16f, 0.16f, 0.18f };
 inline const Color VIEWPORT_AMBIENT{ 0.45f, 0.45f, 0.45f };
 
+// Default brush albedo (LevelMap::default_material).
+inline const Color DEFAULT_BRUSH_ALBEDO{ 0.7f, 0.7f, 0.7f };
+
 } // namespace LevelEditorColors
+
+// Screen-space sizes/tolerances for viewport handles (multiplied by EDSCALE
+// at use). Shared by the ghost, select-mode AABB handles, and the clip/mirror
+// plane points so picking and drawing always agree.
+namespace LevelEditorHandles {
+inline constexpr real_t FACE_PICK_TOL = 10.0; // Box face-center pick radius (px).
+inline constexpr real_t CORNER_PICK_TOL = 8.0; // Box corner pick radius (px).
+inline constexpr real_t POINT_PICK_TOL = 10.0; // Clip/mirror plane-point pick radius (px).
+inline constexpr real_t FACE_SIZE = 4.0; // Face-handle rect half-size (px).
+inline constexpr real_t CORNER_SIZE = 3.0; // Corner-handle rect half-size (px).
+inline constexpr real_t POINT_SIZE = 4.0; // Clip/mirror point rect half-size (px).
+} // namespace LevelEditorHandles

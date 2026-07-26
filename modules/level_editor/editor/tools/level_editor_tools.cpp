@@ -147,44 +147,7 @@ void LevelEditorScreen::_action_extrude_vertices() {
 	_refresh_map();
 }
 
-void LevelEditorScreen::_action_apply_material() {
-	if (!current_map || current_material.is_null()) {
-		return;
-	}
 
-	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	undo_redo->create_action(TTR("Apply Brush Material"));
-	bool did = false;
-
-	if (!selected_faces.is_empty()) {
-		// Only the selected faces across brushes.
-		for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_faces) {
-			LevelBrush *target = E.key;
-			for (int f : E.value) {
-				undo_redo->add_do_method(target, "set_face_material", f, current_material);
-				undo_redo->add_undo_method(target, "set_face_material", f, target->get_face_material(f));
-			}
-			did = true;
-		}
-	} else if (selected_brush) {
-		// Whole selected brush.
-		for (int f = 0; f < selected_brush->get_face_count(); f++) {
-			undo_redo->add_do_method(selected_brush, "set_face_material", f, current_material);
-			undo_redo->add_undo_method(selected_brush, "set_face_material", f, selected_brush->get_face_material(f));
-		}
-		did = true;
-	}
-
-	if (!did) {
-		return;
-	}
-
-	undo_redo->add_do_method(current_map, "refresh");
-	undo_redo->add_undo_method(current_map, "refresh");
-	undo_redo->commit_action();
-
-	_refresh_map();
-}
 
 void LevelEditorScreen::_action_flip_faces() {
 	if (!current_map || !selected_brush) {
@@ -343,9 +306,6 @@ void LevelEditorScreen::_face_menu_selected(int p_id) {
 		case 0: // Extrude
 			_action_extrude_faces();
 			break;
-		case 1: // Apply Material
-			_action_apply_material();
-			break;
 		case 2: // Delete
 			_action_delete_faces();
 			break;
@@ -433,7 +393,7 @@ void LevelEditorScreen::_action_bridge_edges() {
 	Array old_mats = target->get_face_materials_data();
 
 	// Bridge the two edges with a new quad face.
-	int new_face = target->bridge_edges(edges[0], edges[1], current_material);
+	int new_face = target->bridge_edges(edges[0], edges[1], Ref<Material>());
 	if (new_face < 0) {
 		return; // Shared vertex or same edge - can't bridge.
 	}
@@ -618,7 +578,7 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 	Ref<InputEventMouseButton> mb = p_event;
 	Ref<InputEventMouseMotion> mm = p_event;
 
-	// Whole-brush drag in Select mode (moves ALL selected brushes).
+	// Whole-brush drag in the Move tool (moves ALL selected brushes).
 	if (select_moving) {
 		if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT && !mb->is_pressed()) {
 			// Release: commit one undo action covering every moved brush.
@@ -689,7 +649,7 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 			case TARGET_MESH: {
 				// Click a brush to select it (Shift toggles it in/out of the
 				// multi-selection); re-clicking the already-selected primary in
-				// the Select tool starts a whole-brush drag of ALL selected
+				// the Move tool starts a whole-brush drag of ALL selected
 				// brushes (like the ghost move).
 				Vector3 hit;
 				LevelBrush *brush = nullptr;

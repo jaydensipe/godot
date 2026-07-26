@@ -1,5 +1,16 @@
 # Level Editor Module - Project Overview
 
+Docs in this folder: PROJECT (this), ARCHITECTURE (file layout + class/data
+flow), GOTCHAS (hard-won bug lessons - read before editing), ROADMAP (open
+items + deferred smells), TESTS (how to build/run + coverage), AUDITS
+(archive of completed audit passes).
+
+**Workflow: the user builds and runs all tests manually.** Never try to
+compile, run the editor, or execute tests yourself - make the changes,
+say what to build/run, and let the user report results. When a
+fix/feature can be tested headlessly, add a test with the change (see
+TESTS.md).
+
 ## What this is
 
 A Godot engine **module** (`modules/level_editor`) that adds a Hammer-style
