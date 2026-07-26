@@ -37,9 +37,9 @@
 using namespace LevelHelpers;
 using LevelEditorColors::GIZMO_PLANE_EXTENT;
 
+#include "core/math/geometry_2d.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
-#include "core/math/geometry_2d.h"
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_main_screen.h"
@@ -759,6 +759,10 @@ LevelEditorScreen::LevelEditorScreen() {
 
 	// Icons are (re)assigned in NOTIFICATION_THEME_CHANGED. Text labels are
 	// fallbacks for buttons without icons.
+	tool_buttons[TOOL_SELECT]->set_tooltip_text(TTRC("Select (resize handles on a single selected brush)"));
+	tool_buttons[TOOL_MOVE]->set_tooltip_text(TTRC("Move (translate gizmo)"));
+	tool_buttons[TOOL_ROTATE]->set_tooltip_text(TTRC("Rotate"));
+	tool_buttons[TOOL_SCALE]->set_tooltip_text(TTRC("Scale"));
 	tool_buttons[TOOL_BLOCK]->set_tooltip_text(TTRC("Block"));
 	tool_buttons[TOOL_CLIP]->set_tooltip_text(TTRC("Clip"));
 	tool_buttons[TOOL_MIRROR]->set_tooltip_text(TTRC("Mirror (draw a plane to duplicate the brush reflected across it)"));
@@ -768,7 +772,8 @@ LevelEditorScreen::LevelEditorScreen() {
 	target_buttons[TARGET_MESH]->set_tooltip_text(TTRC("Mesh (whole-brush selection)"));
 
 	// Set shortcuts for buttons
-	tool_buttons[TOOL_SELECT]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_transform", TTRC("Select / Move Mode"), Key::Q, true));
+	tool_buttons[TOOL_SELECT]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_transform", TTRC("Select Mode"), Key::Q, true));
+	tool_buttons[TOOL_MOVE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_move", TTRC("Move Mode"), Key::W, true));
 	tool_buttons[TOOL_ROTATE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_rotate", TTRC("Rotate Mode"), Key::E, true));
 	tool_buttons[TOOL_SCALE]->set_shortcut(ED_SHORTCUT("spatial_editor/tool_scale", TTRC("Scale Mode"), Key::R, true));
 
@@ -985,9 +990,36 @@ void LevelEditorScreen::input(const Ref<InputEvent> &p_event) {
 		return;
 	}
 	Ref<InputEventKey> k = p_event;
-	if (!k.is_valid() || !k->is_pressed() || k->is_echo()) {
+	if (!k.is_valid() || !k->is_pressed()) {
 		return;
 	}
+
+	// Freelook (RMB-hold in the perspective viewport) flies with WASD/QE -
+	// swallow the tool-switch keys (Q/W/E/R, echoes included) so flying
+	// doesn't change tools.
+	bool freelook = false;
+	for (int i = 0; i < 4; i++) {
+		if (viewports[i]->is_freelook_active()) {
+			freelook = true;
+			break;
+		}
+	}
+	if (freelook) {
+		switch (k->get_keycode()) {
+			case Key::Q:
+			case Key::W:
+			case Key::E:
+			case Key::R:
+				get_viewport()->set_input_as_handled();
+				return;
+			default:
+				break;
+		}
+	}
+	if (k->is_echo()) {
+		return;
+	}
+
 	switch (k->get_keycode()) {
 		case Key::KEY_DELETE: {
 			_delete_selection();
@@ -1228,6 +1260,7 @@ LevelMap *LevelEditorScreen::_get_or_create_map() {
 void LevelEditorScreen::_update_mode_icons() {
 	if (tool_buttons[TOOL_SELECT]) {
 		tool_buttons[TOOL_SELECT]->set_button_icon(get_editor_theme_icon(SNAME("ToolSelect")));
+		tool_buttons[TOOL_MOVE]->set_button_icon(get_editor_theme_icon(SNAME("ToolMove")));
 		tool_buttons[TOOL_ROTATE]->set_button_icon(get_editor_theme_icon(SNAME("ToolRotate")));
 		tool_buttons[TOOL_SCALE]->set_button_icon(get_editor_theme_icon(SNAME("ToolScale")));
 		tool_buttons[TOOL_BLOCK]->set_button_icon(get_editor_theme_icon(SNAME("Brush")));
@@ -1957,7 +1990,8 @@ int LevelEditorScreen::_pick_select_handle(LevelEditorViewport *p_vp, const Vect
 	if (!selected_brush || selected_brushes.size() != 1) {
 		return GHOST_NONE;
 	}
-	return _pick_box_handle(p_vp, p_screen, _get_brush_local_aabb(selected_brush), selected_brush->get_global_transform());
+	const int h = _pick_box_handle(p_vp, p_screen, _get_brush_local_aabb(selected_brush), selected_brush->get_global_transform());
+	return _box_handle_usable(p_vp, h, -1) ? h : GHOST_NONE;
 }
 
 void LevelEditorScreen::_select_handle_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse) {
@@ -2065,6 +2099,9 @@ void LevelEditorScreen::_draw_select_handles(LevelEditorViewport *p_vp, Control 
 
 	// Face handles.
 	for (int i = 0; i < 6; i++) {
+		if (!_box_handle_usable(p_vp, GHOST_FACE_XN + i, -1)) {
+			continue;
+		}
 		Vector3 fc = gt.xform(aabb_face_center(bb, i));
 		Vector2 sp;
 		if (p_vp->project(fc, sp)) {

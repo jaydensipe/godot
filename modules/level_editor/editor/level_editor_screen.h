@@ -141,6 +141,7 @@ public:
 	DisplayMode get_display_mode() const { return display_mode; }
 
 	Camera3D *get_camera() const { return camera; }
+	bool is_freelook_active() const { return view_controller.is_valid() && view_controller->is_freelook_enabled(); }
 
 	void get_ray(const Vector2 &p_screen, Vector3 &r_origin, Vector3 &r_dir) const;
 	bool intersect_ortho_plane(const Vector2 &p_screen, Vector3 &r_hit) const;
@@ -176,7 +177,8 @@ public:
 	// - Target: what gets selected/transformed - the whole brush ("Mesh") or
 	//   its vertices/edges/faces.
 	enum Tool {
-		TOOL_SELECT,
+		TOOL_SELECT, // Pure selection (+ AABB resize handles on a single brush).
+		TOOL_MOVE, // Translate gizmo + click-drag move.
 		TOOL_ROTATE,
 		TOOL_SCALE,
 		TOOL_BLOCK,
@@ -281,9 +283,13 @@ private:
 	void _ghost_cancel();
 	void _draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas);
 	void _draw_dim_labels(LevelEditorViewport *p_vp, Control *p_canvas, const AABB &p_aabb);
-	// One predicate for all quad-ghost handle rules (thickness handles never
-	// exist; edge-on views keep only the two endpoint handles + no corners).
+	// One predicate for all box-handle rules, shared by ghost + select
+	// handles: in any ortho view the two face handles on the VIEW axis are
+	// dropped (they stack at the box center and can never drag there); a
+	// flat quad (p_flat_axis >= 0) additionally drops its thickness handles
+	// and, in edge-on views, everything but the two endpoint handles.
 	bool _ghost_handle_usable(LevelEditorViewport *p_vp, int p_handle) const;
+	bool _box_handle_usable(LevelEditorViewport *p_vp, int p_handle, int p_flat_axis) const;
 
 	// --- Clip tool state ---
 	enum ClipSide {

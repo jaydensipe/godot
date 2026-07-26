@@ -36,11 +36,14 @@ scons platform=windows target=editor dev_build=yes accesskit=no d3d12=no angle=n
   brush (per-brush `HashMap` selection sets), with hover highlighting
   (light-blue brush outline, green elements) and orange selected elements.
   Selection clears on tool switch.
-- **Tools**: Select / Rotate / Scale / Block / Clip / Vertex / Edge / Face
-  toolbar buttons (three `PanelContainerButtonGroup` panels). Ghost block
-  drawing with resize handles, clip tool with keep-left/right/both, gizmo
-  manipulation, per-face materials, extrude, flip faces (interiors), bridge
-  edges, delete (brush/faces/collapse), grid ladder on `[`/`]`.
+- **Tools**: Select (Q: pure selection + single-brush AABB resize
+  handles) / Move (W: translate gizmo + click-drag) / Rotate (E) /
+  Scale (R) / Block / Clip / Mirror toolbar buttons, with Vertex / Edge /
+  Face / Mesh selection targets (three `PanelContainerButtonGroup`
+  panels). Ghost block drawing with resize handles, clip tool with
+  keep-left/right/both, gizmo manipulation, per-face materials, extrude,
+  flip faces (interiors), bridge edges, delete (brush/faces/collapse),
+  grid ladder on `[`/`]`.
 - **Bake**: `LevelMap::bake()` produces a `MeshInstance3D` (one surface per
   material) with `StaticBody3D` + `ConcavePolygonShape3D` collision and an
   `OccluderInstance3D` (`ArrayOccluder3D`) - see `level_map.cpp` (`bake()`).

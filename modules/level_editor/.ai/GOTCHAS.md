@@ -324,9 +324,11 @@ Bugs that cost real debugging time. Read before touching the module.
     A quad ghost projects to a LINE in the two ortho views looking
     perpendicular to its normal: point-in-polygon hit tests can never hit,
     and all 8 corner handles stack onto one line. Funnel picking,
-    inside-drag, AND drawing through ONE predicate
-    (`_ghost_handle_usable`) instead of parallel filters - the first
-    version drifted into `_quad_flat_axis`/`_quad_edge_on`/
-    `_edge_on_handle_axis` helpers and shipped with the edge-on test
-    inverted (face-on vs edge-on view axis), which removed ALL handles
-    from the one usable view.
+    inside-drag, AND drawing through ONE predicate instead of parallel
+    filters - now `_box_handle_usable(p_vp, handle, flat_axis)`, shared by
+    the ghost AND the select-mode AABB handles. Rules: in ANY ortho view
+    the two face handles on the view axis are dropped (they stack at the
+    box's projected center and can never drag there - the ortho ray is
+    parallel to their axis, so `_ray_to_axis_plane` can never hit); a flat
+    quad additionally drops thickness handles and, edge-on, everything but
+    the two endpoint handles.

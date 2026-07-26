@@ -207,4 +207,5 @@ Related recent fixes (this session, all landed):
   shared corners, continuous collinear-chain strips; grid-size default).
 - Vertex/Edge/Face toolbar menus with `_action_*` tool actions; Subdivide
   (quad grid / n-gon fan) on Face menu; Flip Faces moved into Face menu.
-- Mode shortcuts: Q/E/R/B/C + 1/2/3; menu shortcuts Ctrl+D subdivide, F flip.
+- Mode shortcuts: Q/W/E/R/B/C (Select/Move/Rotate/Scale/Block/Clip) +
+  1/2/3/4 targets; menu shortcuts Ctrl+D subdivide, F flip.

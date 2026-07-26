@@ -697,8 +697,9 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 				if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
 					if (add) {
 						_mesh_selection_toggle(brush);
-					} else if (brush == selected_brush && tool == TOOL_SELECT && _mesh_selection_has(brush)) {
-						// Begin drag on the edit plane at the grab depth.
+					} else if (brush == selected_brush && tool == TOOL_MOVE && _mesh_selection_has(brush)) {
+						// Re-clicking the selected primary in the Move tool begins a
+						// whole-brush drag of ALL selected brushes (like the ghost).
 						select_moving = true;
 						select_move_viewport = p_vp;
 						select_move_original_position = selected_brush->get_position();

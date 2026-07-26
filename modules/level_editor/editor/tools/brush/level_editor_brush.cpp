@@ -75,18 +75,15 @@ int LevelEditorScreen::_pick_box_handle(LevelEditorViewport *p_vp, const Vector2
 	return best;
 }
 
-// Is ghost handle h usable for the current brush type in p_vp? Box brushes
-// allow everything. Quad ghosts have no thickness, so the two face handles
-// on the flat axis never exist; in edge-on views (quad projects to a line)
-// only the two face handles at the line's endpoints remain (corners all
-// project onto the same line).
+// Is ghost handle h usable for the current brush type in p_vp? Thin
+// wrapper over _box_handle_usable with the ghost's quad state.
 bool LevelEditorScreen::_ghost_handle_usable(LevelEditorViewport *p_vp, int p_handle) const {
-	if (brush_type != BRUSH_QUAD || p_handle == GHOST_NONE) {
-		return p_handle != GHOST_NONE;
-	}
-	const int flat = ghost_flat_axis;
-	if (flat < 0) {
-		return true;
+	return _box_handle_usable(p_vp, p_handle, brush_type == BRUSH_QUAD ? ghost_flat_axis : -1);
+}
+
+bool LevelEditorScreen::_box_handle_usable(LevelEditorViewport *p_vp, int p_handle, int p_flat_axis) const {
+	if (p_handle == GHOST_NONE) {
+		return false;
 	}
 	// View axis of this ortho view (-1 for perspective).
 	int view_axis = -1;
@@ -102,6 +99,16 @@ bool LevelEditorScreen::_ghost_handle_usable(LevelEditorViewport *p_vp, int p_ha
 			break;
 		default:
 			break;
+	}
+	if (p_handle < GHOST_CORNER_0 && view_axis >= 0) {
+		const int axis = (p_handle - GHOST_FACE_XN) / 2;
+		if (axis == view_axis) {
+			return false; // Undraggable center-stacked handle in this view.
+		}
+	}
+	const int flat = p_flat_axis;
+	if (flat < 0) {
+		return true; // Box: everything else stays.
 	}
 	const bool edge_on = (view_axis >= 0 && view_axis != flat);
 	if (p_handle >= GHOST_CORNER_0) {
@@ -421,7 +428,10 @@ void LevelEditorScreen::_draw_dim_labels(LevelEditorViewport *p_vp, Control *p_c
 		}
 		String text = String::num(p_aabb.size[dl.axis], 2);
 		Vector2 text_size = font->get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size);
-		p_canvas->draw_string(font, sp - text_size * 0.5 + Vector2(0, text_size.y * 0.35), text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, text_col);
+		const Vector2 pos = sp - text_size * 0.5 + Vector2(0, text_size.y * 0.35);
+		// Black outline behind the text, like the vertex markers.
+		p_canvas->draw_string_outline(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, 2 * EDSCALE, LevelEditorColors::VERTEX_OUTLINE);
+		p_canvas->draw_string(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, text_col);
 	}
 }
 void LevelEditorScreen::_compute_drag_aabb(Vector3 &r_mins, Vector3 &r_maxs) const {

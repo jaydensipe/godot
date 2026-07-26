@@ -985,7 +985,7 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 		return;
 	}
 
-	if (selection_target == TARGET_MESH && tool == TOOL_SELECT) {
+	if (selection_target == TARGET_MESH && tool == TOOL_MOVE) {
 		// Move the whole brush node. Delta is world; convert into the parent
 		// (map) space and apply on top of the drag-start position.
 		Node3D *parent = Object::cast_to<Node3D>(selected_brush->get_parent());
@@ -1090,8 +1090,8 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		return;
 	}
 
-	// Select tool + Mesh target: undoable node move.
-	if (selection_target == TARGET_MESH && tool == TOOL_SELECT) {
+	// Move tool + Mesh target: undoable node move.
+	if (selection_target == TARGET_MESH && tool == TOOL_MOVE) {
 		Vector3 new_pos = selected_brush->get_position();
 		if (!new_pos.is_equal_approx(gizmo_drag_original_position)) {
 			LevelBrush *target = selected_brush;
@@ -1188,8 +1188,8 @@ void LevelEditorScreen::_gizmo_end_drag() {
 }
 
 void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas) {
-	if (_is_drawing_tool() || tool == TOOL_ROTATE || !_has_selection()) {
-		return; // No arrow gizmo in the drawing tools or Rotate tool.
+	if (_is_drawing_tool() || tool == TOOL_SELECT || tool == TOOL_ROTATE || !_has_selection()) {
+		return; // No arrow gizmo in the drawing tools, Select, or Rotate tool.
 	}
 	Vector3 origin = _get_gizmo_origin();
 	Vector2 so;
@@ -1362,8 +1362,8 @@ bool LevelEditorScreen::_rotate_input(LevelEditorViewport *p_vp, Camera3D *p_cam
 }
 
 bool LevelEditorScreen::_gizmo_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
-	// Translate/scale gizmo (Select/Scale tools, any selection target).
-	if (_is_drawing_tool() || tool == TOOL_ROTATE || !_has_selection()) {
+	// Translate/scale gizmo (Move/Scale tools, any selection target).
+	if (_is_drawing_tool() || tool == TOOL_SELECT || tool == TOOL_ROTATE || !_has_selection()) {
 		return false;
 	}
 	Ref<InputEventMouseButton> mb = p_event;
