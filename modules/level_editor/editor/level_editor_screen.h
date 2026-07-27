@@ -248,7 +248,6 @@ private:
 	Button *target_buttons[TARGET_MAX] = {};
 	OptionButton *grid_size_option = nullptr;
 	Button *bake_button = nullptr;
-	MenuButton *tools_menu = nullptr;
 	LevelEditorDock *dock = nullptr; // Owned by the plugin; set after ctor.
 	MenuButton *vertex_menu = nullptr;
 	MenuButton *edge_menu = nullptr;
@@ -376,6 +375,21 @@ private:
 	void _draw_mirror(LevelEditorViewport *p_vp, Control *p_canvas);
 
 	// --- Armed action state (dock-configured actions, Enter applies) ---
+public:
+	// Element menus (Vertex/Edge/Face) the menu actions can belong to.
+	enum MenuTarget {
+		MENU_VERTEX,
+		MENU_EDGE,
+		MENU_FACE,
+	};
+
+	// Selection predicates used by the menu action table (level_editor_tools.cpp).
+	bool _has_vertex_selection() const;
+	bool _has_edge_selection() const;
+	bool _has_face_selection() const;
+	bool _has_brush_selection() const;
+	bool _has_bridgeable_edges() const;
+
 public:
 	// An action with dock settings is "armed" by its menu item (instead of
 	// applying immediately); the dock edits armed_values; Enter runs
@@ -604,10 +618,12 @@ private:
 	void _action_flip_faces();
 	void _action_subdivide_faces();
 	void _bake_pressed();
-	void _tools_menu_selected(int p_id);
 	void _vertex_menu_selected(int p_id);
 	void _edge_menu_selected(int p_id);
 	void _face_menu_selected(int p_id);
+	// Enabled/disabled state of the element menu items, driven by the
+	// declarative action table in level_editor_tools.cpp.
+	void _update_menu_states();
 	void _view_display_selected(int p_id);
 	void _view_grid_toggled(int p_id);
 	void _action_bridge_edges();
@@ -716,4 +732,5 @@ public:
 	virtual void edited_scene_changed() override;
 
 	LevelEditorPlugin();
+	~LevelEditorPlugin();
 };

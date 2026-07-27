@@ -12,7 +12,7 @@ Dead code removed:
   "Apply Material" (never assigned since the dock picker was removed;
   material system to be redesigned - see ROADMAP).
 - `gizmo_drag_uniform_scale` + `_apply_gizmo_scale_uniform` (~75 lines;
-  orphaned by the GOTCHAS #44 fix).
+  orphaned by the GOTCHAS #31 fix).
 - `gizmo_drag_original_verts`, `gizmo_drag_original_position`
   (write-only single-brush-era snapshots).
 

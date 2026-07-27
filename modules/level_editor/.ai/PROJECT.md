@@ -47,6 +47,15 @@ scons platform=windows target=editor dev_build=yes accesskit=no d3d12=no angle=n
   brush (per-brush `HashMap` selection sets), with hover highlighting
   (light-blue brush outline, green elements) and orange selected elements.
   Selection clears on tool switch.
+- **Material system**: Active Material panel pinned at the dock bottom
+  (lit-sphere preview, Browse via Quick Load dialog incl. texture files
+  auto-wrapped in StandardMaterial3D, Save to resource file, preview is a
+  drag source). New brushes inherit the active material; materials/textures
+  drag-drop onto viewport faces (Face mode) or whole brushes (other modes)
+  with an animated marching-ants target highlight; texture picks share one
+  cached wrapper per path. Extrudes inherit materials from the geometrically
+  continuing face (hallway floors stay red). Open edges (single-face
+  boundary) render dashed.
 - **Tools**: Select (Q: pure selection + single-brush AABB resize
   handles) / Move (W: translate gizmo + click-drag) / Rotate (E) /
   Scale (R) / Block / Clip / Mirror toolbar buttons, with Vertex / Edge /
@@ -109,3 +118,5 @@ scons platform=windows target=editor dev_build=yes accesskit=no d3d12=no angle=n
   theme font sizes for overlay text (already EDSCALE-aware).
 - Hover feedback: lighter version of the element's own color (50% lerp to
   white), not pure white.
+- Drop-target highlight must be visually DISTINCT from hover (orange
+  selected-colors, thicker) - see GOTCHAS #34.

@@ -44,7 +44,7 @@ inline constexpr real_t WELD_DIST = PLANE_EPSILON * 4.0;
 inline constexpr real_t PARALLEL_DOT = 0.999;
 // Winding side-test ambiguity threshold (fraction of the loop-normal length):
 // below this the centroid lies ~in the wall plane and the bisector fallback
-// decides (extrude_edge/extrude_vertex; GOTCHAS #43).
+// decides (extrude_edge/extrude_vertex; GOTCHAS #30).
 inline constexpr real_t WINDING_SIDE_EPS = 0.001;
 // Bevel mitre: minimum sine of the angle between an edge pair before the
 // corner is rejected as nearly parallel (level_modifiers bevel).

@@ -925,15 +925,6 @@ LevelEditorScreen::LevelEditorScreen() {
 	view_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_view_grid_toggled));
 	toolbar->add_child(view_menu);
 
-	tools_menu = memnew(MenuButton);
-	tools_menu->set_text(TTRC("Tools"));
-	tools_menu->set_flat(false);
-	tools_menu->set_theme_type_variation("FlatMenuButton");
-	PopupMenu *tools_popup = tools_menu->get_popup();
-	tools_popup->add_item(TTRC("Bridge Edge"), 0);
-	tools_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_tools_menu_selected));
-	toolbar->add_child(tools_menu);
-
 	toolbar->add_child(memnew(VSeparator));
 
 	vertex_menu = memnew(MenuButton);
@@ -1085,6 +1076,10 @@ LevelEditorScreen::LevelEditorScreen() {
 	top_split->add_child(viewports[1]);
 	bottom_split->add_child(viewports[2]);
 	bottom_split->add_child(viewports[3]);
+
+	// Initial enabled/disabled state of the element menu items (no map, no
+	// selection: everything starts disabled).
+	_update_menu_states();
 }
 
 void LevelEditorScreen::input(const Ref<InputEvent> &p_event) {
@@ -1874,6 +1869,7 @@ void LevelEditorScreen::_update_overlays() {
 		viewports[i]->set_grid_mesh_size(grid_size);
 		viewports[i]->queue_overlay_redraw();
 	}
+	_update_menu_states();
 }
 
 void LevelEditorScreen::_refresh_map() {
@@ -2723,6 +2719,20 @@ void LevelEditorPlugin::_editor_selection_changed() {
 
 void LevelEditorPlugin::edited_scene_changed() {
 	screen->on_scene_changed();
+}
+
+LevelEditorPlugin::~LevelEditorPlugin() {
+	// Pair the ctor's registrations, or a stale dock/screen survives plugin
+	// teardown (shows up as a duplicate "Level" dock on the next session).
+	if (dock) {
+		remove_control_from_docks(dock);
+		memdelete(dock);
+		dock = nullptr;
+	}
+	if (screen) {
+		memdelete(screen);
+		screen = nullptr;
+	}
 }
 
 void LevelEditorPlugin::make_visible(bool p_visible) {

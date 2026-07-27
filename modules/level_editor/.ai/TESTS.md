@@ -50,6 +50,13 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
 - `delete_faces` (materials stay aligned after removal)
 - `collapse_vertices` (neighbor-average weld)
 - `get_edges` (uniqueness, canonical a<b ordering)
+- `get_open_edges` (closed box: none; flat quad: all 4; uncapped clip opens
+  exactly the 4 cut-plane edges)
+- `set_all_face_materials` (faces start null, all assigned)
+- extrude material inheritance (face: cap keeps source mat, walls inherit
+  seam NEIGHBOR's - the hallway case: floor-like wall goes red; edge: wall
+  inherits the using face whose normal matches the WALL normal, floor and
+  wall pull cases; vertex: per-stitched-face)
 - `get_edge_loop` (Blender alt-click ring: 4 parallel edges on a box,
   terminates at n-gon faces and open boundaries; walks share a visited set
   so closed rings meet in the middle instead of duplicating)
@@ -86,7 +93,7 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
 - `compact_vertices` no-op stability (verts + loop indices untouched when
   nothing is orphaned)
 - extrude winding regressions: quad extruded downward on all 4 sides
-  (every wall faces out - the flat-quad degenerate case, GOTCHAS #43);
+  (every wall faces out - the flat-quad degenerate case, GOTCHAS #30);
   cube top edge x 4 pull directions (centroid-side rule);
   `extrude_face` on an interior (flipped) brush
 - serialization round-trip (`vertices`/`faces`/`face_materials` properties)
@@ -98,6 +105,10 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
   fallbacks when the camera is on the axis, top-view vertical-drag case)
 - `closest_point_on_line_to_ray` (basic solve, near-axis-parallel ray,
   parallel-line rejection)
+- `closest_point_on_segment_2d` (interior projection, endpoint clamps,
+  degenerate segment)
+- `clip_segment_to_rect` (inside span, slab crossings, diagonal corner
+  entry, parallel-outside + slab-non-overlap + degenerate rejection)
 
 **`test_level_map.h`** — tagged `[SceneTree]` (needs the test harness's
 physics server for `StaticBody3D` construction — untagged cases crash):

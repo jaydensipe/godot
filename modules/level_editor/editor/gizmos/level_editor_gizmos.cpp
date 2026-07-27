@@ -542,7 +542,7 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 	// Scale mode: axis drag distance -> scale factor along that axis.
 	// EXTRUDE drags (Shift+drag) always go through _apply_gizmo_delta: the
 	// scale paths restore the PRE-extrude vertex snapshot, which shrinks the
-	// brush below the extruded faces' vert indices (bake crash, GOTCHAS #45).
+	// brush below the extruded faces' vert indices (bake crash, GOTCHAS #32).
 	if (tool == TOOL_SCALE && !gizmo_extrude_drag) {
 		_apply_gizmo_scale(delta);
 		_update_overlays();
@@ -911,7 +911,7 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 
 				// The side walls were wound at begin-drag from the 0.001 stub;
 				// the drag can move the cap to the opposite side of the source
-				// plane, flipping which way the walls face (GOTCHAS #43). Re-wind
+				// plane, flipping which way the walls face (GOTCHAS #30). Re-wind
 				// them against the current geometry. Walls are the faces appended
 				// after the pre-extrude topology.
 				const int first_wall = gizmo_extrude_orig_faces[brush].size();
@@ -930,7 +930,7 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 
 				// The extruded walls were wound at begin-drag from a stub offset;
 				// the drag rotates their planes, which can flip which side faces
-				// out (GOTCHAS #43). Re-wind them against the current geometry.
+				// out (GOTCHAS #30). Re-wind them against the current geometry.
 				// Walls are the faces appended after the pre-extrude topology.
 				const int first_wall = gizmo_extrude_orig_faces[brush].size();
 				for (int f = first_wall; f < brush->get_face_count(); f++) {
@@ -1215,7 +1215,7 @@ bool LevelEditorScreen::_gizmo_input(LevelEditorViewport *p_vp, Camera3D *p_came
 			}
 			// Off-gizmo clicks fall through to _selection_input in EVERY tool -
 			// the Scale tool's old "click anywhere to uniform-scale" swallow
-			// made already-selected brushes un-reselectable (GOTCHAS #44).
+			// made already-selected brushes un-reselectable (GOTCHAS #31).
 		} else if (gizmo_dragging) {
 			_gizmo_end_drag();
 			return true;

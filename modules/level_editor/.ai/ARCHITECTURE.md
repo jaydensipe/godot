@@ -27,8 +27,10 @@ modules/level_editor/
   editor/
     level_editor_screen.{h,cpp}  # LevelEditorPlugin, LevelEditorScreen, LevelEditorViewport
     level_helpers.h          # LevelHelpers namespace - aabb_corners/AABB_EDGE_IDX/
-                             #   AABB_FACE_DIRS/aabb_face_center box helpers, plus the
-                             #   pure gizmo-drag math (axis_drag_plane, closest_point_on_line_to_ray)
+                             #   AABB_FACE_DIRS/aabb_face_center box helpers, the
+                             #   pure gizmo-drag math (axis_drag_plane,
+                             #   closest_point_on_line_to_ray), and 2D segment math
+                             #   (closest_point_on_segment_2d, clip_segment_to_rect)
     tools/
       level_editor_tools.cpp     # LevelEditorScreen tool-action members (_action_*: extrude,
                                  #   flip faces, subdivide, bridge, collapse; plus
@@ -49,14 +51,24 @@ modules/level_editor/
       level_editor_gizmos.cpp    # LevelEditorScreen gizmo members (translate/scale arrow
                                  #   gizmo, rotate rings, Shift+drag face extrude, undo commits)
     dock/
-      level_editor_dock.{h,cpp}  # LevelEditorDock - persistent per-tool
-                                 #   settings (Block: Brush Type OptionButton;
-                                 #   refresh() called from _set_tool) + per-ACTION
-                                 #   armed panels: armed actions (Edge > Bevel)
-                                 #   build a SpinBox form from LevelActionSetting
-                                 #   descriptors (get_action_settings); Enter
-                                 #   applies, Esc cancels.
-                                 #   (get_action_settings); Enter applies, Esc cancels.
+      level_editor_dock.{h,cpp}  # LevelEditorDock - scrollable per-tool/armed
+                                 #   settings form on top; STICKY Active Material
+                                 #   panel at the bottom (framed PanelContainer:
+                                 #   lit-sphere preview via EditorResourcePreview,
+                                 #   name label, Browse (EditorQuickOpenDialog,
+                                 #   Material+Texture2D types) | VSeparator | Save
+                                 #   (EditorFileDialog -> ResourceSaver); preview
+                                 #   is a drag source ("resource" payload, same as
+                                 #   EditorResourcePicker)
+    materials/
+      level_editor_materials.{h,cpp}  # LevelEditorMaterialCache (ONE generated
+                                 #   StandardMaterial3D per texture path - shared
+                                 #   by Browse and drops, no embedded dupes, single
+                                 #   bake surface) + LevelEditorMaterials namespace:
+                                 #   drag_data_is_material (cheap hover check),
+                                 #   material_from_drag_data (payload -> Material,
+                                 #   "files" and "resource" conventions),
+                                 #   path_is_material_or_texture
 ```
 
 IMPORTANT: `level_brush.*` and `level_map.*` MUST stay at module root (they
@@ -105,7 +117,9 @@ SubViewportContainer
   face; meeting edges mitred to shared corner verts; collinear chains
   share verts into one continuous strip),
   `flip_faces`/`set_faces_flipped`.
-- `EdgeKey {int a,b; ordered}` + `EdgeKeyHasher` used for edge identity.
+- `EdgeKey {int a,b; ordered}` + `EdgeKeyHasher` used for edge identity;
+  `get_edges()` (unique set) and `get_open_edges()` (used by <2 faces =
+  surface boundary; dashed in overlays).
 - Bake helpers: `get_bake_surface_data` (fan tris + planar UV, uv_scale 0.25),
   `get_collision_faces`. Stored loops are CCW-outward, but Vulkan/Godot
   rasterizes clockwise-front - so both helpers REVERSE the winding for the
@@ -121,7 +135,8 @@ SubViewportContainer
   plus automatically from `LevelBrush` - `_notify_map_changed()` (deferred
   `refresh` on parent) fires in ALL mutating geometry ops (clip, split_faces,
   extrude_face, delete_faces, weld_vertices, collapse_vertices, move_vertices,
-  set_vertex, bridge_edges) and the serialized setters (covers undo/redo), and
+  set_vertex, bridge_edges, set_face_material, set_all_face_materials) and
+  the serialized setters (covers undo/redo), and
   `NOTIFICATION_LOCAL_TRANSFORM_CHANGED` (covers undo of node position; brush
   enables `set_notify_local_transform(true)` in editor).
 - `default_material` (StandardMaterial3D, albedo 0.7, CULL_BACK - standard
@@ -143,6 +158,38 @@ SubViewportContainer
   configurable
   action: enum entry in `ArmedAction` + descriptor list + a case in
   `_action_apply_armed`.
+
+- **Element menu actions** (Vertex/Edge/Face toolbar menus) are DECLARATIVE:
+  the `LEVEL_MENU_ACTIONS[]` table at the top of
+  `editor/tools/level_editor_tools.cpp` maps (menu, id) -> a `_has_*`
+  selection predicate; `_update_menu_states()` (called from
+  `_update_overlays()`, which fires on every selection change, plus once in
+  the ctor) enables/disables items. Bridge requires exactly 2 edges on the
+  same brush. To add an action: one table entry + a case in the menu's
+  `_*_menu_selected`.
+
+- **Active material & drops**: the screen holds `active_material` (null =
+  map default; the dock panel falls back to showing `LevelMap::
+  default_material`'s preview). New brushes get it in `_ghost_commit`
+  (null leaves faces empty so the map default applies). Materials can be
+  DRAGGED onto viewports - from the FileSystem dock ("files" payload:
+  .material/.tres/.png/...), the dock's preview, or any inspector
+  EditorResourcePicker ("resource" payload). Face target drops on the
+  hovered face, every other target drops on the whole brush; textures are
+  wrapped via the shared `LevelEditorMaterialCache`. Drop = undo-recorded
+  (`_commit_brush_undo`), drop target gets an animated marching-ants
+  highlight on a DEDICATED DropOverlay Control (so the animation redraw
+  never repaints the main overlay).
+
+- **Extrude material inheritance** (level_modifiers.cpp): `extrude_face`
+  cap keeps the source material; each appended wall inherits from the
+  NEIGHBOR face across its seam edge (floor continues into hallways).
+  `extrude_edge` walls inherit from the using face whose normal best
+  matches the WALL's normal (floor-like walls continue floors).
+  `extrude_vertex` wedges inherit per stitched face.
+
+- **Open-edge rendering**: `LevelBrush::get_open_edges()` (edges used by <2
+  faces) draws as dashed lines in all outline/hover/selection passes.
 - **Tool previews**: generic `ToolPreview` struct (preview id, source
   brush, local-space line pairs, cache-hash). Each tool owns a producer
   (`_bevel_preview_rebuild` builds from the armed values, keyed by a

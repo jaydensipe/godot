@@ -2,7 +2,11 @@
 
 Bugs that cost real debugging time. Read before touching the module.
 
-## Editor input & shortcuts
+Entries are one flat numbered list - append new ones at the end. (The file
+used to be grouped into sections; the legacy grouping was: 1-4 editor input
+& shortcuts, 5-10 geometry/math, 11-15 undo, 16-37 rendering, 38-42
+serialization, 43-49 SCons/module mechanics. Section headers were removed
+because new entries kept landing in ambiguous sections.)
 
 1. **Scene-tree Delete fires regardless of focus.** `SceneTreeDock::shortcut_input`
    has no shortcut context and runs whenever no text field is focused.
@@ -24,8 +28,6 @@ Bugs that cost real debugging time. Read before touching the module.
 4. **SpinBox `step` rounds `set_value()`.** A step of 0.25 destroyed the
    grid ladder (values rounded to 0). Match step to the smallest
    ladder value (currently 1/8, `LevelEditorGrid::STEPS`).
-
-## Geometry / math
 
 5. **Plane-set brushes can't do free vertex editing.** A quad face must stay
    planar, so moving a vertex via plane tilts drags distant vertices along
@@ -61,8 +63,6 @@ Bugs that cost real debugging time. Read before touching the module.
     (interior). Vertex normals are unaffected (outward = solid). RULE: any
     new geometry->render path must emit Vulkan-convention (clockwise-front)
     triangles; convert at the boundary, never change the stored topology.
-
-## Undo
 
 11. **`commit_action(false)` skips do-methods.** Used for live-applied changes
     (gizmo drags). But if any do-method must actually RUN now (e.g.
@@ -109,8 +109,6 @@ Bugs that cost real debugging time. Read before touching the module.
     drags (committing their undos) before switching. Any NEW drag state
     must be added there too, or its edit becomes un-undoable.
 
-## Rendering
-
 16. **Black tops on fresh brushes were NOT normals.** Winding was provably
     correct (Newell check printed correct normals). Culprits were (a) scene's
     own WorldEnvironment/light, (b) the level viewports' single directional
@@ -146,7 +144,7 @@ Bugs that cost real debugging time. Read before touching the module.
     instead - called via `EditorData::notify_edited_scene_changed()`.
 
 22. **Projecting a behind-camera point mirrors it.** `Camera3D::
-    unproject_position` on a point past the near plane returns a mirrored
+unproject_position` on a point past the near plane returns a mirrored
     screen position, and `is_position_behind` rejects it - so any overlay
     that projects per-vertex vanishes ENTIRELY when one endpoint goes
     behind (grid lines once did; selected-face fills did). FIX: clip in
@@ -195,7 +193,7 @@ Bugs that cost real debugging time. Read before touching the module.
     `clip()` keeps `distance >= -eps`. A clip plane at +X normal, d=5 keeps
     only x>=5 (clips a unit box at origin AWAY) - the tests got this wrong
     once (no-op plane needs the brush fully on the keep side).
-43. **Stitched-wall winding: test the centroid's SIDE of the wall plane,
+30. **Stitched-wall winding: test the centroid's SIDE of the wall plane,
     and re-wind as the drag moves.** Getting `extrude_edge`/
     `extrude_vertex` walls to face out of the solid (Hammer behavior,
     user-verified in Hammer 2) burned FIVE sign rules before landing:
@@ -208,24 +206,24 @@ Bugs that cost real debugging time. Read before touching the module.
     - `normal.dot(centroid - wall_center)` (direction dot) is ALSO
       degenerate: the 45-degree bevel plane from a bisector pull passes
       exactly through the centroid.
-    What works: `wn.dot(centroid - wall_point)` - the wall normal must
-    point AWAY from the brush centroid as a PLANE-SIDE test. The
-    centroid is strictly inside for any real pull, so it never
-    degenerates except the begin-drag stub (bisector bevel through the
-    centroid), which falls back to the bisector side.
-    **The stub freeze is the second half of the bug**: winding is decided
-    at extrude time from the 0.001 stub while the drag rotates the wall
-    plane, so NO once-computed rule is correct for all final positions.
-    `_apply_gizmo_delta` (edge/vertex extrude branch) re-winds every
-    appended wall face (indices >= pre-extrude face count) each frame via
-    `LevelBrush::rewind_face_outward()`. Undo is safe because
-    `_add_brush_undo_pair` reads the CURRENT faces for the do-side.
-    Reminder: a mirrored-looking texture is always a WINDING problem -
-    bake UVs are position-based planar projections, loop-order
-    independent. Don't touch the UV code for this (one speculative UV
-    "fix" was already reverted).
+      What works: `wn.dot(centroid - wall_point)` - the wall normal must
+      point AWAY from the brush centroid as a PLANE-SIDE test. The
+      centroid is strictly inside for any real pull, so it never
+      degenerates except the begin-drag stub (bisector bevel through the
+      centroid), which falls back to the bisector side.
+      **The stub freeze is the second half of the bug**: winding is decided
+      at extrude time from the 0.001 stub while the drag rotates the wall
+      plane, so NO once-computed rule is correct for all final positions.
+      `_apply_gizmo_delta` (edge/vertex extrude branch) re-winds every
+      appended wall face (indices >= pre-extrude face count) each frame via
+      `LevelBrush::rewind_face_outward()`. Undo is safe because
+      `_add_brush_undo_pair` reads the CURRENT faces for the do-side.
+      Reminder: a mirrored-looking texture is always a WINDING problem -
+      bake UVs are position-based planar projections, loop-order
+      independent. Don't touch the UV code for this (one speculative UV
+      "fix" was already reverted).
 
-44. **Off-gizmo LMB swallows block selection clicks.** `_gizmo_input` runs
+31. **Off-gizmo LMB swallows block selection clicks.** `_gizmo_input` runs
     BEFORE `_selection_input` in `forward_input`. The Scale tool had a
     "click anywhere to uniform-scale" affordance that consumed EVERY LMB
     press when a selection was active - so once a brush was selected, no
@@ -239,31 +237,75 @@ Bugs that cost real debugging time. Read before touching the module.
     made it look like picking itself was broken in Rotate/Scale -
     diagnostic prints on INPUT are useless when the bug is in DRAWING.
 
-45. **Scale-tool paths must not run during an extrude drag.** Shift+drag
+32. **Scale-tool paths must not run during an extrude drag.** Shift+drag
     extrude duplicates topology at begin-drag; the drag then restores
     `gizmo_extrude_moved_verts` (POST-extrude count) each frame. The
     Scale tool's `_apply_gizmo_scale`/`_apply_gizmo_scale_uniform`
     instead restored `gizmo_drag_brush_verts` - the PRE-extrude snapshot
     - shrinking `verts` below the extruded faces' loop indices; the next
-    `_refresh_map()` crashed in bake (`verts[f[i]]` OOB in
-    `get_face_normal`). FIX: `_gizmo_drag_to` routes ALL extrude drags to
-    `_apply_gizmo_delta` (which has the extrude-aware restore) regardless
-    of tool. RULE: any per-frame drag-apply path that restores a vertex
-    snapshot must know whether the drag extruded - check
-    `gizmo_extrude_drag` before touching `set_vertices_data`.
+      `_refresh_map()` crashed in bake (`verts[f[i]]` OOB in
+      `get_face_normal`). FIX: `_gizmo_drag_to` routes ALL extrude drags to
+      `_apply_gizmo_delta` (which has the extrude-aware restore) regardless
+      of tool. RULE: any per-frame drag-apply path that restores a vertex
+      snapshot must know whether the drag extruded - check
+      `gizmo_extrude_drag` before touching `set_vertices_data`.
 
-## Serialization
+33. **Near-plane-clipped projections can be ASTRONOMIC.** Clipping a segment
+    against the near plane maps the crossing point onto the plane, which
+    unprojects to a screen point hundreds of thousands of pixels off-screen
+    (perspective asymptote). Any code that then iterates over the projected
+    length explodes: the marching-ants dash walk generated millions of
+    draw_line calls per frame when the camera got close to an edge
+    ("more ants as I get closer" = the lag repro). FIX: clip projected
+    segments to the overlay rect BEFORE iterating
+    (`LevelHelpers::clip_segment_to_rect`, slab test), and skip fills whose
+    verts exceed a sane coordinate bound.
 
-30. **Runtime classes must not live under `editor/`.** `LevelBrush`/`LevelMap`
+34. **A drag highlight in the hover color/width is invisible.** The face-mode
+    drop highlight drew green 2px dashes over the regular green 2px solid
+    hover outline - perfectly camouflaged; hours of "it doesn't draw"
+    debugging while every pipeline stage was provably working. Drop-target
+    visuals use the SELECTED (orange) colors + thicker width precisely so
+    they can't be mistaken for a plain hover.
+
+35. **Drag-and-drop housekeeping: payload cache, pick throttle, Esc path.**
+    `can_drop_data_fw` fires on every mouse-move during a drag: validate the
+    payload ONCE per drag session (`gui_get_drag_data()` is invariant), and
+    throttle ray-picks to a few-pixel movement delta. Cancelling a drag
+    (Esc) never calls `can_drop_data` with the (INF,INF) sentinel - clear
+    drag state on `NOTIFICATION_DRAG_END` instead (propagated tree-wide).
+    Also: drag-forwarding callables receive only (position[, data]) - bind
+    the `p_from` control at registration (`callable_mp(...).bind(this)`),
+    same as the SET_DRAG_FORWARDING_* macros.
+
+36. **Plugin teardown must pair ctor registrations.** LevelEditorPlugin
+    never removed its dock or freed the screen/dock - the editor's saved
+    layout (`project/.godot/editor/editor_layout.cfg`, `dock_*` keys) kept
+    a zombie "Level" dock that reappeared next to the fresh one each
+    session. FIX: `~LevelEditorPlugin` calls `remove_control_from_docks` +
+    `memdelete` on both (same pattern as GridMap's enter/exit-tree pairing).
+    Pre-existing zombies need a one-time layout.cfg cleanup.
+
+37. **Inheritance rules must be tested against the RIGHT source face.** The
+    first edge-extrude material rule ("first using face") was deterministic
+    but wrong for users: a floor edge pulled sideways inherited the side
+    face's material (face order), not the floor's. RULE: extruded walls
+    inherit from the face geometrically CONTINUING them - `extrude_face`
+    walls from the neighbor across their seam edge, `extrude_edge` walls
+    from the using face whose normal best matches the wall's normal. Tests
+    must assert the geometric relationship (wall normal vs source normal),
+    not just face indices.
+
+38. **Runtime classes must not live under `editor/`.** `LevelBrush`/`LevelMap`
     register at SCENE level and exist in exported games; the module SCsub only
     builds `editor/*.cpp` for editor builds. They were moved back to module
     root after an export-breaking placement.
 
-31. **Brush persistence needs plain properties.** C++ members don't save;
+39. **Brush persistence needs plain properties.** C++ members don't save;
     `vertices`/`faces`/`face_materials`/`faces_flipped` are real properties.
     Old scenes saved before this have empty brushes - recreate them.
 
-32. **Bevel: edge CONSUMED; strip cross-section profiled by shape.** After
+40. **Bevel: edge CONSUMED; strip cross-section profiled by shape.** After
     several wrong models, the working one: each beveled edge is consumed;
     every adjacent face gets an offset line at distance d (measured
     ALONG the boundary edges); the strip between them is either ONE quad
@@ -283,7 +325,7 @@ Bugs that cost real debugging time. Read before touching the module.
     use face normal x edge-dir toward the face centroid, or every edge
     touching it gets rejected.
 
-33. **subdivide_face must split the NEIGHBORS' shared edges too.** The quad
+41. **subdivide_face must split the NEIGHBORS' shared edges too.** The quad
     grid creates midpoint verts on the subdivided face's boundary, but
     neighboring faces kept their original long edge - a T-junction
     (render cracks, and the boundary edge no longer exists in the
@@ -293,7 +335,7 @@ Bugs that cost real debugging time. Read before touching the module.
     face whose loop contains that boundary run consecutively. The n-gon
     fan path adds no boundary verts, so it needs no such fix.
 
-34. **Clip seam dedup: near-plane kept verts must SNAP into the cap's
+42. **Clip seam dedup: near-plane kept verts must SNAP into the cap's
     weld set.** `clip()` classified verts within epsilon as "inside" and
     emitted the ORIGINAL vert, while crossing edges produced a WELDED
     intersection vert - two distinct seam verts within WELD_DIST of each
@@ -302,25 +344,23 @@ Bugs that cost real debugging time. Read before touching the module.
     are projected onto it and routed through the same weld lambda, plus
     a consecutive-duplicate cleanup per loop.
 
-## SCons/module mechanics
-
-36. Module SCsub env flag is `env.editor_build`, not `env["tools"]`.
-37. `initialize_<foldername>_module` must match the folder name exactly
+43. Module SCsub env flag is `env.editor_build`, not `env["tools"]`.
+44. `initialize_<foldername>_module` must match the folder name exactly
     (module was renamed `leveleditor` → `level_editor` mid-project).
-38. Clean stale `__pycache__` in the module dir after renames.
-39. `Math::pow(2.0, step)` was "ambiguous" on MSVC - hardcoded a ladder array
+45. Clean stale `__pycache__` in the module dir after renames.
+46. `Math::pow(2.0, step)` was "ambiguous" on MSVC - hardcoded a ladder array
     instead (simpler anyway).
-40. **`draw_colored_polygon` ERR_FAILs on untriangulable polygons.** Projected
+47. **`draw_colored_polygon` ERR_FAILs on untriangulable polygons.** Projected
     n-gon fills (face hover/selection overlays) can be degenerate in screen
     space - viewed edge-on, or concave/self-intersecting after vertex edits -
     and `RendererCanvasCull` errors once per redraw (log spam on every hover).
     Pre-flight with `Geometry2D::triangulate_polygon` and skip the fill on
     failure; keep drawing the outline.
-41. **Member names collide with locals.** Naming the selection-target member
+48. **Member names collide with locals.** Naming the selection-target member
     plain `target` shadowed ~15 existing `LevelBrush *target` locals (C4458
     warnings everywhere). Module state members that describe editor concepts
     (tool, target, mode) need qualified names (`selection_target`).
-42. **Flat (zero-extent) ghost AABBs break handle math in edge-on views.**
+49. **Flat (zero-extent) ghost AABBs break handle math in edge-on views.**
     A quad ghost projects to a LINE in the two ortho views looking
     perpendicular to its normal: point-in-polygon hit tests can never hit,
     and all 8 corner handles stack onto one line. Funnel picking,

@@ -732,10 +732,38 @@ int LevelBrush::extrude_face(int p_face, real_t p_distance) {
 
 	// Append side quads stitching the source loop to the cap. Winding must
 	// keep normals pointing out of the solid: test each quad against the
-	// brush centroid (same rule as extrude_edge, GOTCHAS #43) instead of
+	// brush centroid (same rule as extrude_edge, GOTCHAS #30) instead of
 	// the extrude sign - interior brushes extrude along the NEGATED stored
 	// normal, which inverts the old p_distance>0 rule.
 	const Vector3 center = get_center();
+	const uint32_t old_face_count = faces.size();
+	// The neighbor each wall is stitched to: seam edge (src[i], src[j]) is
+	// shared with exactly one other face of the brush (open edges have none).
+	LocalVector<int> wall_neighbor;
+	wall_neighbor.resize(n);
+	for (uint32_t i = 0; i < n; i++) {
+		const uint32_t j = (i + 1) % n;
+		wall_neighbor[i] = -1;
+		for (uint32_t f = 0; f < old_face_count; f++) {
+			if ((int)f == p_face) {
+				continue;
+			}
+			const LocalVector<int> &loop = faces[f];
+			const uint32_t m = loop.size();
+			for (uint32_t k = 0; k < m; k++) {
+				const int a = loop[k];
+				const int b = loop[(k + 1) % m];
+				if ((a == src[i] && b == src[j]) || (a == src[j] && b == src[i])) {
+					wall_neighbor[i] = (int)f;
+					break;
+				}
+			}
+			if (wall_neighbor[i] >= 0) {
+				break;
+			}
+		}
+	}
+
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t j = (i + 1) % n;
 		const Vector3 &pa = verts[src[i]];
@@ -750,9 +778,21 @@ int LevelBrush::extrude_face(int p_face, real_t p_distance) {
 		}
 	}
 
-	// Materials: cap keeps the source material; sides get default (null).
+	// Materials: the cap IS the source face (same index) and keeps its
+	// material. Each appended wall inherits the material of the neighbor face
+	// across its seam edge - so extruding a wall sideways continues the
+	// floor's material on the floor-like wall (and the sides' on the sides).
+	// Open seam edges (no neighbor) fall back to the source face's material.
 	_update_face_count_storage();
 	face_materials[p_face] = cap_mat;
+	for (uint32_t i = 0; i < n; i++) {
+		Ref<Material> wall_mat = cap_mat;
+		const int neighbor = wall_neighbor[i];
+		if (neighbor >= 0 && neighbor < (int)face_materials.size()) {
+			wall_mat = face_materials[neighbor];
+		}
+		face_materials[old_face_count + i] = wall_mat;
+	}
 	_notify_map_changed();
 
 	return p_face;
@@ -799,7 +839,7 @@ bool LevelBrush::extrude_edge(const EdgeKey &p_edge, const Vector3 &p_offset, in
 	// pull, so the wall normal points AWAY from it. (Every normal-based
 	// rule tried here - edge_dir x pull signed toward normal_sum, the edge
 	// bisector cross, and hybrids - had a degenerate case: flat quads,
-	// bisector-parallel pulls, or diagonal bevels. History: GOTCHAS #43.)
+	// bisector-parallel pulls, or diagonal bevels. History: GOTCHAS #30.)
 	// Degenerate fallback (centroid in the wall plane, e.g. a begin-drag
 	// stub along the bisector): face the edge-bisector side.
 	const Vector3 edge_dir = (verts[p_edge.b] - verts[p_edge.a]).normalized();
@@ -813,6 +853,7 @@ bool LevelBrush::extrude_edge(const EdgeKey &p_edge, const Vector3 &p_offset, in
 	if (Math::abs(side) < wn.length() * LevelBrushConstants::WINDING_SIDE_EPS) {
 		side = -wn.dot(out); // Ambiguous: prefer the bisector-facing order.
 	}
+	const uint32_t wall_idx = faces.size();
 	if (side > 0.0) {
 		// Centroid on the +wn side: this order faces inward; swap it.
 		faces.push_back({ p_edge.a, new_a, new_b, p_edge.b });
@@ -820,7 +861,24 @@ bool LevelBrush::extrude_edge(const EdgeKey &p_edge, const Vector3 &p_offset, in
 		faces.push_back({ p_edge.a, p_edge.b, new_b, new_a });
 	}
 
+	// The wall inherits the material of the using face whose normal best
+	// matches the WALL's normal - pulling a floor edge sideways produces a
+	// floor-like wall, which should continue the floor's material (and
+	// likewise for walls). Ties resolve to the earliest face (deterministic).
 	_update_face_count_storage();
+	const Vector3 wall_n = get_face_normal(wall_idx);
+	real_t best_dot = -1.0;
+	int best_face = -1;
+	for (int f : using_faces) {
+		const real_t d = Math::abs(get_face_normal(f).dot(wall_n));
+		if (d > best_dot) {
+			best_dot = d;
+			best_face = f;
+		}
+	}
+	if (best_face >= 0 && best_face < (int)face_materials.size()) {
+		face_materials[wall_idx] = face_materials[best_face];
+	}
 	_notify_map_changed();
 	return true;
 }
@@ -855,7 +913,7 @@ int LevelBrush::extrude_vertex(int p_vertex, const Vector3 &p_offset) {
 	verts.push_back(verts[p_vertex] + p_offset);
 
 	// Out-of-solid test for each wedge: the wall plane side of the brush
-	// centroid (reliable for any real pull; see extrude_edge / GOTCHAS #43),
+	// centroid (reliable for any real pull; see extrude_edge / GOTCHAS #30),
 	// with the all-face normal sum as the degenerate fallback.
 	const Vector3 center = get_center();
 	Vector3 vert_normal_sum;
@@ -876,11 +934,18 @@ int LevelBrush::extrude_vertex(int p_vertex, const Vector3 &p_offset) {
 		if (Math::abs(side) < wn.length() * LevelBrushConstants::WINDING_SIDE_EPS) {
 			side = -wn.dot(vert_normal_sum);
 		}
+		const uint32_t wedge_idx = faces.size();
 		if (side > 0.0) {
 			faces.push_back({ prev, next, new_v, p_vertex });
 		} else {
 			faces.push_back({ prev, p_vertex, new_v, next });
 		}
+
+		// Each wedge inherits the material of the face it's stitched to.
+		if (face_materials.size() < faces.size()) {
+			face_materials.resize(faces.size());
+		}
+		face_materials[wedge_idx] = face_materials[u.face];
 	}
 
 	_update_face_count_storage();

@@ -7,8 +7,9 @@ struck-through or "done" entries behind - git history is the archive.
 ## Known placeholders & limitations
 
 - **Edge/vertex "Extrude"** toolbar button just moves the selection +Y by the
-  amount - a placeholder. Needs a design decision (Blender extrudes along
-  normals and creates geometry; Hammer doesn't extrude edges/verts at all).
+  amount - a placeholder (the Shift+drag gizmo extrude DOES create proper
+  geometry; the menu buttons don't). Needs a design decision (Blender
+  extrudes along normals; Hammer doesn't extrude edges/verts at all).
 - **Edge/vertex Delete** collapses toward neighbor average (rough
   Blender-dissolve approximation). Could be refined.
 - **Non-planar faces** get a single Newell normal for shading - fine for
@@ -60,11 +61,22 @@ Known, small, and not worth churning right now. Fix when touching the area.
 
 ## Discussed but not built yet
 
-- **Material system rework** (the old chain was REMOVED in the 2026-07
-  audit: `current_material`, `_material_changed`, `apply_material_from_dock`,
-  and the no-op Face-menu "Apply Material" item are gone). Whatever replaces
-  it (per-face picker, texture alignment tools: UV shift/rotate/scale, fit)
-  should be designed fresh.
+- **Per-face texture axes (Hammer texture lock).** Bake UVs are currently
+  implicit world-anchored planar projections (dominant axis per face), so
+  extruded geometry inherits materials but NOT seamless texture flow - a
+  hallway floor extruded from a textured floor shows the right material
+  with a reset/misaligned projection. The real fix (discussed, deferred):
+  store per-face `u_axis`/`v_axis`/shift (Hammer's exact model), have
+  extrudes copy axes + compute seam-matching shifts. Touches serialization,
+  undo, and every geometry op; would also enable a future texture
+  alignment tool (shift/rotate/scale/fit per face). Decide world-anchored
+  vs face-anchored when designing.
+- **Save-and-relink for generated materials.** The dock's Save button
+  writes the displayed material to a .material/.res/.tres file, but brushes
+  already referencing the in-memory wrapper keep the embedded copy. A
+  "save and re-link all brush faces" action would complete the dedup.
+- **Apply active material to selected faces** action (Face menu) - the
+  active material currently only applies to NEW brushes and drag-drops.
 - Proper Hammer extrude semantics for edges/vertices.
 - Blender-style dissolve (vs current collapse) for edge/vertex delete.
 - Vertex merge/weld tool (weld_vertices exists in LevelBrush, no UI yet).

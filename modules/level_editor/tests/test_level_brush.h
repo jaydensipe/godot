@@ -335,6 +335,111 @@ TEST_CASE("[LevelBrush] extrude_vertex duplicates the vert and stitches wedges")
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] extrude material inheritance") {
+	Ref<Material> mat;
+	mat.instantiate();
+
+	// Face extrude: the cap keeps the source face's material; each side wall
+	// inherits from the NEIGHBOR face across its seam edge.
+	{
+		LevelBrush *brush = memnew(LevelBrush);
+		brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+		brush->set_face_material(4, mat); // +Y top.
+		brush->extrude_face(4, 0.5);
+		// Cap keeps the top's material; walls inherit their side neighbors
+		// (null here - sides were never assigned).
+		CHECK(brush->get_face_material(4) == mat);
+		for (int f = 6; f < brush->get_face_count(); f++) {
+			CHECK(brush->get_face_material(f).is_null());
+		}
+		memdelete(brush);
+	}
+
+	// Face extrude, hallway case: pulling a wall sideways, the floor-like
+	// wall inherits the floor's material through its seam neighbor.
+	{
+		LevelBrush *brush = memnew(LevelBrush);
+		brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+		brush->set_face_material(5, mat); // -Y bottom = red floor.
+		brush->extrude_face(3, 0.5); // -X left wall, pulled outward.
+		// 4 walls appended (indices 6..9). The wall stitched to the bottom
+		// face's seam must be red; the others (side/top neighbors) null.
+		int red_walls = 0;
+		for (int f = 6; f < brush->get_face_count(); f++) {
+			if (brush->get_face_material(f) == mat) {
+				red_walls++;
+				// The red wall must be horizontal (floor-like).
+				const Vector3 wn = brush->get_face_normal(f);
+				CHECK(Math::abs(wn.y) > 0.9);
+			}
+		}
+		CHECK(red_walls == 1);
+		memdelete(brush);
+	}
+
+	// Edge extrude: the wall inherits the using face whose normal matches the
+	// WALL's normal - a floor edge pulled sideways continues the floor's
+	// material (the hallway-floor case).
+	{
+		LevelBrush *brush = memnew(LevelBrush);
+		brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+		// Bottom face is index 5 (-Y) in setup_box topology; one of its edges
+		// pulled +X produces a horizontal (floor-like) wall -> inherits red.
+		brush->set_face_material(5, mat);
+		LocalVector<int> loop = brush->get_face(5);
+		// loop is (0,1,5,4): edge (1,5) runs along Z, perpendicular to the pull.
+		LevelBrush::EdgeKey edge(loop[1], loop[2]);
+		int new_verts[2];
+		REQUIRE(brush->extrude_edge(edge, Vector3(0.5, 0, 0), new_verts));
+		const int wall = brush->get_face_count() - 1;
+		// The wall normal must be closer to the floor's normal than the side's
+		// for the inheritance to pick the floor - verify the end state.
+		const Vector3 wall_n = brush->get_face_normal(wall);
+		const Vector3 floor_n = brush->get_face_normal(5);
+		REQUIRE(Math::abs(wall_n.dot(floor_n)) > 0.9);
+		CHECK(brush->get_face_material(wall) == mat);
+		memdelete(brush);
+	}
+
+	// Edge extrude with a wall-like pull inherits the SIDE face's material.
+	{
+		LevelBrush *brush = memnew(LevelBrush);
+		brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+		// Mark the -Y (bottom) face; pulling a bottom edge straight UP makes
+		// a vertical (wall-like) wall, which matches the side faces instead.
+		brush->set_face_material(5, mat);
+		LocalVector<int> loop = brush->get_face(5);
+		LevelBrush::EdgeKey edge(loop[1], loop[2]); // Runs along Z.
+		int new_verts[2];
+		REQUIRE(brush->extrude_edge(edge, Vector3(0, 0.5, 0), new_verts));
+		const int wall = brush->get_face_count() - 1;
+		const Vector3 wall_n = brush->get_face_normal(wall);
+		REQUIRE(Math::abs(wall_n.y) < 0.1); // Wall-like.
+		CHECK(brush->get_face_material(wall) != mat);
+		memdelete(brush);
+	}
+
+	// Vertex extrude: each wedge inherits its stitched face's material.
+	{
+		LevelBrush *brush = memnew(LevelBrush);
+		brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+		LocalVector<int> loop = brush->get_face(4);
+		const int v = loop[0];
+		brush->set_face_material(4, mat);
+		const int before = brush->get_face_count();
+		REQUIRE(brush->extrude_vertex(v, Vector3(0.5, 0.5, 0.5)) >= 0);
+		// One wedge per using face; the wedge for face 4 carries its material.
+		int mat_wedges = 0;
+		for (int f = before; f < brush->get_face_count(); f++) {
+			if (brush->get_face_material(f) == mat) {
+				mat_wedges++;
+			}
+		}
+		CHECK(mat_wedges == 1);
+		memdelete(brush);
+	}
+}
+
 TEST_CASE("[LevelBrush] extrude_face creates cap and side walls") {
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));

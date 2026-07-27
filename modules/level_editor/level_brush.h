@@ -152,7 +152,7 @@ public:
 	// Re-orient a face loop so its normal points away from the brush
 	// centroid (out of the solid). Used to keep extruded walls correctly
 	// wound as a gizmo drag moves them (their winding is decided at
-	// extrude time from a stub offset and can go stale - GOTCHAS #43).
+	// extrude time from a stub offset and can go stale - GOTCHAS #30).
 	void rewind_face_outward(int p_face);
 
 	// Subdivide a face: quads split into 4 quads via edge midpoints + centroid

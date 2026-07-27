@@ -41,6 +41,91 @@
 #include "scene/gui/menu_button.h"
 #include "scene/gui/popup_menu.h"
 
+// ---------------------------------------------------------------------------
+// Element menu actions (Vertex / Edge / Face toolbar menus).
+//
+// Declarative table: one entry per menu item, with the menu it belongs to,
+// the id reported by its id_pressed handler, and a validity predicate -
+// the item is only enabled when the predicate holds for the current
+// selection. Menus are built from this table in the screen constructor and
+// refreshed by _update_menu_states() (called from _update_overlays(), which
+// fires on every selection change).
+//
+// To add an action: append an entry here, add the item in the ctor block
+// below, and handle its id in the menu's _*_menu_selected.
+// ---------------------------------------------------------------------------
+
+struct LevelMenuAction {
+	LevelEditorScreen::MenuTarget menu;
+	int id;
+	// Selection requirement for the item to be enabled.
+	bool (LevelEditorScreen::*is_valid)() const;
+};
+
+bool LevelEditorScreen::_has_vertex_selection() const {
+	return current_map && !selected_vertices.is_empty();
+}
+
+bool LevelEditorScreen::_has_edge_selection() const {
+	return current_map && !selected_edges.is_empty();
+}
+
+bool LevelEditorScreen::_has_face_selection() const {
+	return current_map && !selected_faces.is_empty();
+}
+
+bool LevelEditorScreen::_has_brush_selection() const {
+	return current_map && selected_brush;
+}
+
+bool LevelEditorScreen::_has_bridgeable_edges() const {
+	// Bridge needs exactly 2 edges on the SAME brush.
+	if (!current_map || selected_edges.size() != 1) {
+		return false;
+	}
+	return selected_edges.begin()->value.size() == 2;
+}
+
+static const LevelMenuAction LEVEL_MENU_ACTIONS[] = {
+	// Vertex menu.
+	{ LevelEditorScreen::MENU_VERTEX, 0, &LevelEditorScreen::_has_vertex_selection }, // Extrude
+	{ LevelEditorScreen::MENU_VERTEX, 1, &LevelEditorScreen::_has_vertex_selection }, // Collapse
+	// Edge menu.
+	{ LevelEditorScreen::MENU_EDGE, 0, &LevelEditorScreen::_has_edge_selection }, // Extrude
+	{ LevelEditorScreen::MENU_EDGE, 1, &LevelEditorScreen::_has_bridgeable_edges }, // Bridge
+	{ LevelEditorScreen::MENU_EDGE, 2, &LevelEditorScreen::_has_edge_selection }, // Collapse
+	{ LevelEditorScreen::MENU_EDGE, 3, &LevelEditorScreen::_has_edge_selection }, // Bevel
+	// Face menu.
+	{ LevelEditorScreen::MENU_FACE, 0, &LevelEditorScreen::_has_face_selection }, // Extrude
+	{ LevelEditorScreen::MENU_FACE, 2, &LevelEditorScreen::_has_face_selection }, // Delete
+	{ LevelEditorScreen::MENU_FACE, 4, &LevelEditorScreen::_has_face_selection }, // Subdivide
+	{ LevelEditorScreen::MENU_FACE, 3, &LevelEditorScreen::_has_brush_selection }, // Flip Faces
+};
+
+void LevelEditorScreen::_update_menu_states() {
+	for (const LevelMenuAction &action : LEVEL_MENU_ACTIONS) {
+		MenuButton *menu = nullptr;
+		switch (action.menu) {
+			case MENU_VERTEX:
+				menu = vertex_menu;
+				break;
+			case MENU_EDGE:
+				menu = edge_menu;
+				break;
+			case MENU_FACE:
+				menu = face_menu;
+				break;
+		}
+		if (!menu) {
+			continue;
+		}
+		const int idx = menu->get_popup()->get_item_index(action.id);
+		if (idx >= 0) {
+			menu->get_popup()->set_item_disabled(idx, !(this->*action.is_valid)());
+		}
+	}
+}
+
 void LevelEditorScreen::_action_extrude_faces() {
 	if (!current_map || selected_faces.is_empty()) {
 		return;
@@ -314,15 +399,6 @@ void LevelEditorScreen::_face_menu_selected(int p_id) {
 			break;
 		case 3: // Flip Faces (works on the selected brush, any mode)
 			_action_flip_faces();
-			break;
-	}
-}
-
-void LevelEditorScreen::_tools_menu_selected(int p_id) {
-	tools_menu->release_focus();
-	switch (p_id) {
-		case 0:
-			_action_bridge_edges();
 			break;
 	}
 }
