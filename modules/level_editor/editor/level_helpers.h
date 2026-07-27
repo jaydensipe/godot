@@ -32,6 +32,7 @@
 
 #include "core/math/aabb.h"
 #include "core/math/plane.h"
+#include "core/math/rect2.h"
 #include "core/variant/variant.h"
 
 // Shared box helpers for the level editor (ghost block, select handles,
@@ -110,6 +111,48 @@ inline Plane axis_drag_plane(const Vector3 &p_point, int p_axis, const Vector3 &
 	}
 	n.normalize();
 	return Plane(n, n.dot(p_point));
+}
+
+// Closest point on the 2D segment p_a..p_b to p_point (screen-space edge
+// picking). Degenerate (zero-length) segments resolve to p_a.
+inline Vector2 closest_point_on_segment_2d(const Vector2 &p_a, const Vector2 &p_b, const Vector2 &p_point) {
+	const Vector2 ab = p_b - p_a;
+	const real_t len2 = ab.length_squared();
+	const real_t t = (len2 > 0) ? CLAMP((p_point - p_a).dot(ab) / len2, 0.0, 1.0) : 0.0;
+	return p_a + ab * t;
+}
+
+// Clips the 2D segment p_a..p_b to an axis-aligned rect (slab test),
+// returning the visible span as param distances along the segment.
+// Returns false when the segment misses the rect (or is degenerate).
+inline bool clip_segment_to_rect(const Vector2 &p_a, const Vector2 &p_b, const Rect2 &p_rect, real_t &r_t0, real_t &r_t1) {
+	const Vector2 dir = p_b - p_a;
+	const real_t len = dir.length();
+	if (len < 0.001) {
+		return false;
+	}
+	const Vector2 n = dir / len;
+	r_t0 = 0.0;
+	r_t1 = len;
+	for (int axis = 0; axis < 2; axis++) {
+		if (Math::abs(n[axis]) < 1e-8) {
+			if (p_a[axis] < p_rect.position[axis] || p_a[axis] > p_rect.position[axis] + p_rect.size[axis]) {
+				return false; // Parallel to this slab and outside it.
+			}
+			continue;
+		}
+		real_t ta = (p_rect.position[axis] - p_a[axis]) / n[axis];
+		real_t tb = (p_rect.position[axis] + p_rect.size[axis] - p_a[axis]) / n[axis];
+		if (ta > tb) {
+			SWAP(ta, tb);
+		}
+		r_t0 = MAX(r_t0, ta);
+		r_t1 = MIN(r_t1, tb);
+		if (r_t0 >= r_t1) {
+			return false;
+		}
+	}
+	return true;
 }
 
 // Closest point on the line (p_line_point, p_line_dir) to the ray

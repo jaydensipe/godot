@@ -965,6 +965,55 @@ TEST_CASE("[LevelBrush] get_edges are unique and canonically ordered") {
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] get_open_edges reports only single-face boundary edges") {
+	// A closed box has no open edges.
+	LevelBrush *box = memnew(LevelBrush);
+	box->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+	CHECK(box->get_open_edges().is_empty());
+	memdelete(box);
+
+	// A flat quad: every edge borders only the one face - all 4 are open.
+	LevelBrush *quad = memnew(LevelBrush);
+	Vector3 corners[4] = { Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(1, 0, 1), Vector3(0, 0, 1) };
+	quad->setup_quad(corners);
+	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> quad_open = quad->get_open_edges();
+	CHECK(quad_open.size() == 4);
+	CHECK(quad_open.size() == quad->get_edges().size());
+	memdelete(quad);
+
+	// Clipping a box without a cap opens the 4 edges around the cut.
+	LevelBrush *cut = memnew(LevelBrush);
+	cut->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+	cut->clip(Plane(Vector3(1, 0, 0), 0.5), false);
+	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> cut_open = cut->get_open_edges();
+	CHECK(cut_open.size() == 4);
+	for (const LevelBrush::EdgeKey &e : cut_open) {
+		// Open edges lie on the cut plane (x = 0.5).
+		CHECK(Math::abs(cut->get_vertex(e.a).x - 0.5) < 0.001);
+		CHECK(Math::abs(cut->get_vertex(e.b).x - 0.5) < 0.001);
+	}
+	memdelete(cut);
+}
+
+TEST_CASE("[LevelBrush] set_all_face_materials assigns every face") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// Faces start unassigned (null = map default applies).
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		CHECK(brush->get_face_material(f).is_null());
+	}
+
+	Ref<Material> mat;
+	mat.instantiate();
+	brush->set_all_face_materials(mat);
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		CHECK(brush->get_face_material(f) == mat);
+	}
+
+	memdelete(brush);
+}
+
 TEST_CASE("[LevelBrush] get_face_center and get_center track geometry") {
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 4, 6)));

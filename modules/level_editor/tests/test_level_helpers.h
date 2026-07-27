@@ -110,4 +110,44 @@ TEST_CASE("[LevelHelpers] closest_point_on_line_to_ray rejects parallel lines") 
 			Vector3(3, 0, 0), Vector3(0, 1, 0), point));
 }
 
+TEST_CASE("[LevelHelpers] closest_point_on_segment_2d clamps to the segment") {
+	// Projection inside the segment.
+	CHECK(LevelHelpers::closest_point_on_segment_2d(Vector2(0, 0), Vector2(10, 0), Vector2(4, 3)).is_equal_approx(Vector2(4, 0)));
+	// Beyond each endpoint clamps to the endpoint.
+	CHECK(LevelHelpers::closest_point_on_segment_2d(Vector2(0, 0), Vector2(10, 0), Vector2(-5, 3)).is_equal_approx(Vector2(0, 0)));
+	CHECK(LevelHelpers::closest_point_on_segment_2d(Vector2(0, 0), Vector2(10, 0), Vector2(99, -2)).is_equal_approx(Vector2(10, 0)));
+	// Degenerate segment resolves to the point itself.
+	CHECK(LevelHelpers::closest_point_on_segment_2d(Vector2(2, 2), Vector2(2, 2), Vector2(7, 7)).is_equal_approx(Vector2(2, 2)));
+}
+
+TEST_CASE("[LevelHelpers] clip_segment_to_rect clips against each slab") {
+	real_t t0 = 0, t1 = 0;
+	const Rect2 rect(0, 0, 100, 100);
+
+	// Fully inside: span is the whole segment.
+	REQUIRE(LevelHelpers::clip_segment_to_rect(Vector2(10, 10), Vector2(90, 90), rect, t0, t1));
+	CHECK(Math::is_zero_approx(t0));
+	CHECK(Math::is_equal_approx(t1, (Vector2(90, 90) - Vector2(10, 10)).length()));
+
+	// Crossing horizontally: clipped to x in [0, 100].
+	REQUIRE(LevelHelpers::clip_segment_to_rect(Vector2(-50, 50), Vector2(150, 50), rect, t0, t1));
+	CHECK(Math::is_equal_approx(t0, (real_t)50.0));
+	CHECK(Math::is_equal_approx(t1, (real_t)150.0));
+
+	// Diagonal entering at the bottom-left corner region: direction (200,-200),
+	// enters at (0,100) and exits at (100,0) - both at param distance
+	// 100*sqrt(2) and 200*sqrt(2) along the segment.
+	REQUIRE(LevelHelpers::clip_segment_to_rect(Vector2(-100, 200), Vector2(100, 0), rect, t0, t1));
+	CHECK(Math::is_equal_approx(t0, (real_t)(100.0 * Math::SQRT2)));
+	CHECK(Math::is_equal_approx(t1, (real_t)(200.0 * Math::SQRT2)));
+
+	// Fully outside (parallel to a slab): rejected.
+	CHECK(!LevelHelpers::clip_segment_to_rect(Vector2(-10, 200), Vector2(50, 200), rect, t0, t1));
+	// Passing below-left of the corner (x slab and y slab never overlap):
+	// from (-150,-100) to (150,-50) stays below y=0 while crossing x: rejected.
+	CHECK(!LevelHelpers::clip_segment_to_rect(Vector2(-150, -100), Vector2(150, -50), rect, t0, t1));
+	// Degenerate segment: rejected.
+	CHECK(!LevelHelpers::clip_segment_to_rect(Vector2(50, 50), Vector2(50, 50), rect, t0, t1));
+}
+
 } // namespace TestLevelHelpers

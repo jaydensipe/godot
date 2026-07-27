@@ -35,6 +35,11 @@
 class LevelEditorScreen;
 class SpinBox;
 class OptionButton;
+class Label;
+class Button;
+class TextureRect;
+class PanelContainer;
+class EditorFileDialog;
 
 // Right-side dock for the Level editor: settings panels for ARMED actions.
 //
@@ -48,6 +53,10 @@ class OptionButton;
 //   1. Add an ActionId entry in level_editor_screen.h.
 //   2. Add its LevelActionSetting list to get_action_settings() (dock .cpp).
 //   3. Implement its apply in the screen's _action_apply_armed().
+//
+// Layout: the settings form lives inside a ScrollContainer (expand-fill) so
+// it scrolls; the active-material panel is pinned below it and always stays
+// in view.
 
 // One configurable value of an armed action.
 struct LevelActionSetting {
@@ -65,20 +74,38 @@ class LevelEditorDock : public VBoxContainer {
 
 	LevelEditorScreen *screen = nullptr;
 
-	VBoxContainer *form = nullptr; // Rebuilt per armed action.
+	VBoxContainer *form = nullptr; // Rebuilt per armed action (scrollable).
+
+	// Sticky active-material panel (bottom of the dock, never scrolls).
+	PanelContainer *material_panel = nullptr;
+	TextureRect *material_preview = nullptr;
+	Label *material_name = nullptr;
+	Button *material_browse = nullptr;
+	Button *material_save = nullptr;
+	EditorFileDialog *material_save_dialog = nullptr;
 
 	void _setting_changed(double p_value, const StringName &p_id);
 	void _cancel_pressed();
 	void _brush_type_selected(int p_index);
+	void _browse_pressed();
+	void _browse_selected(const String &p_path);
+	void _save_pressed();
+	void _save_selected(const String &p_path);
+	Variant _material_drag_data(const Point2 &p_point, Control *p_from);
+	void _material_preview_ready(const String &p_path, const Ref<Texture2D> &p_preview, const Ref<Texture2D> &p_small_preview, ObjectID p_for);
 
 protected:
 	static void _bind_methods();
+	void _notification(int p_what);
 
 public:
 	void set_screen(LevelEditorScreen *p_screen) { screen = p_screen; }
 
 	// Rebuilds the form for the armed action (or shows the idle hint).
 	void refresh();
+
+	// Re-reads the screen's active material into the sticky preview panel.
+	void refresh_material();
 
 	LevelEditorDock();
 };

@@ -135,6 +135,18 @@ LevelEditorViewport::LevelEditorViewport() {
 	overlay->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
 	add_child(overlay);
 
+	// The drop highlight gets its own overlay so its animation redraws stay
+	// cheap (the main overlay repaints every brush outline/gizmo/preview).
+	drop_overlay = memnew(DropOverlay);
+	drop_overlay->viewport = this;
+	drop_overlay->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+	drop_overlay->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	add_child(drop_overlay);
+
+	// Material drag-and-drop from the FileSystem dock (bound with this control
+	// as the p_from argument - same as SET_DRAG_FORWARDING_CD).
+	set_drag_forwarding(Callable(), callable_mp(this, &LevelEditorViewport::can_drop_data_fw).bind(this), callable_mp(this, &LevelEditorViewport::drop_data_fw).bind(this));
+
 	set_display_mode(DISPLAY_UNSHADED);
 
 	view_controller.instantiate();
@@ -178,10 +190,22 @@ void LevelEditorViewport::Overlay::_notification(int p_what) {
 	}
 }
 
+void LevelEditorViewport::DropOverlay::_notification(int p_what) {
+	if (p_what == NOTIFICATION_DRAW && viewport) {
+		viewport->_drop_overlay_draw();
+	}
+}
+
 void LevelEditorViewport::_overlay_draw() {
 	_draw_grid();
 	if (screen) {
 		screen->_draw_viewport_overlay(this, overlay);
+	}
+}
+
+void LevelEditorViewport::_drop_overlay_draw() {
+	if (screen) {
+		screen->_draw_material_drop(this, drop_overlay);
 	}
 }
 
@@ -475,6 +499,73 @@ void LevelEditorViewport::queue_overlay_redraw() {
 	}
 }
 
+void LevelEditorViewport::_queue_drop_redraw() {
+	if (drop_overlay) {
+		drop_overlay->queue_redraw();
+	}
+}
+
+void LevelEditorViewport::clear_drop_state() {
+	drop_payload_checked = false;
+	drop_payload_ok = false;
+	drop_last_probe = Vector2(Math::INF, Math::INF);
+	if (drop_active) {
+		drop_active = false;
+		drop_brush = nullptr;
+		drop_face = -1;
+		drop_phase = 0.0;
+		_queue_drop_redraw();
+	}
+}
+
+bool LevelEditorViewport::can_drop_data_fw(const Point2 &p_point, const Variant &p_data, Control *p_from) {
+	// Called continuously while a drag hovers this viewport; (INF, INF)
+	// signals the drag left without dropping.
+	if (p_point == Vector2(Math::INF, Math::INF)) {
+		clear_drop_state();
+		return false;
+	}
+	if (!screen) {
+		return false;
+	}
+
+	// (C) The payload is invariant for the whole drag session, so validate
+	// its type once instead of on every motion event.
+	if (!drop_payload_checked) {
+		drop_payload_checked = true;
+		drop_payload_ok = LevelEditorMaterials::drag_data_is_material(p_data);
+	}
+	if (!drop_payload_ok) {
+		return false;
+	}
+
+	// (B) The face ray-pick sweeps every brush triangle - only re-run it
+	// when the cursor has moved enough to change the pick (~4px).
+	bool ok = drop_active;
+	if (drop_last_probe.x == Math::INF || drop_last_probe.distance_squared_to(p_point) > 16.0) {
+		drop_last_probe = p_point;
+		LevelBrush *brush = nullptr;
+		int face = -1;
+		ok = screen->_material_drop_pick(camera, p_point, brush, face);
+		if (ok != drop_active || brush != drop_brush || face != drop_face) {
+			drop_active = ok;
+			drop_brush = brush;
+			drop_face = face;
+			_queue_drop_redraw();
+		}
+	}
+	return ok;
+}
+
+void LevelEditorViewport::drop_data_fw(const Point2 &p_point, const Variant &p_data, Control *p_from) {
+	LevelBrush *brush = nullptr;
+	int face = -1;
+	if (screen && screen->_material_drop_probe(camera, p_point, p_data, brush, face)) {
+		screen->_apply_material_drop(brush, face, p_data);
+	}
+	clear_drop_state();
+}
+
 void LevelEditorViewport::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_RESIZED: {
@@ -485,6 +576,20 @@ void LevelEditorViewport::_notification(int p_what) {
 		case NOTIFICATION_PROCESS: {
 			_process_freelook(get_process_delta_time());
 			_update_grid_tracking();
+			if (drop_active) {
+				// Marching-ants drop highlight on the dedicated DropOverlay:
+				// cheap enough to redraw at full speed (1px phase steps).
+				const double new_phase = Math::fposmod(drop_phase + get_process_delta_time() * 60.0, 16.0);
+				if (Math::floor(new_phase) != Math::floor(drop_phase)) {
+					_queue_drop_redraw();
+				}
+				drop_phase = new_phase;
+			}
+		} break;
+		case NOTIFICATION_DRAG_END: {
+			// Esc-cancel (or any non-drop drag end) never calls can_drop_data
+			// with the INF sentinel, so clear the highlight here instead.
+			clear_drop_state();
 		} break;
 		case NOTIFICATION_WM_WINDOW_FOCUS_OUT: {
 			if (view_controller.is_valid()) {
@@ -1233,6 +1338,10 @@ void LevelEditorScreen::_update_map_ui() {
 	if (no_map_panel) {
 		no_map_panel->set_visible(!has_map);
 	}
+	// The material panel falls back to the map's default material.
+	if (dock) {
+		dock->refresh_material();
+	}
 }
 
 void LevelEditorScreen::_create_map_pressed() {
@@ -1641,6 +1750,55 @@ void LevelEditorScreen::_commit_brush_undo(const String &p_action, LevelBrush *p
 	undo_redo->commit_action(p_execute);
 }
 
+bool LevelEditorScreen::_material_drop_probe(Camera3D *p_camera, const Vector2 &p_screen, const Variant &p_data, LevelBrush *&r_brush, int &r_face) const {
+	if (!LevelEditorMaterials::drag_data_is_material(p_data)) {
+		r_brush = nullptr;
+		r_face = -1;
+		return false;
+	}
+	return _material_drop_pick(p_camera, p_screen, r_brush, r_face);
+}
+
+bool LevelEditorScreen::_material_drop_pick(Camera3D *p_camera, const Vector2 &p_screen, LevelBrush *&r_brush, int &r_face) const {
+	r_brush = nullptr;
+	r_face = -1;
+	if (!current_map) {
+		return false;
+	}
+
+	// Face target drops on the hovered face; everything else drops on the
+	// whole brush under the cursor (face ray-pick doubles as the brush pick).
+	Vector3 hit;
+	if (!_pick_face(p_camera, p_screen, r_brush, r_face, hit)) {
+		r_brush = nullptr;
+		r_face = -1;
+		return false;
+	}
+	if (selection_target != TARGET_FACE) {
+		r_face = -1;
+	}
+	return true;
+}
+
+void LevelEditorScreen::_apply_material_drop(LevelBrush *p_brush, int p_face, const Variant &p_data) {
+	Ref<Material> mat = LevelEditorMaterials::material_from_drag_data(p_data, texture_material_cache);
+	ERR_FAIL_COND(mat.is_null());
+
+	// Snapshot the serialized properties for undo, then apply live.
+	PackedVector3Array old_verts = p_brush->get_vertices_data();
+	Array old_faces = p_brush->get_faces_data();
+	Array old_mats = p_brush->get_face_materials_data();
+
+	if (p_face >= 0) {
+		p_brush->set_face_material(p_face, mat);
+	} else {
+		p_brush->set_all_face_materials(mat);
+	}
+
+	_commit_brush_undo(p_face >= 0 ? TTR("Apply Face Material") : TTR("Apply Brush Material"), p_brush, old_verts, old_faces, old_mats, false);
+	_update_overlays();
+}
+
 void LevelEditorScreen::_commit_brush_verts_undo(const String &p_action, const HashMap<LevelBrush *, PackedVector3Array> &p_old_verts) {
 	// One undo action across every brush whose vertices actually changed vs
 	// the snapshot. No-op (no action created) when nothing moved.
@@ -1824,11 +1982,7 @@ bool LevelEditorScreen::_pick_edge(Camera3D *p_camera, const Vector2 &p_screen, 
 			}
 			Vector2 sa = p_camera->unproject_position(wa);
 			Vector2 sb = p_camera->unproject_position(wb);
-
-			Vector2 ab = sb - sa;
-			real_t len2 = ab.length_squared();
-			real_t t = (len2 > 0) ? CLAMP((p_screen - sa).dot(ab) / len2, 0.0, 1.0) : 0.0;
-			real_t d = (sa + ab * t).distance_to(p_screen);
+			real_t d = closest_point_on_segment_2d(sa, sb, p_screen).distance_to(p_screen);
 			if (d < best) {
 				best = d;
 				best_edge = e;
@@ -2187,11 +2341,16 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 		// Hover highlight (thin white) - in every transform tool, not just
 		// Select, so the user can see what a click would pick.
 		Transform3D gt = hover_brush->get_global_transform();
+		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> open_edges = hover_brush->get_open_edges();
 		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = hover_brush->get_edges();
 		for (const LevelBrush::EdgeKey &e : edges) {
 			Vector2 a, b;
 			if (p_vp->project_segment(gt.xform(hover_brush->get_vertex(e.a)), gt.xform(hover_brush->get_vertex(e.b)), a, b)) {
-				p_canvas->draw_line(a, b, LevelEditorColors::BRUSH_OUTLINE_HOVER, 1.0);
+				if (open_edges.has(e)) {
+					p_canvas->draw_dashed_line(a, b, LevelEditorColors::BRUSH_OUTLINE_HOVER, 1.0, 6.0 * EDSCALE);
+				} else {
+					p_canvas->draw_line(a, b, LevelEditorColors::BRUSH_OUTLINE_HOVER, 1.0);
+				}
 			}
 		}
 	}
@@ -2235,19 +2394,29 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 		const real_t vs_hot = 4.5 * EDSCALE; // half-size, hovered.
 		for (LevelBrush *brush : highlight) {
 			Transform3D gt = brush->get_global_transform();
+			HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> open_edges = brush->get_open_edges();
 			HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = brush->get_edges();
 			for (const LevelBrush::EdgeKey &e : edges) {
 				Vector2 a, b;
 				if (!p_vp->project_segment(gt.xform(brush->get_vertex(e.a)), gt.xform(brush->get_vertex(e.b)), a, b)) {
 					continue;
 				}
+				Color edge_col;
+				real_t edge_width;
 				if (selection_target == TARGET_EDGE) {
 					// Edges stay light-blue; only the hovered edge turns green.
 					bool hot = (brush == hover_brush && has_hover_edge && e == hover_edge);
-					p_canvas->draw_line(a, b, hot ? LevelEditorColors::HOVER_ELEMENT : LevelEditorColors::HOVER_BRUSH_OUTLINE, hot ? 2.5 : 1.5);
+					edge_col = hot ? LevelEditorColors::HOVER_ELEMENT : LevelEditorColors::HOVER_BRUSH_OUTLINE;
+					edge_width = hot ? 2.5 : 1.5;
 				} else {
 					// Vertex/Face targets: light-blue outline only.
-					p_canvas->draw_line(a, b, LevelEditorColors::HOVER_BRUSH_OUTLINE, 1.5);
+					edge_col = LevelEditorColors::HOVER_BRUSH_OUTLINE;
+					edge_width = 1.5;
+				}
+				if (open_edges.has(e)) {
+					p_canvas->draw_dashed_line(a, b, edge_col, edge_width, 6.0 * EDSCALE);
+				} else {
+					p_canvas->draw_line(a, b, edge_col, edge_width);
 				}
 			}
 			if (selection_target == TARGET_FACE && brush == hover_brush && hover_face >= 0) {
@@ -2303,6 +2472,92 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 	_draw_tool_preview(p_vp, p_canvas);
 }
 
+void LevelEditorScreen::_draw_material_drop(LevelEditorViewport *p_vp, Control *p_canvas) {
+	// Material drop target highlight (dragging a material/texture over this
+	// viewport): face mode highlights the hovered face, other targets the
+	// whole brush outline - both with marching-ants dashes (drop_phase
+	// scrolls the pattern along the path). Drawn on the viewport's dedicated
+	// DropOverlay so the animation doesn't repaint the main overlay.
+	if (!p_vp->drop_active || !p_vp->drop_brush) {
+		return;
+	}
+	Transform3D gt = p_vp->drop_brush->get_global_transform();
+	const real_t dash_len = 8.0 * EDSCALE;
+	const real_t period = dash_len * 2.0;
+	// Near-plane-clipped segments can unproject to endpoints hundreds of
+	// thousands of pixels off-screen (asymptotic projection) - generating
+	// dashes along the whole segment then costs millions of draw calls.
+	// Clip to the overlay rect (with a small margin) before dashing.
+	const Rect2 visible_rect(Vector2(-64, -64), p_canvas->get_size() + Vector2(128, 128));
+	// Draws one dashed segment with the dash pattern offset by p_phase.
+	// Returns the phase at the end of the visible span (for loop continuity).
+	auto draw_marching_segment = [&](const Vector2 &p_a, const Vector2 &p_b, real_t p_phase, real_t p_width) -> real_t {
+		const real_t len = (p_b - p_a).length();
+		real_t t0, t1;
+		if (!clip_segment_to_rect(p_a, p_b, visible_rect, t0, t1)) {
+			return p_phase; // Fully outside the visible rect (or degenerate).
+		}
+		const Vector2 dir = (p_b - p_a) / len;
+		// Walk the dash pattern along the visible span, starting p_phase
+		// before it so the offset slides the dashes along the axis.
+		real_t t = t0 - Math::fposmod(t0 + p_phase, period);
+		while (t < t1) {
+			const real_t dash_start = MAX(t, t0);
+			const real_t dash_end = MIN(t + dash_len, t1);
+			if (dash_end > dash_start) {
+				p_canvas->draw_line(p_a + dir * dash_start, p_a + dir * dash_end, LevelEditorColors::SELECTED_ELEMENT, p_width);
+			}
+			t += period;
+		}
+		// Phase continuity for the next edge: advance by the FULL segment
+		// length (not the clipped span) so off-screen portions still count.
+		return Math::fposmod(p_phase - len, period);
+	};
+	if (p_vp->drop_face >= 0) {
+		LocalVector<int> poly = p_vp->drop_brush->get_face(p_vp->drop_face);
+		if (poly.size() >= 3) {
+			Vector<Vector3> world;
+			for (int idx : poly) {
+				world.push_back(gt.xform(p_vp->drop_brush->get_vertex(idx)));
+			}
+			PackedVector2Array pts;
+			if (p_vp->project_polygon(world, pts)) {
+				// Skip the fill when near-plane clipping blew the polygon up to
+				// astronomic screen coordinates (rasterizing it would scan
+				// millions of pixels). The clipped dashes still draw.
+				bool fill_ok = true;
+				const real_t coord_limit = 32768.0;
+				for (const Vector2 &p : pts) {
+					if (Math::abs(p.x) > coord_limit || Math::abs(p.y) > coord_limit) {
+						fill_ok = false;
+						break;
+					}
+				}
+				if (fill_ok && !Geometry2D::triangulate_polygon(pts).is_empty()) {
+					p_canvas->draw_colored_polygon(pts, LevelEditorColors::SELECTED_FACE_FILL);
+				}
+				// The phase runs continuously around the loop so dashes turn
+				// corners instead of resetting per edge. Orange + thicker than
+				// the green hover highlight underneath so the drop target is
+				// distinguishable from a plain hover.
+				real_t phase = Math::fposmod((real_t)p_vp->drop_phase * EDSCALE, period);
+				for (int i = 0; i < pts.size(); i++) {
+					phase = draw_marching_segment(pts[i], pts[(i + 1) % pts.size()], phase, 3.0);
+				}
+			}
+		}
+	} else {
+		const real_t phase = Math::fposmod((real_t)p_vp->drop_phase * EDSCALE, period);
+		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = p_vp->drop_brush->get_edges();
+		for (const LevelBrush::EdgeKey &e : edges) {
+			Vector2 a, b;
+			if (p_vp->project_segment(gt.xform(p_vp->drop_brush->get_vertex(e.a)), gt.xform(p_vp->drop_brush->get_vertex(e.b)), a, b)) {
+				draw_marching_segment(a, b, phase, 3.0);
+			}
+		}
+	}
+}
+
 void LevelEditorScreen::_draw_brush_outline(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, bool p_selected) {
 	Transform3D gt = p_brush->get_global_transform();
 
@@ -2312,11 +2567,17 @@ void LevelEditorScreen::_draw_brush_outline(LevelEditorViewport *p_vp, Control *
 	Color col = (p_selected && !element_mode) ? LevelEditorColors::BRUSH_OUTLINE_SELECTED : LevelEditorColors::BRUSH_OUTLINE;
 	real_t width = (p_selected && !element_mode) ? 2.0 : 1.0;
 
+	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> open_edges = p_brush->get_open_edges();
 	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = p_brush->get_edges();
 	for (const LevelBrush::EdgeKey &e : edges) {
 		Vector2 a, b;
 		if (p_vp->project(gt.xform(p_brush->get_vertex(e.a)), a) && p_vp->project(gt.xform(p_brush->get_vertex(e.b)), b)) {
-			p_canvas->draw_line(a, b, col, width);
+			if (open_edges.has(e)) {
+				// Open edge (no adjacent face) - draw hashed.
+				p_canvas->draw_dashed_line(a, b, col, width, 6.0 * EDSCALE);
+			} else {
+				p_canvas->draw_line(a, b, col, width);
+			}
 		}
 	}
 }
@@ -2393,10 +2654,15 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 		Color edge_col = LevelEditorColors::SELECTED_ELEMENT;
 		for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
 			Transform3D gt = E.key->get_global_transform();
+			HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> open_edges = E.key->get_open_edges();
 			for (const LevelBrush::EdgeKey &e : E.value) {
 				Vector2 a, b;
 				if (p_vp->project_segment(gt.xform(E.key->get_vertex(e.a)), gt.xform(E.key->get_vertex(e.b)), a, b)) {
-					p_canvas->draw_line(a, b, edge_col, 3.0);
+					if (open_edges.has(e)) {
+						p_canvas->draw_dashed_line(a, b, edge_col, 3.0, 6.0 * EDSCALE);
+					} else {
+						p_canvas->draw_line(a, b, edge_col, 3.0);
+					}
 				}
 			}
 		}

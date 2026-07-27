@@ -303,6 +303,11 @@ void LevelEditorScreen::_ghost_commit() {
 	} else {
 		brush->setup_box(map_inv.xform(ghost_aabb));
 	}
+	// New brushes inherit the active material; a null active material leaves
+	// faces empty so the map default applies at bake/preview time.
+	if (active_material.is_valid()) {
+		brush->set_all_face_materials(active_material);
+	}
 	brush->set_owner(root);
 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();

@@ -31,6 +31,7 @@
 #pragma once
 
 #include "../level_map.h"
+#include "materials/level_editor_materials.h"
 
 #include "editor/plugins/editor_plugin.h"
 #include "scene/debugger/view_3d_controller.h"
@@ -53,6 +54,9 @@ class LevelEditorScreen;
 // One 3D pane inside the quad view. Self-contained camera + input.
 class LevelEditorViewport : public SubViewportContainer {
 	GDCLASS(LevelEditorViewport, SubViewportContainer);
+
+	// The screen reads the drop state for the overlay highlight.
+	friend class LevelEditorScreen;
 
 public:
 	enum ViewType {
@@ -83,6 +87,36 @@ private:
 
 	Overlay *overlay = nullptr;
 
+	// Dedicated overlay for the material-drop highlight only, so the
+	// marching-ants animation can redraw without repainting the whole scene
+	// overlay (brush outlines, gizmos, previews).
+	class DropOverlay : public Control {
+		GDCLASS(DropOverlay, Control);
+
+	public:
+		LevelEditorViewport *viewport = nullptr;
+
+	protected:
+		void _notification(int p_what);
+	};
+
+	DropOverlay *drop_overlay = nullptr;
+
+	// Material drop from the FileSystem dock: while a droppable file is
+	// dragged over this viewport, the drop target is highlighted with a
+	// marching-ants dashed outline (drop_phase scrolls the dashes).
+	bool drop_active = false;
+	LevelBrush *drop_brush = nullptr;
+	int drop_face = -1;
+	double drop_phase = 0.0;
+
+	// Drag throttling: the payload type is validated once per drag session
+	// (gui_get_drag_data() is invariant for the whole drag), and the face
+	// ray-pick only re-runs when the cursor has moved a few pixels.
+	bool drop_payload_checked = false;
+	bool drop_payload_ok = false;
+	Vector2 drop_last_probe = Vector2(Math::INF, Math::INF);
+
 	ViewType view_type = VIEW_PERSPECTIVE;
 
 	// Perspective navigation is handled by the same controller the 3D editor
@@ -109,8 +143,9 @@ private:
 
 	void _process_freelook(double p_delta);
 
-	// Overlay draw hook (called from Overlay::_notification).
+	// Overlay draw hooks (called from the overlays' _notification).
 	void _overlay_draw();
+	void _drop_overlay_draw();
 
 protected:
 	void _notification(int p_what);
@@ -150,6 +185,10 @@ public:
 	bool ray_to_view_plane(const Vector2 &p_screen, const Vector3 &p_point, Vector3 &r_hit) const;
 
 	void queue_overlay_redraw();
+	void _queue_drop_redraw();
+	void clear_drop_state();
+	bool can_drop_data_fw(const Point2 &p_point, const Variant &p_data, Control *p_from);
+	void drop_data_fw(const Point2 &p_point, const Variant &p_data, Control *p_from);
 	bool project(const Vector3 &p_world, Vector2 &r_screen) const;
 	// Near-plane-safe projection: clips the world segment against the camera
 	// near plane in camera space before unprojecting, so overlay lines don't
@@ -387,6 +426,18 @@ public:
 	void set_brush_type(int p_type) { brush_type = (BrushType)p_type; }
 	void cancel_armed_action() { _action_cancel_armed(); }
 
+	// The active material applied to new brushes / faces (null = map default).
+	// Shown as a sticky preview at the bottom of the dock.
+	Ref<Material> active_material;
+	Ref<Material> get_active_material() const { return active_material; }
+	void set_active_material(const Ref<Material> &p_material) { active_material = p_material; }
+
+	// Dropped/picked texture files are wrapped in generated StandardMaterial3D
+	// materials shared per texture path (no embedded duplicates; shared faces
+	// bake into a single surface). Used by the dock's Browse and the drops.
+	LevelEditorMaterialCache texture_material_cache;
+	LevelEditorMaterialCache &get_texture_material_cache() { return texture_material_cache; }
+
 private:
 	// Select-mode box handles: resize the selected brush's local AABB.
 	// Shares the GhostHandle enum (0..5 faces, 6..13 corners).
@@ -592,6 +643,18 @@ private:
 	void _add_brush_undo_pair(EditorUndoRedoManager *p_undo_redo, LevelBrush *p_brush, const PackedVector3Array &p_old_verts, const Array &p_old_faces, const Array &p_old_mats);
 	void _update_overlays();
 	void _refresh_map();
+
+	// Material drop (FileSystem dock drag onto a viewport). Face mode applies
+	// to the hovered face; every other target applies to the whole brush.
+	// Returns true if the drag payload is an acceptable material/texture file.
+	bool _material_drop_probe(Camera3D *p_camera, const Vector2 &p_screen, const Variant &p_data, LevelBrush *&r_brush, int &r_face) const;
+	// Pick-only variant (payload already validated) - used by the throttled
+	// viewport drag path.
+	bool _material_drop_pick(Camera3D *p_camera, const Vector2 &p_screen, LevelBrush *&r_brush, int &r_face) const;
+	void _apply_material_drop(LevelBrush *p_brush, int p_face, const Variant &p_data);
+	// Marching-ants highlight for the current drop target (drawn on the
+	// viewport's dedicated DropOverlay).
+	void _draw_material_drop(LevelEditorViewport *p_vp, Control *p_canvas);
 	void _update_map_ui();
 	void _create_map_pressed();
 	void _update_warning_color();

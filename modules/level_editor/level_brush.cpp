@@ -150,11 +150,19 @@ Vector3 LevelBrush::get_face_center(int p_face) const {
 void LevelBrush::set_face_material(int p_face, const Ref<Material> &p_material) {
 	ERR_FAIL_INDEX(p_face, (int)face_materials.size());
 	face_materials[p_face] = p_material;
+	_notify_map_changed();
 }
 
 Ref<Material> LevelBrush::get_face_material(int p_face) const {
 	ERR_FAIL_INDEX_V(p_face, (int)face_materials.size(), Ref<Material>());
 	return face_materials[p_face];
+}
+
+void LevelBrush::set_all_face_materials(const Ref<Material> &p_material) {
+	for (uint32_t i = 0; i < face_materials.size(); i++) {
+		face_materials[i] = p_material;
+	}
+	_notify_map_changed();
 }
 
 HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> LevelBrush::get_edges() const {
@@ -166,6 +174,29 @@ HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> LevelBrush::get_edges() 
 		}
 	}
 	return edges;
+}
+
+HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> LevelBrush::get_open_edges() const {
+	HashMap<EdgeKey, int, EdgeKeyHasher> use_count;
+	for (uint32_t f = 0; f < faces.size(); f++) {
+		const LocalVector<int> &loop = faces[f];
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			EdgeKey e(loop[i], loop[(i + 1) % loop.size()]);
+			int *count = use_count.getptr(e);
+			if (count) {
+				*count += 1;
+			} else {
+				use_count.insert(e, 1);
+			}
+		}
+	}
+	HashSet<EdgeKey, EdgeKeyHasher> open;
+	for (const KeyValue<EdgeKey, int> &E : use_count) {
+		if (E.value < 2) {
+			open.insert(E.key);
+		}
+	}
+	return open;
 }
 
 Vector3 LevelBrush::get_center() const {

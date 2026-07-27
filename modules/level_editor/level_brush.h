@@ -95,9 +95,15 @@ public:
 
 	void set_face_material(int p_face, const Ref<Material> &p_material);
 	Ref<Material> get_face_material(int p_face) const;
+	// Assign one material to every face.
+	void set_all_face_materials(const Ref<Material> &p_material);
 
 	// All unique edges as vertex-index pairs.
 	HashSet<EdgeKey, EdgeKeyHasher> get_edges() const;
+
+	// Edges used by only one face (boundary of the brush surface - not
+	// shared with an adjacent face).
+	HashSet<EdgeKey, EdgeKeyHasher> get_open_edges() const;
 
 	Vector3 get_center() const;
 	bool is_valid() const { return verts.size() >= 4 && !faces.is_empty(); }
