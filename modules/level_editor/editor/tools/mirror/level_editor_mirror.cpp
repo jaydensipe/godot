@@ -133,7 +133,7 @@ void LevelEditorScreen::_draw_mirror(LevelEditorViewport *p_vp, Control *p_canva
 		return;
 	}
 	Transform3D gt = mirror_brush->get_global_transform();
-	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = mirror_brush->get_edges();
+	const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &edges = mirror_brush->get_edges();
 	for (const LevelBrush::EdgeKey &e : edges) {
 		Vector3 a = mirror_brush->get_vertex(e.a) - plane.normal * (2.0 * plane.distance_to(mirror_brush->get_vertex(e.a)));
 		Vector3 b = mirror_brush->get_vertex(e.b) - plane.normal * (2.0 * plane.distance_to(mirror_brush->get_vertex(e.b)));
@@ -180,7 +180,7 @@ bool LevelEditorScreen::_mirror_input(LevelEditorViewport *p_vp, Camera3D *p_cam
 			int f;
 			if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
 				_mirror_begin(brush, hit, vp);
-			} else if (vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE) {
+			} else if (vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE && current_map) {
 				// Ortho views: click anywhere - use the selected brush (or the
 				// most recent one) and place the point on the edit plane.
 				LevelBrush *target = selected_brush;
@@ -221,8 +221,9 @@ bool LevelEditorScreen::_mirror_input(LevelEditorViewport *p_vp, Camera3D *p_cam
 					_update_overlays();
 				}
 			}
+			return true; // Only the mirror drag consumes motion; other events fall through.
 		}
-		return true;
+		return mirror_drawing || mirror_drag_point >= 0;
 	}
-	return true;
+	return false;
 }

@@ -80,6 +80,16 @@ private:
 	LocalVector<Ref<Material>> face_materials;
 	bool faces_flipped = false;
 
+	// Cached edge sets (get_edges/get_open_edges). Rebuilding them scans every
+	// face loop; the overlay does that per brush per viewport per repaint,
+	// which tanks FPS during gizmo drags on dense brushes (e.g. a 64-side
+	// sphere = ~6000 edges x 4 viewports per mouse-motion). Topology only
+	// changes through _notify_map_changed(), so the cache is invalidated there.
+	mutable bool edges_dirty = true;
+	mutable HashSet<EdgeKey, EdgeKeyHasher> edges_cache;
+	mutable HashSet<EdgeKey, EdgeKeyHasher> open_edges_cache;
+	void _rebuild_edges_cache() const;
+
 	void _update_face_count_storage();
 	void _notify_map_changed();
 
@@ -98,12 +108,13 @@ public:
 	// Assign one material to every face.
 	void set_all_face_materials(const Ref<Material> &p_material);
 
-	// All unique edges as vertex-index pairs.
-	HashSet<EdgeKey, EdgeKeyHasher> get_edges() const;
+	// All unique edges as vertex-index pairs. Returns the cached set (rebuilt
+	// lazily on geometry change) - do not hold across mutations.
+	const HashSet<EdgeKey, EdgeKeyHasher> &get_edges() const;
 
 	// Edges used by only one face (boundary of the brush surface - not
-	// shared with an adjacent face).
-	HashSet<EdgeKey, EdgeKeyHasher> get_open_edges() const;
+	// shared with an adjacent face). Same caching as get_edges().
+	const HashSet<EdgeKey, EdgeKeyHasher> &get_open_edges() const;
 
 	Vector3 get_center() const;
 	bool is_valid() const { return verts.size() >= 4 && !faces.is_empty(); }

@@ -393,9 +393,12 @@ void LevelBrush::delete_faces(const Vector<int> &p_faces) {
 			sorted.remove_at(i + 1);
 		}
 	}
+	// Validate all indices up front so a stale index can't half-apply the op.
+	for (int f : sorted) {
+		ERR_FAIL_INDEX(f, (int)faces.size());
+	}
 	for (int i = sorted.size() - 1; i >= 0; i--) {
 		int f = sorted[i];
-		ERR_FAIL_INDEX(f, (int)faces.size());
 		faces.remove_at(f);
 		if (f < (int)face_materials.size()) {
 			face_materials.remove_at(f);
@@ -945,7 +948,7 @@ int LevelBrush::extrude_vertex(int p_vertex, const Vector3 &p_offset) {
 		if (face_materials.size() < faces.size()) {
 			face_materials.resize(faces.size());
 		}
-		face_materials[wedge_idx] = face_materials[u.face];
+		face_materials[wedge_idx] = (u.face < face_materials.size()) ? face_materials[u.face] : Ref<Material>();
 	}
 
 	_update_face_count_storage();

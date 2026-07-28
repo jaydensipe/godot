@@ -6,6 +6,77 @@ Completed audit passes, kept for history. For CURRENT open items see
 ROADMAP.md. New audits: append a dated section at the bottom and move
 still-open items into ROADMAP.md.
 
+## Audit (2026-07, pass 4) - multi-agent module sweep
+
+Bugs fixed:
+
+- `_draw_brush_outline` used per-endpoint `project()` while every other
+  outline pass used `project_segment()` - brush outlines vanished when one
+  endpoint crossed the near plane (GOTCHAS #22). Fixed via a new shared
+  `_draw_brush_edges()` (screen member; needs LevelBrush + viewport types
+  so it can't live in level_helpers.h) which also collapsed 3 duplicated
+  edge-outline loops (base outline, mesh hover, element-target highlight).
+- `_clip_input`/`_mirror_input` ended with an unconditional `return true` -
+  the clip/mirror tools swallowed ALL viewport input while active (camera
+  nav blocked even before starting a clip). Now returns false unless a
+  clip/mirror drag is active.
+- Clip/mirror ortho "click anywhere" fallback dereferenced `current_map`
+  unchecked (null-deref with no LevelMap in the scene) - guarded.
+- Vertex/edge pick tolerances were raw literals (16.0/12.0) not multiplied
+  by EDSCALE unlike every other pick tolerance - moved to
+  `LevelEditorHandles::VERTEX_PICK_TOL`/`EDGE_PICK_TOL` (HiDPI fix).
+- Marching-ants phase wrap was a hardcoded `16.0` in two places, decoupled
+  from the dash length it must match - now
+  `LevelEditorHandles::ANTS_PERIOD` derived from `ANTS_DASH` (+ `ANTS_SPEED`).
+- `delete_faces` validated indices mid-removal - a stale index half-applied
+  the op. Now validates all indices up front.
+- `extrude_vertex` read `face_materials[u.face]` unchecked (every other
+  site guards) - guarded.
+
+Dead code removed:
+
+- Dock: redundant double null-check + double `set_tooltip_text` on
+  material_save (first immediately overwritten).
+
+Helpers/constants added:
+
+- `LevelHelpers::draw_vertex_marker` (filled square + 1px black outline) -
+  replaced 2 duplicated vertex-marker blocks.
+- `LevelEditorHandles::VERTEX_SIZE`/`VERTEX_HOT_SIZE`/`DROP_REPROBE_DIST_SQ`.
+
+Tests added: `aabb_corners`/`AABB_EDGE_IDX`/`aabb_face_center`/
+`aabb_from_points` invariants, setup_sphere max-clamp (64), odd side
+counts (rings floor), non-uniform AABB ellipsoid + pole positions,
+vertex/face accessor round-trip, is_valid negative/minimal cases.
+
+Deferred (added to ROADMAP.md "Deferred smells"): clip/mirror two-point
+plane state machines (~250 lines, merge when next editing them), ortho-
+view->axis switch (5 copies), selected-brushes HashSet collection (2
+copies), sorted-descending face iteration (3 copies), face fill+outline
+projection block (3 copies, divergent guards), Newell duplication
+(level_brush.cpp vs level_modifiers.cpp), `_pick_gizmo` re-implements
+`closest_point_on_segment_2d`, `clip_split`/`get_face_center`/`is_valid`
+production-dead (test-only).
+
+## Perf pass (2026-07) - dense-brush drag lag
+
+The rotate/scale lag on committed spheres came back after the geometry-
+only bake fix. Two compounding causes found and fixed:
+
+- The overlay called `get_edges()` + `get_open_edges()` per brush per
+  viewport per repaint - each rebuilt a HashSet by scanning every face
+  loop (~50k inserts/viewport for a 64-side sphere, x4 viewports, on
+  every mouse-motion). Fixed with a LevelBrush edge cache invalidated in
+  `_notify_map_changed`; both getters now return const refs (GOTCHAS #50).
+- `LevelMap::bake()` material dedup was O(m^2) and the surface loop
+  re-scanned all brush faces per material with per-material transform
+  recomputation. Now a single grouping pass + per-brush transforms
+  computed once (GOTCHAS #51).
+
+API change: `LevelBrush::get_edges()`/`get_open_edges()` now return
+`const HashSet &` (no copies; HashSet has no copy ctor). All callers
+updated to references.
+
 ## Audit (2026-07, pass 3) - multi-agent module sweep
 
 Dead code removed:

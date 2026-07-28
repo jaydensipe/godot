@@ -208,6 +208,12 @@ inline real_t draw_marching_segment(Control *p_canvas, const Vector2 &p_a, const
 	return Math::fposmod(p_phase - len, period);
 }
 
+// Draws a vertex marker: a filled square with a 1px black outline behind it.
+inline void draw_vertex_marker(Control *p_canvas, const Vector2 &p_center, real_t p_half_size, const Color &p_fill) {
+	p_canvas->draw_rect(Rect2(p_center - Vector2(p_half_size + 1, p_half_size + 1), Size2((p_half_size + 1) * 2, (p_half_size + 1) * 2)), Color(0, 0, 0, 1));
+	p_canvas->draw_rect(Rect2(p_center - Vector2(p_half_size, p_half_size), Size2(p_half_size * 2, p_half_size * 2)), p_fill);
+}
+
 // Closest point on the line (p_line_point, p_line_dir) to the ray
 // (p_ray_origin, p_ray_dir) - the gizmo axis-drag solver. Returns false when
 // the two are parallel (degenerate, no unique closest point).

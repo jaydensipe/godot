@@ -755,6 +755,11 @@ private:
 	friend class LevelEditorDock;
 	void _draw_viewport_overlay(LevelEditorViewport *p_vp, Control *p_canvas);
 	void _draw_brush_outline(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, bool p_selected);
+	// Shared edge-outline pass: solid lines for closed edges, hashed dashes for
+	// open ones, always via project_segment so edges crossing the near plane
+	// still draw (GOTCHAS #22). Used by the base outlines, hover highlight, and
+	// element-target highlights.
+	void _draw_brush_edges(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, const Color &p_color, real_t p_width) const;
 	void _draw_drag_feedback(LevelEditorViewport *p_vp, Control *p_canvas);
 	void _draw_selection(LevelEditorViewport *p_vp, Control *p_canvas);
 

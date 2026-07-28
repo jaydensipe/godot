@@ -164,7 +164,18 @@ namespace LevelEditorHandles {
 inline constexpr real_t FACE_PICK_TOL = 10.0; // Box face-center pick radius (px).
 inline constexpr real_t CORNER_PICK_TOL = 8.0; // Box corner pick radius (px).
 inline constexpr real_t POINT_PICK_TOL = 10.0; // Clip/mirror plane-point pick radius (px).
+inline constexpr real_t VERTEX_PICK_TOL = 16.0; // Vertex pick radius (px).
+inline constexpr real_t EDGE_PICK_TOL = 12.0; // Edge pick radius (px).
 inline constexpr real_t FACE_SIZE = 4.0; // Face-handle rect half-size (px).
 inline constexpr real_t CORNER_SIZE = 3.0; // Corner-handle rect half-size (px).
 inline constexpr real_t POINT_SIZE = 4.0; // Clip/mirror point rect half-size (px).
+inline constexpr real_t VERTEX_SIZE = 3.0; // Vertex marker rect half-size (px).
+inline constexpr real_t VERTEX_HOT_SIZE = 4.5; // Hovered/selected vertex marker half-size (px).
+inline constexpr real_t DROP_REPROBE_DIST_SQ = 16.0; // Re-pick material drop when cursor moved this far (px^2, ~4px).
+// Marching-ants: phase advance per second, and the wrap period. The period
+// must equal dash_len * 2 at EDSCALE 1 (LevelHelpers::draw_marching_segment's
+// default dash); derive it from the dash constant instead of hardcoding.
+inline constexpr real_t ANTS_DASH = 8.0;
+inline constexpr real_t ANTS_PERIOD = ANTS_DASH * 2.0;
+inline constexpr real_t ANTS_SPEED = 60.0; // Phase units per second.
 } // namespace LevelEditorHandles

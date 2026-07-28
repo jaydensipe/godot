@@ -150,4 +150,58 @@ TEST_CASE("[LevelHelpers] clip_segment_to_rect clips against each slab") {
 	CHECK(!LevelHelpers::clip_segment_to_rect(Vector2(50, 50), Vector2(50, 50), rect, t0, t1));
 }
 
+TEST_CASE("[LevelHelpers] aabb_corners uses the x|y|z bitmask layout") {
+	Vector3 c[8];
+	LevelHelpers::aabb_corners(AABB(Vector3(0, 0, 0), Vector3(2, 4, 6)), c);
+	CHECK(c[0].is_equal_approx(Vector3(0, 0, 0)));
+	CHECK(c[1].is_equal_approx(Vector3(2, 0, 0)));
+	CHECK(c[2].is_equal_approx(Vector3(0, 4, 0)));
+	CHECK(c[3].is_equal_approx(Vector3(2, 4, 0)));
+	CHECK(c[7].is_equal_approx(Vector3(2, 4, 6)));
+}
+
+TEST_CASE("[LevelHelpers] AABB_EDGE_IDX is a valid box edge table") {
+	Vector3 c[8];
+	LevelHelpers::aabb_corners(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)), c);
+	for (int i = 0; i < 12; i++) {
+		// Every edge differs in exactly one axis (unit edge length).
+		CHECK(Math::is_equal_approx(c[LevelHelpers::AABB_EDGE_IDX[i][0]].distance_to(c[LevelHelpers::AABB_EDGE_IDX[i][1]]), (real_t)1.0));
+	}
+	// Every corner index appears in exactly 3 edges.
+	int counts[8] = { 0 };
+	for (int i = 0; i < 12; i++) {
+		counts[LevelHelpers::AABB_EDGE_IDX[i][0]]++;
+		counts[LevelHelpers::AABB_EDGE_IDX[i][1]]++;
+	}
+	for (int i = 0; i < 8; i++) {
+		CHECK(counts[i] == 3);
+	}
+}
+
+TEST_CASE("[LevelHelpers] aabb_face_center matches AABB_FACE_DIRS") {
+	const AABB bb(Vector3(0, 0, 0), Vector3(2, 4, 6));
+	// Face 1 = +x, face 2 = -y, face 5 = +z.
+	CHECK(LevelHelpers::aabb_face_center(bb, 1).is_equal_approx(Vector3(2, 2, 3)));
+	CHECK(LevelHelpers::aabb_face_center(bb, 2).is_equal_approx(Vector3(1, 0, 3)));
+	CHECK(LevelHelpers::aabb_face_center(bb, 5).is_equal_approx(Vector3(1, 2, 6)));
+	// Opposite faces are opposite directions.
+	for (int i = 0; i < 3; i++) {
+		CHECK(LevelHelpers::AABB_FACE_DIRS[i * 2].is_equal_approx(-LevelHelpers::AABB_FACE_DIRS[i * 2 + 1]));
+	}
+}
+
+TEST_CASE("[LevelHelpers] aabb_from_points encloses all points") {
+	PackedVector3Array pts;
+	pts.push_back(Vector3(1, 2, 3));
+	pts.push_back(Vector3(-1, 5, 0));
+	pts.push_back(Vector3(0, 0, 7));
+	AABB bb = LevelHelpers::aabb_from_points(pts);
+	CHECK(bb.position.is_equal_approx(Vector3(-1, 0, 0)));
+	CHECK(bb.size.is_equal_approx(Vector3(2, 5, 7)));
+
+	// Empty input yields an empty (zero-size) box.
+	AABB empty = LevelHelpers::aabb_from_points(PackedVector3Array());
+	CHECK(empty.size.is_equal_approx(Vector3()));
+}
+
 } // namespace TestLevelHelpers

@@ -99,10 +99,8 @@ void LevelEditorDock::_bind_methods() {
 
 void LevelEditorDock::_notification(int p_what) {
 	if (p_what == NOTIFICATION_THEME_CHANGED && material_panel) {
-		if (material_panel) {
-			// Framed content-box style (same as the editor's Tree panels).
-			material_panel->set_theme_type_variation("PanelContainerButtonGroup");
-		}
+		// Framed content-box style (same as the editor's Tree panels).
+		material_panel->set_theme_type_variation("PanelContainerButtonGroup");
 		material_save->set_button_icon(get_editor_theme_icon(SNAME("Save")));
 	}
 }
@@ -418,7 +416,6 @@ LevelEditorDock::LevelEditorDock() {
 
 	material_save = memnew(Button);
 	material_save->set_theme_type_variation("FlatMenuButton");
-	material_save->set_tooltip_text(TTRC("Save Material"));
 	material_save->set_tooltip_text(TTRC("Save the displayed material as a resource file."));
 	material_save->connect("pressed", callable_mp(this, &LevelEditorDock::_save_pressed));
 	material_buttons->add_child(material_save);

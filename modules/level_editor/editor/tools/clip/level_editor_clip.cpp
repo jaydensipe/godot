@@ -186,7 +186,7 @@ void LevelEditorScreen::_draw_clip(LevelEditorViewport *p_vp, Control *p_canvas)
 	Color kept_col = LevelEditorColors::CLIP_KEPT;
 	Color cut_col = LevelEditorColors::CLIP_CUT;
 
-	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = clip_brush->get_edges();
+	const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &edges = clip_brush->get_edges();
 	for (const LevelBrush::EdgeKey &e : edges) {
 		Vector3 a_local = clip_brush->get_vertex(e.a);
 		Vector3 b_local = clip_brush->get_vertex(e.b);
@@ -298,7 +298,7 @@ bool LevelEditorScreen::_clip_input(LevelEditorViewport *p_vp, Camera3D *p_camer
 			int f;
 			if (_pick_face(p_camera, mb->get_position(), brush, f, hit)) {
 				_clip_begin(brush, hit, vp);
-			} else if (vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE) {
+			} else if (vp->get_view_type() != LevelEditorViewport::VIEW_PERSPECTIVE && current_map) {
 				// Ortho views: click anywhere - use the selected brush (or the
 				// most recent one) and place the point on the edit plane.
 				LevelBrush *target = selected_brush;
@@ -339,8 +339,9 @@ bool LevelEditorScreen::_clip_input(LevelEditorViewport *p_vp, Camera3D *p_camer
 					_update_overlays();
 				}
 			}
+			return true; // Only the clip drag consumes motion; other events fall through.
 		}
-		return true;
+		return clip_drawing || clip_drag_point >= 0;
 	}
-	return true;
+	return false;
 }

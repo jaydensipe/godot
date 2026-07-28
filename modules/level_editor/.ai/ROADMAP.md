@@ -45,9 +45,9 @@ Known, small, and not worth churning right now. Fix when touching the area.
 - clip/mirror "pick target brush" blocks still duplicate ~20 lines
   (low-risk shared helper, but both tools work - only merge when editing
   one of them).
-- `LevelMap::bake` material dedup is O(m²); preview pays for collision +
-  occluder construction it throws away (see placeholder note above -
-  benchmark first).
+- `LevelMap::bake` still rebuilds one monolithic mesh for the whole map
+  per edit (per-brush preview meshes would localize rebuilds - see
+  placeholder note above; benchmark first).
 - `delete_faces` leaves orphan verts (other ops compact; documented
   behavior - codified by a test would be nice).
 - `set_default_material(null)` is ignored - the default can never be
@@ -58,6 +58,26 @@ Known, small, and not worth churning right now. Fix when touching the area.
   an enum would document the layout.
 - The bevel default shape (0.5) is duplicated between the dock descriptor
   and the screen fallback.
+- clip/mirror two-point plane-line state machines duplicate ~250 lines
+  (begin/cancel/pick/draw/input) - extract a shared TwoPointPlane state
+  struct when next editing either tool (audit pass 4).
+- Ortho-view->axis mapping switch exists in 5 places (brush handles,
+  rotate gizmo, dim labels, drag AABB) - a `LevelHelpers::ortho_view_axis`
+  would kill 3 (audit pass 4).
+- Selected-brushes HashSet collection (gizmos begin-drag + rotate_input)
+  and HashSet->Vector sorted-descending iteration (3 copies) are helper
+  candidates (audit pass 4).
+- Face fill+outline projection block appears 3 times with divergent
+  degenerate-projection guards - `draw_projected_face` helper (audit pass 4).
+- Newell's method exists twice (level_brush.cpp get_face_normal +
+  level_modifiers.cpp newell_normal) - one shared runtime helper (audit pass 4).
+- `_pick_gizmo` re-implements `LevelHelpers::closest_point_on_segment_2d`
+  inline; `_ghost_hit_test` re-implements `Geometry2D::is_point_in_polygon`
+  (audit pass 4).
+- `clip_split`, `get_face_center`, `is_valid` are production-dead
+  (test-only) - keep for tests or delete (audit pass 4).
+- `move_vertices` validates each index mid-loop (partial application on a
+  bad index) - same up-front-validate fix as delete_faces got in pass 4.
 
 ## Good to follow
 

@@ -175,21 +175,23 @@ Node3D *LevelMap::bake(bool p_geometry_only) const {
 	// offline tools) instead of spamming get_global_transform errors.
 	const Transform3D map_inv = is_inside_tree() ? get_global_transform().affine_inverse() : get_transform().affine_inverse();
 
-	// One surface per unique material.
-	LocalVector<Ref<Material>> materials;
-	for (LevelBrush *brush : brushes) {
+	// One surface per unique material. Single pass: group each brush's faces
+	// by material up front (the old per-material re-scan of every face was
+	// O(materials x faces) - quadratic with per-face unique materials).
+	HashMap<Ref<Material>, LocalVector<int>> mat_faces; // material -> flat (brush_idx, face) pairs.
+	LocalVector<Ref<Material>> materials; // Insertion order for stable surfaces.
+	for (int b = 0; b < brushes.size(); b++) {
+		LevelBrush *brush = brushes[b];
 		for (int f = 0; f < brush->get_face_count(); f++) {
 			Ref<Material> mat = _get_face_material_or_default(brush, f);
-			bool found = false;
-			for (const Ref<Material> &m : materials) {
-				if (m == mat) {
-					found = true;
-					break;
-				}
-			}
-			if (!found) {
+			LocalVector<int> *list = mat_faces.getptr(mat);
+			if (!list) {
 				materials.push_back(mat);
+				mat_faces.insert(mat, LocalVector<int>());
+				list = mat_faces.getptr(mat);
 			}
+			list->push_back(b);
+			list->push_back(f);
 		}
 	}
 
@@ -198,29 +200,31 @@ Node3D *LevelMap::bake(bool p_geometry_only) const {
 
 	PackedVector3Array collision_faces;
 
+	// Per-brush transforms, computed once (not per material x brush).
+	LocalVector<Transform3D> brush_to_map;
+	LocalVector<Basis> brush_normal_basis;
+	for (LevelBrush *brush : brushes) {
+		const Transform3D t = map_inv * (brush->is_inside_tree() ? brush->get_global_transform() : brush->get_transform());
+		brush_to_map.push_back(t);
+		brush_normal_basis.push_back(t.basis.inverse().transposed());
+	}
+
 	for (const Ref<Material> &mat : materials) {
 		PackedVector3Array verts;
 		PackedVector3Array normals;
 		PackedVector2Array uvs;
 
-		for (LevelBrush *brush : brushes) {
-			// Brush-local -> map-local transform.
-			const Transform3D brush_to_map = map_inv * (brush->is_inside_tree() ? brush->get_global_transform() : brush->get_transform());
-			const Basis normal_basis = brush_to_map.basis.inverse().transposed();
-
-			for (int f = 0; f < brush->get_face_count(); f++) {
-				if (_get_face_material_or_default(brush, f) != mat) {
-					continue;
-				}
-				Vector<Vector3> v, n;
-				Vector<Vector2> uv;
-				brush->get_bake_surface_data(f, v, n, uv);
-				for (int i = 0; i < v.size(); i++) {
-					verts.push_back(brush_to_map.xform(v[i]));
-					Vector3 nn = (normal_basis.xform(n[i])).normalized();
-					normals.push_back(nn);
-					uvs.push_back(uv[i]);
-				}
+		const LocalVector<int> &list = mat_faces[mat];
+		for (uint32_t i = 0; i < list.size(); i += 2) {
+			const int b = list[i];
+			const int f = list[i + 1];
+			Vector<Vector3> v, n;
+			Vector<Vector2> uv;
+			brushes[b]->get_bake_surface_data(f, v, n, uv);
+			for (int j = 0; j < v.size(); j++) {
+				verts.push_back(brush_to_map[b].xform(v[j]));
+				normals.push_back(brush_normal_basis[b].xform(n[j]).normalized());
+				uvs.push_back(uv[j]);
 			}
 		}
 

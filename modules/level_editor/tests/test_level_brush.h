@@ -104,6 +104,75 @@ TEST_CASE("[LevelBrush] setup_sphere clamps degenerate side counts") {
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] setup_sphere clamps to the 64-side maximum") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_sphere(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)), 100); // Clamped to 64.
+	const int sides = 64;
+	const int rings = sides / 2;
+	CHECK(brush->get_vertex_count() == 2 + (rings - 1) * sides);
+	CHECK(brush->get_face_count() == 2 * sides + (rings - 2) * sides);
+	CHECK(brush->get_open_edges().size() == 0);
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] setup_sphere odd side counts floor to rings >= 2") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_sphere(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)), 5);
+	// rings = MAX(5/2, 2) = 2 -> 2 poles + 1 interior ring, cap fans only.
+	CHECK(brush->get_vertex_count() == 2 + 5);
+	CHECK(brush->get_face_count() == 2 * 5);
+	CHECK(brush->get_open_edges().size() == 0);
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] setup_sphere non-uniform AABB produces an ellipsoid") {
+	LevelBrush *brush = memnew(LevelBrush);
+	const AABB bb(Vector3(0, 0, 0), Vector3(2, 4, 6));
+	brush->setup_sphere(bb, 16);
+	// Every vertex lies on the ellipsoid ((x-cx)/rx)^2 + ... == 1.
+	const Vector3 c = bb.get_center();
+	const Vector3 r = bb.size * 0.5;
+	for (int i = 0; i < brush->get_vertex_count(); i++) {
+		const Vector3 v = brush->get_vertex(i);
+		const Vector3 d((v.x - c.x) / r.x, (v.y - c.y) / r.y, (v.z - c.z) / r.z);
+		CHECK(Math::is_equal_approx(d.length(), (real_t)1.0));
+	}
+	// Poles sit at the top/bottom of the box.
+	CHECK(brush->get_vertex(0).is_equal_approx(c + Vector3(0, r.y, 0)));
+	CHECK(brush->get_vertex(brush->get_vertex_count() - 1).is_equal_approx(c - Vector3(0, r.y, 0)));
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] vertex and face accessors round-trip") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+	brush->set_vertex(0, Vector3(9, 9, 9));
+	CHECK(brush->get_vertex(0).is_equal_approx(Vector3(9, 9, 9)));
+	// Other vertices untouched.
+	CHECK(brush->get_vertex(1).is_equal_approx(Vector3(1, 0, 0)));
+	// Box face loops are quads with valid indices.
+	CHECK((int)brush->get_face(0).size() == 4);
+	for (int idx : brush->get_face(0)) {
+		CHECK(idx >= 0);
+		CHECK(idx < 8);
+	}
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] is_valid rejects empty and accepts minimal brushes") {
+	LevelBrush *brush = memnew(LevelBrush);
+	CHECK(!brush->is_valid()); // Default-constructed: no geometry.
+	Vector3 corners[4] = {
+		Vector3(0, 0, 0),
+		Vector3(0, 0, 2),
+		Vector3(2, 0, 2),
+		Vector3(2, 0, 0),
+	};
+	brush->setup_quad(corners);
+	CHECK(brush->is_valid()); // A single quad (4 verts) is a valid flat brush.
+	memdelete(brush);
+}
+
 TEST_CASE("[LevelBrush] setup_quad produces a single-face flat brush") {
 	LevelBrush *brush = memnew(LevelBrush);
 	// XZ plane at y=1, CCW seen from +Y (same winding the quad brush type
@@ -1094,7 +1163,7 @@ TEST_CASE("[LevelBrush] get_edges are unique and canonically ordered") {
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
 
-	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = brush->get_edges();
+	const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &edges = brush->get_edges();
 	CHECK(edges.size() == 12); // A cube has 12 unique edges.
 	for (const LevelBrush::EdgeKey &e : edges) {
 		CHECK(e.a < e.b); // Canonical ordering: smaller index first.
@@ -1116,7 +1185,7 @@ TEST_CASE("[LevelBrush] get_open_edges reports only single-face boundary edges")
 	LevelBrush *quad = memnew(LevelBrush);
 	Vector3 corners[4] = { Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(1, 0, 1), Vector3(0, 0, 1) };
 	quad->setup_quad(corners);
-	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> quad_open = quad->get_open_edges();
+	const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &quad_open = quad->get_open_edges();
 	CHECK(quad_open.size() == 4);
 	CHECK(quad_open.size() == quad->get_edges().size());
 	memdelete(quad);
@@ -1125,7 +1194,7 @@ TEST_CASE("[LevelBrush] get_open_edges reports only single-face boundary edges")
 	LevelBrush *cut = memnew(LevelBrush);
 	cut->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
 	cut->clip(Plane(Vector3(1, 0, 0), 0.5), false);
-	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> cut_open = cut->get_open_edges();
+	const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &cut_open = cut->get_open_edges();
 	CHECK(cut_open.size() == 4);
 	for (const LevelBrush::EdgeKey &e : cut_open) {
 		// Open edges lie on the cut plane (x = 0.5).

@@ -10,6 +10,8 @@ modules/level_editor/
                              #   SCENE level: GDREGISTER_CLASS(LevelBrush), (LevelMap)
                              #   EDITOR level: GDREGISTER_CLASS(LevelEditorPlugin) + EditorPlugins::add_by_type
   level_brush.{h,cpp}        # LevelBrush : Node3D - brush topology + geometry ops (runtime + editor)
+  level_modifiers.cpp        # LevelBrush geometry-op implementations (clip, extrude,
+                             #   bevel, weld, bridge, subdivide...) - split from level_brush.cpp
   level_map.{h,cpp}          # LevelMap : Node3D - brush container, live preview, bake (runtime + editor)
   level_constants.h          # LevelBrushConstants (geometry tolerances, runtime-safe)
                              #   + LevelEditorColors/LevelEditorGrid/LevelEditorHandles
@@ -29,8 +31,10 @@ modules/level_editor/
     level_helpers.h          # LevelHelpers namespace - aabb_corners/AABB_EDGE_IDX/
                              #   AABB_FACE_DIRS/aabb_face_center box helpers, the
                              #   pure gizmo-drag math (axis_drag_plane,
-                             #   closest_point_on_line_to_ray), and 2D segment math
-                             #   (closest_point_on_segment_2d, clip_segment_to_rect)
+                             #   closest_point_on_line_to_ray), 2D segment math
+                             #   (closest_point_on_segment_2d, clip_segment_to_rect),
+                             #   and clipped overlay drawing (draw_dashed_line_clipped,
+                             #   draw_marching_segment, draw_vertex_marker)
     tools/
       level_editor_tools.cpp     # LevelEditorScreen tool-action members (_action_*: extrude,
                                  #   flip faces, subdivide, bridge, collapse; plus
@@ -104,6 +108,8 @@ SubViewportContainer
   PackedInt32Array), `face_materials` (Array), `faces_flipped` (bool).
 - `get_face_normal()` = Newell's method (robust for non-planar n-gons).
 - Geometry ops: `setup_box`, `setup_quad` (single-face flat brush),
+  `setup_sphere` (lat/long convex solid, sides clamped [4,64],
+  rings = MAX(sides/2, 2)),
   `move_vertices`, `extrude_face` (cap + walls),
   `extrude_edge`/`extrude_vertex` (duplicate the element's verts with an
   offset, rewire using faces to the dupes, stitch one wall quad/wedge per
@@ -113,7 +119,9 @@ SubViewportContainer
   `mirror(plane)` (reflect verts + reverse winding - reflection flips
   chirality), `compact_vertices` (drop unreferenced verts, remap loops),
   `clip_split`, `delete_faces`, `collapse_vertices`, `weld_vertices`,
-  `bridge_edges`, `bevel_edges` (Blender-style bevel: edge consumed, one
+  `bridge_edges`, `get_edge_loop`/`get_edge_chain` (quad-strip walkers),
+  `subdivide_face`, `rewind_face_outward` (per-face winding fix),
+  `bevel_edges`/`bevel_edges_profiled` (Blender-style bevel: edge consumed, one
   strip quad per edge bridging offset lines p_distance into each adjacent
   face; meeting edges mitred to shared corner verts; collinear chains
   share verts into one continuous strip),

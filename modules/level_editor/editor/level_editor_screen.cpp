@@ -553,7 +553,7 @@ bool LevelEditorViewport::can_drop_data_fw(const Point2 &p_point, const Variant 
 	// (B) The face ray-pick sweeps every brush triangle - only re-run it
 	// when the cursor has moved enough to change the pick (~4px).
 	bool ok = drop_active;
-	if (drop_last_probe.x == Math::INF || drop_last_probe.distance_squared_to(p_point) > 16.0) {
+	if (drop_last_probe.x == Math::INF || drop_last_probe.distance_squared_to(p_point) > LevelEditorHandles::DROP_REPROBE_DIST_SQ) {
 		drop_last_probe = p_point;
 		LevelBrush *brush = nullptr;
 		int face = -1;
@@ -590,7 +590,7 @@ void LevelEditorViewport::_notification(int p_what) {
 			if (drop_active) {
 				// Marching-ants drop highlight on the dedicated PreviewOverlay:
 				// cheap enough to redraw at full speed (1px phase steps).
-				const double new_phase = Math::fposmod(drop_phase + get_process_delta_time() * 60.0, 16.0);
+				const double new_phase = Math::fposmod(drop_phase + get_process_delta_time() * LevelEditorHandles::ANTS_SPEED, (double)LevelEditorHandles::ANTS_PERIOD);
 				if (Math::floor(new_phase) != Math::floor(drop_phase)) {
 					_queue_preview_redraw();
 				}
@@ -1830,8 +1830,8 @@ void LevelEditorScreen::_bevel_preview_rebuild() {
 		// in the original brush) - the original edges stay drawn by the
 		// normal outline pass, and consumed edges (steps=0 centerline) must
 		// not ghost back in here.
-		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> orig_edges = E.key->get_edges();
-		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> result_edges = working->get_edges();
+		const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &orig_edges = E.key->get_edges();
+		const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &result_edges = working->get_edges();
 		for (const LevelBrush::EdgeKey &e : result_edges) {
 			const Vector3 va = working->get_vertex(e.a);
 			const Vector3 vb = working->get_vertex(e.b);
@@ -2177,7 +2177,7 @@ bool LevelEditorScreen::_pick_vertex(Camera3D *p_camera, const Vector2 &p_screen
 		return false;
 	}
 
-	real_t best = 16.0; // pixels.
+	real_t best = LevelEditorHandles::VERTEX_PICK_TOL * EDSCALE; // pixels.
 	bool found = false;
 	int best_v = -1;
 	LevelBrush *best_brush = nullptr;
@@ -2212,7 +2212,7 @@ bool LevelEditorScreen::_pick_edge(Camera3D *p_camera, const Vector2 &p_screen, 
 		return false;
 	}
 
-	real_t best = 12.0; // pixels.
+	real_t best = LevelEditorHandles::EDGE_PICK_TOL * EDSCALE; // pixels.
 	bool found = false;
 	LevelBrush::EdgeKey best_edge;
 	LevelBrush *best_brush = nullptr;
@@ -2220,7 +2220,7 @@ bool LevelEditorScreen::_pick_edge(Camera3D *p_camera, const Vector2 &p_screen, 
 	Vector<LevelBrush *> brushes = current_map->get_brushes();
 	for (LevelBrush *brush : brushes) {
 		Transform3D gt = brush->get_global_transform();
-		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = brush->get_edges();
+		const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &edges = brush->get_edges();
 		for (const LevelBrush::EdgeKey &e : edges) {
 			Vector3 wa = gt.xform(brush->get_vertex(e.a));
 			Vector3 wb = gt.xform(brush->get_vertex(e.b));
@@ -2573,7 +2573,7 @@ void LevelEditorScreen::_notification(int p_what) {
 			// The preview draws on the cheap PreviewOverlay, so this only repaints
 			// that overlay - not the whole scene overlay (GOTCHAS #33).
 			if (armed_action == ACTION_BEVEL_EDGES && tool_preview.id == PREVIEW_BEVEL) {
-				const double new_phase = Math::fposmod(preview_ants_phase + get_process_delta_time() * 60.0, 16.0);
+				const double new_phase = Math::fposmod(preview_ants_phase + get_process_delta_time() * LevelEditorHandles::ANTS_SPEED, (double)LevelEditorHandles::ANTS_PERIOD);
 				if (Math::floor(new_phase) != Math::floor(preview_ants_phase)) {
 					for (int i = 0; i < 4; i++) {
 						viewports[i]->_queue_preview_redraw();
@@ -2599,19 +2599,7 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 	if (selection_target == TARGET_MESH && !_is_drawing_tool() && hover_brush && !_mesh_selection_has(hover_brush)) {
 		// Hover highlight (thin white) - in every transform tool, not just
 		// Select, so the user can see what a click would pick.
-		Transform3D gt = hover_brush->get_global_transform();
-		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> open_edges = hover_brush->get_open_edges();
-		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = hover_brush->get_edges();
-		for (const LevelBrush::EdgeKey &e : edges) {
-			Vector2 a, b;
-			if (p_vp->project_segment(gt.xform(hover_brush->get_vertex(e.a)), gt.xform(hover_brush->get_vertex(e.b)), a, b)) {
-				if (open_edges.has(e)) {
-					LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, LevelEditorColors::BRUSH_OUTLINE_HOVER, 1.0, 6.0 * EDSCALE);
-				} else {
-					p_canvas->draw_line(a, b, LevelEditorColors::BRUSH_OUTLINE_HOVER, 1.0);
-				}
-			}
-		}
+		_draw_brush_edges(p_vp, p_canvas, hover_brush, LevelEditorColors::BRUSH_OUTLINE_HOVER, 1.0);
 	}
 	// Element targets: the hovered brush - and any brush with selected elements
 	// of the current target - gets a light-blue outline and green vertices.
@@ -2649,39 +2637,28 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 				break;
 		}
 
-		const real_t vs = 3.0 * EDSCALE; // half-size, normal.
-		const real_t vs_hot = 4.5 * EDSCALE; // half-size, hovered.
+		const real_t vs = LevelEditorHandles::VERTEX_SIZE * EDSCALE; // half-size, normal.
+		const real_t vs_hot = LevelEditorHandles::VERTEX_HOT_SIZE * EDSCALE; // half-size, hovered.
 		for (LevelBrush *brush : highlight) {
-			Transform3D gt = brush->get_global_transform();
-			HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> open_edges = brush->get_open_edges();
-			HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = brush->get_edges();
-			for (const LevelBrush::EdgeKey &e : edges) {
+			// Edges stay light-blue; only the hovered edge turns green (drawn on
+			// top of the base outline pass).
+			_draw_brush_edges(p_vp, p_canvas, brush, LevelEditorColors::HOVER_BRUSH_OUTLINE, 1.5);
+			if (selection_target == TARGET_EDGE && brush == hover_brush && has_hover_edge) {
+				Transform3D gt = brush->get_global_transform();
 				Vector2 a, b;
-				if (!p_vp->project_segment(gt.xform(brush->get_vertex(e.a)), gt.xform(brush->get_vertex(e.b)), a, b)) {
-					continue;
-				}
-				Color edge_col;
-				real_t edge_width;
-				if (selection_target == TARGET_EDGE) {
-					// Edges stay light-blue; only the hovered edge turns green.
-					bool hot = (brush == hover_brush && has_hover_edge && e == hover_edge);
-					edge_col = hot ? LevelEditorColors::HOVER_ELEMENT : LevelEditorColors::HOVER_BRUSH_OUTLINE;
-					edge_width = hot ? 2.5 : 1.5;
-				} else {
-					// Vertex/Face targets: light-blue outline only.
-					edge_col = LevelEditorColors::HOVER_BRUSH_OUTLINE;
-					edge_width = 1.5;
-				}
-				if (open_edges.has(e)) {
-					LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, edge_col, edge_width, 6.0 * EDSCALE);
-				} else {
-					p_canvas->draw_line(a, b, edge_col, edge_width);
+				if (p_vp->project_segment(gt.xform(brush->get_vertex(hover_edge.a)), gt.xform(brush->get_vertex(hover_edge.b)), a, b)) {
+					if (brush->get_open_edges().has(hover_edge)) {
+						LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, LevelEditorColors::HOVER_ELEMENT, 2.5, 6.0 * EDSCALE);
+					} else {
+						p_canvas->draw_line(a, b, LevelEditorColors::HOVER_ELEMENT, 2.5);
+					}
 				}
 			}
 			if (selection_target == TARGET_FACE && brush == hover_brush && hover_face >= 0) {
 				// Hovered face: green fill + outline.
 				LocalVector<int> poly = brush->get_face(hover_face);
 				if (poly.size() >= 3) {
+					Transform3D gt = brush->get_global_transform();
 					Vector<Vector3> world;
 					for (int idx : poly) {
 						world.push_back(gt.xform(brush->get_vertex(idx)));
@@ -2707,14 +2684,12 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 			// All vertices in bright green; the vertex under the cursor is
 			// slightly larger.
 			Color vert_col = LevelEditorColors::HOVER_ELEMENT;
+			Transform3D gt = brush->get_global_transform();
 			for (int i = 0; i < brush->get_vertex_count(); i++) {
 				Vector2 sp;
 				if (p_vp->project(gt.xform(brush->get_vertex(i)), sp)) {
 					bool hot = (brush == hover_brush && has_hover_vertex && i == hover_vertex);
-					real_t hs = hot ? vs_hot : vs;
-					// 1px black outline behind the fill.
-					p_canvas->draw_rect(Rect2(sp - Vector2(hs + 1, hs + 1), Size2((hs + 1) * 2, (hs + 1) * 2)), LevelEditorColors::VERTEX_OUTLINE);
-					p_canvas->draw_rect(Rect2(sp - Vector2(hs, hs), Size2(hs * 2, hs * 2)), vert_col);
+					LevelHelpers::draw_vertex_marker(p_canvas, sp, hot ? vs_hot : vs, vert_col);
 				}
 			}
 		}
@@ -2786,7 +2761,7 @@ void LevelEditorScreen::_draw_material_drop(LevelEditorViewport *p_vp, Control *
 		}
 	} else {
 		const real_t phase = Math::fposmod((real_t)p_vp->drop_phase * EDSCALE, period);
-		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = p_vp->drop_brush->get_edges();
+		const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &edges = p_vp->drop_brush->get_edges();
 		for (const LevelBrush::EdgeKey &e : edges) {
 			Vector2 a, b;
 			if (p_vp->project_segment(gt.xform(p_vp->drop_brush->get_vertex(e.a)), gt.xform(p_vp->drop_brush->get_vertex(e.b)), a, b)) {
@@ -2796,28 +2771,32 @@ void LevelEditorScreen::_draw_material_drop(LevelEditorViewport *p_vp, Control *
 	}
 }
 
-void LevelEditorScreen::_draw_brush_outline(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, bool p_selected) {
+void LevelEditorScreen::_draw_brush_edges(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, const Color &p_color, real_t p_width) const {
 	Transform3D gt = p_brush->get_global_transform();
+	const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &open_edges = p_brush->get_open_edges();
+	const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &edges = p_brush->get_edges();
+	for (const LevelBrush::EdgeKey &e : edges) {
+		Vector2 a, b;
+		// project_segment (not per-endpoint project) so edges with one endpoint
+		// behind the near plane still draw clipped (GOTCHAS #22).
+		if (p_vp->project_segment(gt.xform(p_brush->get_vertex(e.a)), gt.xform(p_brush->get_vertex(e.b)), a, b)) {
+			if (open_edges.has(e)) {
+				// Open edge (no adjacent face) - draw hashed.
+				LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, p_color, p_width, 6.0 * EDSCALE);
+			} else {
+				p_canvas->draw_line(a, b, p_color, p_width);
+			}
+		}
+	}
+}
 
+void LevelEditorScreen::_draw_brush_outline(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, bool p_selected) {
 	// In element targets there is no whole-brush selection - draw all brushes
 	// with the plain outline (hovered brush gets its own highlight).
 	bool element_mode = _is_element_target();
 	Color col = (p_selected && !element_mode) ? LevelEditorColors::BRUSH_OUTLINE_SELECTED : LevelEditorColors::BRUSH_OUTLINE;
 	real_t width = (p_selected && !element_mode) ? 2.0 : 1.0;
-
-	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> open_edges = p_brush->get_open_edges();
-	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = p_brush->get_edges();
-	for (const LevelBrush::EdgeKey &e : edges) {
-		Vector2 a, b;
-		if (p_vp->project(gt.xform(p_brush->get_vertex(e.a)), a) && p_vp->project(gt.xform(p_brush->get_vertex(e.b)), b)) {
-			if (open_edges.has(e)) {
-				// Open edge (no adjacent face) - draw hashed.
-				LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, col, width, 6.0 * EDSCALE);
-			} else {
-				p_canvas->draw_line(a, b, col, width);
-			}
-		}
-	}
+	_draw_brush_edges(p_vp, p_canvas, p_brush, col, width);
 }
 
 void LevelEditorScreen::_draw_drag_feedback(LevelEditorViewport *p_vp, Control *p_canvas) {
@@ -2837,7 +2816,7 @@ void LevelEditorScreen::_draw_drag_feedback(LevelEditorViewport *p_vp, Control *
 	} else {
 		LevelBrush *preview = memnew(LevelBrush);
 		preview->setup_box(AABB(mins, maxs - mins));
-		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = preview->get_edges();
+		const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &edges = preview->get_edges();
 		for (const LevelBrush::EdgeKey &e : edges) {
 			Vector2 a, b;
 			if (p_vp->project(preview->get_vertex(e.a), a) && p_vp->project(preview->get_vertex(e.b), b)) {
@@ -2898,7 +2877,7 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 		Color edge_col = LevelEditorColors::SELECTED_ELEMENT;
 		for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
 			Transform3D gt = E.key->get_global_transform();
-			HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> open_edges = E.key->get_open_edges();
+			const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &open_edges = E.key->get_open_edges();
 			for (const LevelBrush::EdgeKey &e : E.value) {
 				Vector2 a, b;
 				if (p_vp->project_segment(gt.xform(E.key->get_vertex(e.a)), gt.xform(E.key->get_vertex(e.b)), a, b)) {
@@ -2914,14 +2893,13 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 
 	// Vertices (selected: same orange as selected-face outlines).
 	Color vert_col = LevelEditorColors::SELECTED_ELEMENT;
-	const real_t sel_vs = 4.5 * EDSCALE;
+	const real_t sel_vs = LevelEditorHandles::VERTEX_HOT_SIZE * EDSCALE;
 	for (const KeyValue<LevelBrush *, HashSet<int>> &E : selected_vertices) {
 		Transform3D gt = E.key->get_global_transform();
 		for (int v : E.value) {
 			Vector2 sp;
 			if (p_vp->project(gt.xform(E.key->get_vertex(v)), sp)) {
-				p_canvas->draw_rect(Rect2(sp - Vector2(sel_vs + 1, sel_vs + 1), Size2((sel_vs + 1) * 2, (sel_vs + 1) * 2)), LevelEditorColors::VERTEX_OUTLINE);
-				p_canvas->draw_rect(Rect2(sp - Vector2(sel_vs, sel_vs), Size2(sel_vs * 2, sel_vs * 2)), vert_col);
+				LevelHelpers::draw_vertex_marker(p_canvas, sp, sel_vs, vert_col);
 			}
 		}
 	}

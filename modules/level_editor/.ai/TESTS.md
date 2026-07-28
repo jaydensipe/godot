@@ -31,8 +31,14 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
 **`test_level_brush.h`** — pure geometry, no tree needed:
 
 - `setup_box` topology (8 verts, 6 quads, 12 edges, outward normals)
+- `setup_sphere` topology (poles + interior rings counts, outward normals,
+  closed solid; clamp boundaries 4 and 64; odd side counts floor rings to
+  >= 2; non-uniform AABB produces an ellipsoid with poles at the box
+  top/bottom)
 - `setup_quad` (4 verts, 1 face, outward normal from winding; reversed
   winding flips it) - the Quad brush type's commit path
+- vertex/face accessors round-trip; `is_valid` negative (empty) and minimal
+  (single quad) cases
 - `move_vertices` isolation (only the moved vertex changes; incident faces tilt)
 - `ray_intersect` (entry face, distance, miss)
 - `extrude_face` (cap + side walls, counts)
@@ -109,6 +115,9 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
   degenerate segment)
 - `clip_segment_to_rect` (inside span, slab crossings, diagonal corner
   entry, parallel-outside + slab-non-overlap + degenerate rejection)
+- `aabb_corners` (x|y|z bitmask layout), `AABB_EDGE_IDX` (unit edges, every
+  corner in exactly 3 edges), `aabb_face_center`/`AABB_FACE_DIRS` (opposite
+  pairs), `aabb_from_points` (enclosure + empty-input behavior)
 
 **`test_level_map.h`** — tagged `[SceneTree]` (needs the test harness's
 physics server for `StaticBody3D` construction — untagged cases crash):

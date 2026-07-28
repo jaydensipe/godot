@@ -383,3 +383,23 @@ unproject_position` on a point past the near plane returns a mirrored
     parallel to their axis, so `_ray_to_axis_plane` can never hit); a flat
     quad additionally drops thickness handles and, edge-on, everything but
     the two endpoint handles.
+
+50. **`get_edges()`/`get_open_edges()` rebuild a HashSet by scanning every
+    face loop - never call them per frame.** The overlay called them per
+    brush x 4 viewports per repaint (a 64-side sphere = ~6000 edges = ~50k
+    hash inserts per viewport), and gizmo drags repaint on every
+    mouse-motion: that alone tanked FPS on dense brushes even with the
+    geometry-only preview bake. FIX: LevelBrush caches both sets
+    (`edges_cache`/`open_edges_cache`, invalidated in
+    `_notify_map_changed`) and returns them by const reference (Godot
+    HashSet has no copy ctor anyway). Anything derived from face loops
+    (edge sets, loop walkers) deserves the same suspicion before being
+    used in a draw/pick path.
+
+51. **`LevelMap::bake()` was O(materials x faces) with per-material
+    re-transforms.** The material dedup linear-scanned per face (quadratic
+    with per-face unique materials), then the surface loop re-scanned
+    every brush x face per material and recomputed each brush's
+    global transform + normal basis per material. Now: one grouping pass
+    (`HashMap<Ref<Material>, (brush, face) pairs>`) and per-brush
+    transforms computed once.
