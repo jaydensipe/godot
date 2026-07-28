@@ -37,6 +37,7 @@
 using namespace LevelHelpers;
 using LevelEditorColors::GIZMO_PLANE_EXTENT;
 
+#include "core/config/engine.h"
 #include "core/math/geometry_2d.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
@@ -64,7 +65,9 @@ using LevelEditorColors::GIZMO_PLANE_EXTENT;
 #include "scene/gui/popup_menu.h"
 #include "scene/gui/separator.h"
 #include "scene/resources/environment.h"
+#include "scene/resources/gradient.h"
 #include "scene/resources/material.h"
+#include "servers/rendering/rendering_server.h"
 
 // ---------------------------------------------------------------------------
 // LevelEditorViewport
@@ -144,6 +147,46 @@ LevelEditorViewport::LevelEditorViewport() {
 	preview_overlay->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 	preview_overlay->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
 	add_child(preview_overlay);
+
+	// View Information HUD (bottom-right; same content as the 3D editor's
+	// "View Information": camera pos, viewport size, render stats).
+	info_panel = memnew(PanelContainer);
+	info_panel->set_anchor_and_offset(SIDE_LEFT, ANCHOR_END, -90 * EDSCALE);
+	info_panel->set_anchor_and_offset(SIDE_TOP, ANCHOR_END, -90 * EDSCALE);
+	info_panel->set_anchor_and_offset(SIDE_RIGHT, ANCHOR_END, -10 * EDSCALE);
+	info_panel->set_anchor_and_offset(SIDE_BOTTOM, ANCHOR_END, -10 * EDSCALE);
+	info_panel->set_h_grow_direction(GROW_DIRECTION_BEGIN);
+	info_panel->set_v_grow_direction(GROW_DIRECTION_BEGIN);
+	info_panel->set_mouse_filter(MOUSE_FILTER_IGNORE);
+	add_child(info_panel);
+	info_panel->hide();
+	info_label = memnew(Label);
+	info_panel->add_child(info_label);
+
+	// View Frame Time HUD (top-right; CPU/GPU ms + FPS like the 3D editor).
+	frame_time_gradient.instantiate();
+	// Default ctor already has points at offsets 0 and 1; add the midpoint.
+	// Colors are set on theme change (0=success, 1=warning, 2=error).
+	frame_time_gradient->add_point(0.5, Color());
+	frame_time_panel = memnew(PanelContainer);
+	frame_time_panel->set_anchor_and_offset(SIDE_LEFT, ANCHOR_END, -90 * EDSCALE);
+	frame_time_panel->set_anchor_and_offset(SIDE_TOP, ANCHOR_BEGIN, 10 * EDSCALE);
+	// Same 10px right padding as the Information panel (anchoring both sides
+	// keeps the panel pinned to the right edge as its width changes).
+	frame_time_panel->set_anchor_and_offset(SIDE_RIGHT, ANCHOR_END, -10 * EDSCALE);
+	frame_time_panel->set_h_grow_direction(GROW_DIRECTION_BEGIN);
+	frame_time_panel->set_mouse_filter(MOUSE_FILTER_IGNORE);
+	add_child(frame_time_panel);
+	frame_time_panel->hide();
+	VBoxContainer *frame_time_vbox = memnew(VBoxContainer);
+	frame_time_panel->add_child(frame_time_vbox);
+	// Individual labels so each can be colored by performance level.
+	cpu_time_label = memnew(Label);
+	frame_time_vbox->add_child(cpu_time_label);
+	gpu_time_label = memnew(Label);
+	frame_time_vbox->add_child(gpu_time_label);
+	fps_label = memnew(Label);
+	frame_time_vbox->add_child(fps_label);
 
 	// Material drag-and-drop from the FileSystem dock (bound with this control
 	// as the p_from argument - same as SET_DRAG_FORWARDING_CD).
@@ -233,6 +276,84 @@ void LevelEditorViewport::set_grid_3d_visible(bool p_visible) {
 	if (grid_mesh_instance) {
 		grid_mesh_instance->set_visible(view_type == VIEW_PERSPECTIVE && p_visible);
 	}
+}
+
+void LevelEditorViewport::set_info_visible(bool p_visible) {
+	show_info = p_visible;
+	if (info_panel) {
+		info_panel->set_visible(p_visible);
+	}
+}
+
+void LevelEditorViewport::set_frame_time_visible(bool p_visible) {
+	if (show_frame_time == p_visible) {
+		return;
+	}
+	show_frame_time = p_visible;
+	if (frame_time_panel) {
+		frame_time_panel->set_visible(p_visible);
+	}
+	// Measuring render time has a small cost - only enable it while shown.
+	RS::get_singleton()->viewport_set_measure_render_time(subviewport->get_viewport_rid(), p_visible);
+	if (p_visible) {
+		// Initialize to 120 FPS so the initial average is reasonable.
+		for (int i = 0; i < FRAME_TIME_HISTORY; i++) {
+			cpu_time_history[i] = 8.333333;
+			gpu_time_history[i] = 8.333333;
+		}
+		cpu_time_history_index = 0;
+		gpu_time_history_index = 0;
+	}
+}
+
+void LevelEditorViewport::_update_info_hud() {
+	if (!show_info || !info_panel || !camera) {
+		return;
+	}
+	// Mirrors the 3D editor's "View Information" panel.
+	const String viewport_size = vformat(U"%d \u00d7 %d", subviewport->get_size().x, subviewport->get_size().y);
+	String text;
+	text += vformat(TTR("X: %s"), rtos(camera->get_position().x).pad_decimals(1)) + "\n";
+	text += vformat(TTR("Y: %s"), rtos(camera->get_position().y).pad_decimals(1)) + "\n";
+	text += vformat(TTR("Z: %s"), rtos(camera->get_position().z).pad_decimals(1)) + "\n";
+	text += "\n";
+	text += vformat(TTR("Size: %s (%.1fMP)") + "\n", viewport_size, subviewport->get_size().x * subviewport->get_size().y * 0.000001);
+	text += "\n";
+	text += vformat(TTR("Objects: %d"), subviewport->get_render_info(Viewport::RENDER_INFO_TYPE_VISIBLE, Viewport::RENDER_INFO_OBJECTS_IN_FRAME)) + "\n";
+	text += vformat(TTR("Primitives: %d"), subviewport->get_render_info(Viewport::RENDER_INFO_TYPE_VISIBLE, Viewport::RENDER_INFO_PRIMITIVES_IN_FRAME)) + "\n";
+	text += vformat(TTR("Draw Calls: %d"), subviewport->get_render_info(Viewport::RENDER_INFO_TYPE_VISIBLE, Viewport::RENDER_INFO_DRAW_CALLS_IN_FRAME));
+	info_label->set_text(text);
+}
+
+void LevelEditorViewport::_update_frame_time_hud() {
+	if (!show_frame_time || !frame_time_panel) {
+		return;
+	}
+	// Mirrors the 3D editor's "View Frame Time" panel: 20-frame rolling
+	// average of measured CPU/GPU render time, colored by a green->red
+	// gradient (midpoint 15 ms).
+	cpu_time_history[cpu_time_history_index] = RS::get_singleton()->viewport_get_measured_render_time_cpu(subviewport->get_viewport_rid());
+	cpu_time_history_index = (cpu_time_history_index + 1) % FRAME_TIME_HISTORY;
+	double cpu_time = 0.0;
+	for (int i = 0; i < FRAME_TIME_HISTORY; i++) {
+		cpu_time += cpu_time_history[i];
+	}
+	cpu_time = MAX(0.01, cpu_time / FRAME_TIME_HISTORY);
+
+	gpu_time_history[gpu_time_history_index] = RS::get_singleton()->viewport_get_measured_render_time_gpu(subviewport->get_viewport_rid());
+	gpu_time_history_index = (gpu_time_history_index + 1) % FRAME_TIME_HISTORY;
+	double gpu_time = 0.0;
+	for (int i = 0; i < FRAME_TIME_HISTORY; i++) {
+		gpu_time += gpu_time_history[i];
+	}
+	gpu_time = MAX(0.01, gpu_time / FRAME_TIME_HISTORY);
+
+	cpu_time_label->set_text(vformat(TTR("CPU Time: %s ms"), rtos(cpu_time).pad_decimals(2)));
+	cpu_time_label->add_theme_color_override(SceneStringName(font_color), frame_time_gradient->get_color_at_offset(Math::remap(cpu_time, 0.0, 30.0, 0.0, 1.0)));
+	gpu_time_label->set_text(vformat(TTR("GPU Time: %s ms"), rtos(gpu_time).pad_decimals(2)));
+	gpu_time_label->add_theme_color_override(SceneStringName(font_color), frame_time_gradient->get_color_at_offset(Math::remap(gpu_time, 0.0, 30.0, 0.0, 1.0)));
+	fps_label->set_text(vformat(TTR("Editor FPS: %d"), (int)Engine::get_singleton()->get_frames_per_second()));
+	fps_label->add_theme_color_override(SceneStringName(font_color), frame_time_gradient->get_color_at_offset(Math::remap(1000.0 / MAX(1.0, Engine::get_singleton()->get_frames_per_second()), 0.0, 30.0, 0.0, 1.0)));
 }
 
 void LevelEditorViewport::_rebuild_grid_mesh(real_t p_grid_size) {
@@ -584,9 +705,21 @@ void LevelEditorViewport::_notification(int p_what) {
 				overlay->update();
 			}
 		} break;
+		case NOTIFICATION_THEME_CHANGED: {
+			// Same styling as the 3D editor's information HUDs.
+			Control *gui_base = EditorNode::get_singleton()->get_gui_base();
+			const Ref<StyleBox> &sb = gui_base->get_theme_stylebox(SNAME("Information3dViewport"), EditorStringName(EditorStyles));
+			info_panel->add_theme_style_override(SceneStringName(panel), sb);
+			frame_time_panel->add_theme_style_override(SceneStringName(panel), sb);
+			frame_time_gradient->set_color(0, get_theme_color(SNAME("success_color_dark_background"), EditorStringName(Editor)));
+			frame_time_gradient->set_color(1, get_theme_color(SNAME("warning_color_dark_background"), EditorStringName(Editor)));
+			frame_time_gradient->set_color(2, get_theme_color(SNAME("error_color_dark_background"), EditorStringName(Editor)));
+		} break;
 		case NOTIFICATION_PROCESS: {
 			_process_freelook(get_process_delta_time());
 			_update_grid_tracking();
+			_update_info_hud();
+			_update_frame_time_hud();
 			if (drop_active) {
 				// Marching-ants drop highlight on the dedicated PreviewOverlay:
 				// cheap enough to redraw at full speed (1px phase steps).
@@ -931,8 +1064,10 @@ LevelEditorScreen::LevelEditorScreen() {
 
 	toolbar->add_child(memnew(VSeparator));
 
-	// View menu: per-viewport render display mode. IDs encode the viewport:
-	// id = viewport * DISPLAY_MAX + mode.
+	// View menu: per-viewport submenus. IDs are per-submenu (0..DISPLAY_MAX-1
+	// display modes, DISPLAY_MAX/+1 the HUD toggles); the viewport index is
+	// bound to each submenu's handler (encoding vp in the ID collided with
+	// the grid-toggle IDs at 4*DISPLAY_MAX).
 	view_menu = memnew(MenuButton);
 	view_menu->set_text(TTRC("View"));
 	view_menu->set_flat(false);
@@ -945,21 +1080,28 @@ LevelEditorScreen::LevelEditorScreen() {
 		view_submenus[vp] = sub;
 		sub->set_hide_on_checkable_item_selection(false);
 		for (int m = 0; m < LevelEditorViewport::DISPLAY_MAX; m++) {
-			sub->add_radio_check_item(TTRC(mode_names[m]), vp * LevelEditorViewport::DISPLAY_MAX + m);
+			sub->add_radio_check_item(TTRC(mode_names[m]), m);
 		}
 		sub->set_item_checked(LevelEditorViewport::DISPLAY_UNSHADED, true);
-		sub->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_view_display_selected));
+		// HUD toggles (same as the 3D editor's View menu), separated from the
+		// display modes. IDs sit past the mode range; routed in the handler.
+		sub->add_separator();
+		sub->add_check_item(TTRC("View Information"), LevelEditorViewport::DISPLAY_MAX);
+		sub->add_check_item(TTRC("View Frame Time"), LevelEditorViewport::DISPLAY_MAX + 1);
+		sub->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_view_display_selected).bind(vp));
 		view_popup->add_submenu_node_item(TTRC(vp_names[vp]), sub);
 	}
 	view_popup->add_separator();
-	// Grid toggles (global, not per-viewport). IDs past the display range.
-	// Restored from project metadata below.
+	// Grid toggles (global, not per-viewport). IDs must avoid the submenu
+	// items' auto-assigned IDs (add_submenu_node_item assigns items.size()
+	// when no ID is given - the 4 submenu items got 0..3), so use IDs well
+	// past the item count.
 	grid_2d_enabled = EditorSettings::get_singleton()->get_project_metadata("level_editor", "grid_2d_enabled", true);
 	grid_3d_enabled = EditorSettings::get_singleton()->get_project_metadata("level_editor", "grid_3d_enabled", true);
-	view_popup->add_check_item(TTRC("Show 2D Grid"), 4 * LevelEditorViewport::DISPLAY_MAX);
-	view_popup->add_check_item(TTRC("Show 3D Grid"), 4 * LevelEditorViewport::DISPLAY_MAX + 1);
-	view_popup->set_item_checked(view_popup->get_item_index(4 * LevelEditorViewport::DISPLAY_MAX), grid_2d_enabled);
-	view_popup->set_item_checked(view_popup->get_item_index(4 * LevelEditorViewport::DISPLAY_MAX + 1), grid_3d_enabled);
+	view_popup->add_check_item(TTRC("Show 2D Grid"), VIEW_MENU_GRID_2D_ID);
+	view_popup->add_check_item(TTRC("Show 3D Grid"), VIEW_MENU_GRID_3D_ID);
+	view_popup->set_item_checked(view_popup->get_item_index(VIEW_MENU_GRID_2D_ID), grid_2d_enabled);
+	view_popup->set_item_checked(view_popup->get_item_index(VIEW_MENU_GRID_3D_ID), grid_3d_enabled);
 	view_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_view_grid_toggled));
 	toolbar->add_child(view_menu);
 
@@ -1068,7 +1210,10 @@ LevelEditorScreen::LevelEditorScreen() {
 	for (int vp = 1; vp < 4; vp++) {
 		viewports[vp]->set_display_mode(LevelEditorViewport::DISPLAY_OVERDRAW);
 		for (int i = 0; i < view_submenus[vp]->get_item_count(); i++) {
-			view_submenus[vp]->set_item_checked(i, (view_submenus[vp]->get_item_id(i) % LevelEditorViewport::DISPLAY_MAX) == LevelEditorViewport::DISPLAY_OVERDRAW);
+			int id = view_submenus[vp]->get_item_id(i);
+			if (id >= 0 && id < LevelEditorViewport::DISPLAY_MAX) {
+				view_submenus[vp]->set_item_checked(i, id == LevelEditorViewport::DISPLAY_OVERDRAW);
+			}
 		}
 	}
 
@@ -1083,9 +1228,23 @@ LevelEditorScreen::LevelEditorScreen() {
 			}
 			viewports[vp]->set_display_mode((LevelEditorViewport::DisplayMode)m);
 			for (int i = 0; i < view_submenus[vp]->get_item_count(); i++) {
-				view_submenus[vp]->set_item_checked(i, (view_submenus[vp]->get_item_id(i) % LevelEditorViewport::DISPLAY_MAX) == m);
+				int id = view_submenus[vp]->get_item_id(i);
+				if (id >= 0 && id < LevelEditorViewport::DISPLAY_MAX) {
+					view_submenus[vp]->set_item_checked(i, id == m);
+				}
 			}
 		}
+	}
+
+	// HUD toggles (View Information / View Frame Time), per viewport. The
+	// items live in the display-mode submenus past the mode range.
+	for (int vp = 0; vp < 4; vp++) {
+		bool info = EditorSettings::get_singleton()->get_project_metadata("level_editor", vformat("view_%d_info", vp), false);
+		bool ft = EditorSettings::get_singleton()->get_project_metadata("level_editor", vformat("view_%d_frame_time", vp), false);
+		viewports[vp]->set_info_visible(info);
+		viewports[vp]->set_frame_time_visible(ft);
+		view_submenus[vp]->set_item_checked(view_submenus[vp]->get_item_index(LevelEditorViewport::DISPLAY_MAX), info);
+		view_submenus[vp]->set_item_checked(view_submenus[vp]->get_item_index(LevelEditorViewport::DISPLAY_MAX + 1), ft);
 	}
 
 	// Shown instead of the quad viewports when the edited scene has no
@@ -2080,6 +2239,9 @@ void LevelEditorScreen::_clear_selection() {
 	hover_face = -1;
 	has_hover_edge = false;
 	has_hover_vertex = false;
+	// Force the next hover update to re-pick (the throttle's change-check
+	// would otherwise compare against this manually-cleared state).
+	hover_last_pick = Vector2(Math::INF, Math::INF);
 	_sync_editor_selection();
 }
 
@@ -2120,6 +2282,7 @@ void LevelEditorScreen::_update_overlays() {
 		// there's a drop or preview active.
 		viewports[i]->_queue_preview_redraw();
 	}
+	_update_gizmo_3d();
 	_update_menu_states();
 }
 
@@ -2246,6 +2409,23 @@ bool LevelEditorScreen::_pick_edge(Camera3D *p_camera, const Vector2 &p_screen, 
 }
 
 void LevelEditorScreen::_update_hover(LevelEditorViewport *p_vp, const Vector2 &p_mouse) {
+	// Cheap early-out: re-picking every motion event ray-tests every brush
+	// triangle and repaints all 4 overlays. The pick only matters once the
+	// cursor has moved a few pixels (same throttle as the material-drop
+	// probe, GOTCHAS #35).
+	if (hover_last_vp == p_vp && hover_last_pick.x != Math::INF && hover_last_pick.distance_squared_to(p_mouse) < LevelEditorHandles::DROP_REPROBE_DIST_SQ) {
+		return;
+	}
+	hover_last_pick = p_mouse;
+	hover_last_vp = p_vp;
+
+	LevelBrush *old_brush = hover_brush;
+	int old_face = hover_face;
+	LevelBrush::EdgeKey old_edge = hover_edge;
+	bool old_has_edge = has_hover_edge;
+	int old_vertex = hover_vertex;
+	bool old_has_vertex = has_hover_vertex;
+
 	hover_brush = nullptr;
 	hover_face = -1;
 	has_hover_edge = false;
@@ -2289,6 +2469,14 @@ void LevelEditorScreen::_update_hover(LevelEditorViewport *p_vp, const Vector2 &
 		default:
 			break;
 	}
+
+	// Repaint only when the pick actually changed - moving the mouse across
+	// the same brush/element keeps the same highlight.
+	if (hover_brush == old_brush && hover_face == old_face &&
+			has_hover_edge == old_has_edge && (!has_hover_edge || hover_edge == old_edge) &&
+			has_hover_vertex == old_has_vertex && (!has_hover_vertex || hover_vertex == old_vertex)) {
+		return;
+	}
 	_update_overlays();
 }
 
@@ -2304,6 +2492,16 @@ void LevelEditorScreen::forward_input(Camera3D *p_camera, const Ref<InputEvent> 
 		}
 	}
 	if (!vp) {
+		return;
+	}
+
+	// Camera navigation (RMB freelook / MMB pan) owns the mouse: skip ALL tool
+	// input - hover picks ray-test every brush per motion event and their
+	// results are stale the instant the camera moves anyway. Reset the hover
+	// throttle so the first hover after navigation re-picks against the new
+	// camera position.
+	if (vp->is_navigating()) {
+		hover_last_pick = Vector2(Math::INF, Math::INF);
 		return;
 	}
 
@@ -2569,6 +2767,10 @@ void LevelEditorScreen::_notification(int p_what) {
 				_clear_selection();
 				_update_map_ui();
 			}
+			// The 3D gizmo's screen-size compensation depends on the camera;
+			// refresh it per frame (cheap early-outs when hidden/unchanged in
+			// practice: the transform set is one node).
+			_update_gizmo_3d();
 			// Advance the bevel preview's marching-ants and repaint while armed.
 			// The preview draws on the cheap PreviewOverlay, so this only repaints
 			// that overlay - not the whole scene overlay (GOTCHAS #33).

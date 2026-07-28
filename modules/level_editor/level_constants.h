@@ -42,6 +42,12 @@ inline constexpr real_t PLANE_EPSILON = 0.0005;
 inline constexpr real_t WELD_DIST = PLANE_EPSILON * 4.0;
 // |dot| threshold for treating two edges as parallel/collinear.
 inline constexpr real_t PARALLEL_DOT = 0.999;
+// Edge-chain walk: minimum dot between the incoming travel direction and a
+// candidate continuation (~60 deg turn). The walk always takes the SHARPEST-
+// continuing (highest-dot) edge at a vertex; this only gates how sharp a turn
+// is still considered a chain (e.g. a clipped-sphere ring turns ~22.5 deg per
+// step, a box corner turns 90 deg and stops the walk).
+inline constexpr real_t CHAIN_MIN_DOT = 0.5;
 // Winding side-test ambiguity threshold (fraction of the loop-normal length):
 // below this the centroid lies ~in the wall plane and the bisector fallback
 // decides (extrude_edge/extrude_vertex; GOTCHAS #30).

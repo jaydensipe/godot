@@ -40,7 +40,9 @@
 #include "scene/gui/split_container.h"
 #include "scene/gui/subviewport_container.h"
 #include "scene/main/viewport.h"
+#include "scene/resources/gradient.h"
 #include "scene/resources/immediate_mesh.h"
+#include "scene/resources/mesh.h"
 
 class Button;
 class Camera3D;
@@ -103,6 +105,26 @@ private:
 	};
 
 	PreviewOverlay *preview_overlay = nullptr;
+
+	// View Information / View Frame Time HUDs (same as the 3D editor's View
+	// menu). Toggled per viewport from the screen's View menu; updated in
+	// NOTIFICATION_PROCESS.
+	PanelContainer *info_panel = nullptr;
+	Label *info_label = nullptr;
+	PanelContainer *frame_time_panel = nullptr;
+	Label *cpu_time_label = nullptr;
+	Label *gpu_time_label = nullptr;
+	Label *fps_label = nullptr;
+	Ref<Gradient> frame_time_gradient;
+	static constexpr int FRAME_TIME_HISTORY = 20;
+	double cpu_time_history[FRAME_TIME_HISTORY] = {};
+	double gpu_time_history[FRAME_TIME_HISTORY] = {};
+	int cpu_time_history_index = 0;
+	int gpu_time_history_index = 0;
+	bool show_info = false;
+	bool show_frame_time = false;
+	void _update_info_hud();
+	void _update_frame_time_hud();
 
 	// Material drop from the FileSystem dock: while a droppable file is
 	// dragged over this viewport, the drop target is highlighted with a
@@ -178,7 +200,11 @@ public:
 	DisplayMode get_display_mode() const { return display_mode; }
 
 	Camera3D *get_camera() const { return camera; }
+	SubViewport *get_subviewport() const { return subviewport; }
 	bool is_freelook_active() const { return view_controller.is_valid() && view_controller->is_freelook_enabled(); }
+	// Any camera navigation in progress (perspective freelook or ortho MMB
+	// pan) - tool input/hover picks are skipped while the camera moves.
+	bool is_navigating() const { return is_freelook_active() || panning; }
 
 	void get_ray(const Vector2 &p_screen, Vector3 &r_origin, Vector3 &r_dir) const;
 	bool intersect_ortho_plane(const Vector2 &p_screen, Vector3 &r_hit) const;
@@ -203,6 +229,10 @@ public:
 
 	void set_grid_mesh_size(real_t p_grid_size);
 	void set_grid_3d_visible(bool p_visible);
+	void set_info_visible(bool p_visible);
+	void set_frame_time_visible(bool p_visible);
+	bool is_info_visible() const { return show_info; }
+	bool is_frame_time_visible() const { return show_frame_time; }
 
 	LevelEditorViewport();
 };
@@ -547,6 +577,12 @@ private:
 	bool has_hover_edge = false;
 	int hover_vertex = -1;
 	bool has_hover_vertex = false;
+	// Last mouse position the hover pick ran at (per update call) - moving
+	// the mouse a couple pixels rarely changes the pick, so re-picking (and
+	// repainting all 4 overlays) on every motion event is wasted work
+	// (ray-testing every brush triangle per event tanked FPS on dense maps).
+	Vector2 hover_last_pick = Vector2(Math::INF, Math::INF);
+	const void *hover_last_vp = nullptr; // Re-pick when the viewport changes too.
 
 	// Per-brush snapshot at gizmo drag start (multi-brush element moves).
 	HashMap<LevelBrush *, PackedVector3Array> gizmo_drag_brush_verts;
@@ -619,7 +655,27 @@ private:
 
 	Vector3 _get_gizmo_origin() const; // World-space pivot of current selection.
 	bool _has_selection() const;
-	int _pick_gizmo(Camera3D *p_camera, const Vector2 &p_screen) const;
+	int _pick_gizmo(LevelEditorViewport *p_vp, Camera3D *p_camera, const Vector2 &p_screen) const;
+
+	// Perspective-view 3D gizmo (Godot 3D-editor style: real geometry drawn on
+	// top via no-depth-test materials, so arrows foreshorten correctly with the
+	// view instead of warping like a 2D-projected overlay). One root node,
+	// re-parented to the active perspective viewport's subviewport; updated
+	// from _update_overlays().
+	Node3D *gizmo_3d_root = nullptr;
+	MeshInstance3D *gizmo_3d_axes[3] = {};
+	Ref<ArrayMesh> gizmo_3d_arrow_mesh; // Move tool (arrow tips).
+	Ref<ArrayMesh> gizmo_3d_scale_mesh; // Scale tool (cube tips).
+	MeshInstance3D *gizmo_3d_planes[3] = {};
+	MeshInstance3D *gizmo_3d_center = nullptr;
+	Ref<Material> gizmo_3d_axis_mat[3];
+	Ref<Material> gizmo_3d_axis_mat_hot[3];
+	Ref<Material> gizmo_3d_plane_mat[3];
+	Ref<Material> gizmo_3d_plane_mat_hot[3];
+	Ref<Material> gizmo_3d_center_mat;
+	void _ensure_gizmo_3d();
+	void _update_gizmo_3d();
+	real_t _gizmo_3d_world_scale(LevelEditorViewport *p_vp, const Vector3 &p_origin) const;
 	void _gizmo_begin_drag(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _gizmo_end_drag();
@@ -693,7 +749,12 @@ private:
 	// Enabled/disabled state of the element menu items, driven by the
 	// declarative action table in level_editor_tools.cpp.
 	void _update_menu_states();
-	void _view_display_selected(int p_id);
+	// Grid-toggle item IDs on the View menu root popup. Must not collide with
+	// the submenu items' auto-assigned IDs (0..item count) - see ctor.
+	static constexpr int VIEW_MENU_GRID_2D_ID = 100;
+	static constexpr int VIEW_MENU_GRID_3D_ID = 101;
+
+	void _view_display_selected(int p_id, int p_vp);
 	void _view_grid_toggled(int p_id);
 	void _action_bridge_edges();
 	// p_quick = F in Edge mode: grid-size bevel with default steps/shape,

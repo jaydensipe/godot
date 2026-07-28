@@ -421,16 +421,15 @@ void LevelEditorScreen::_face_menu_selected(int p_id) {
 }
 
 void LevelEditorScreen::_view_grid_toggled(int p_id) {
-	const int base = 4 * LevelEditorViewport::DISPLAY_MAX;
 	PopupMenu *popup = view_menu->get_popup();
 	int idx = popup->get_item_index(p_id);
 	bool checked = !popup->is_item_checked(idx);
 	popup->set_item_checked(idx, checked);
 
-	if (p_id == base) {
+	if (p_id == VIEW_MENU_GRID_2D_ID) {
 		grid_2d_enabled = checked;
 		EditorSettings::get_singleton()->set_project_metadata("level_editor", "grid_2d_enabled", checked);
-	} else if (p_id == base + 1) {
+	} else if (p_id == VIEW_MENU_GRID_3D_ID) {
 		grid_3d_enabled = checked;
 		EditorSettings::get_singleton()->set_project_metadata("level_editor", "grid_3d_enabled", checked);
 		for (int i = 0; i < 4; i++) {
@@ -441,19 +440,41 @@ void LevelEditorScreen::_view_grid_toggled(int p_id) {
 	_update_overlays();
 }
 
-void LevelEditorScreen::_view_display_selected(int p_id) {
+void LevelEditorScreen::_view_display_selected(int p_id, int p_vp) {
 	view_menu->release_focus();
-	const int vp = p_id / LevelEditorViewport::DISPLAY_MAX;
-	const int disp_mode = p_id % LevelEditorViewport::DISPLAY_MAX;
+	const int vp = p_vp;
 	ERR_FAIL_INDEX(vp, 4);
+
+	// IDs past the display-mode range are the HUD toggles (View Information /
+	// View Frame Time) at the bottom of the same submenu.
+	if (p_id >= LevelEditorViewport::DISPLAY_MAX) {
+		PopupMenu *sub = view_submenus[vp];
+		int idx = sub->get_item_index(p_id);
+		bool checked = !sub->is_item_checked(idx);
+		sub->set_item_checked(idx, checked);
+		if (p_id == LevelEditorViewport::DISPLAY_MAX) {
+			viewports[vp]->set_info_visible(checked);
+			EditorSettings::get_singleton()->set_project_metadata("level_editor", vformat("view_%d_info", vp), checked);
+		} else {
+			viewports[vp]->set_frame_time_visible(checked);
+			EditorSettings::get_singleton()->set_project_metadata("level_editor", vformat("view_%d_frame_time", vp), checked);
+		}
+		return;
+	}
+
+	const int disp_mode = p_id;
 
 	viewports[vp]->set_display_mode((LevelEditorViewport::DisplayMode)disp_mode);
 
-	// Keep the radio state in sync within that viewport's submenu.
+	// Keep the radio state in sync within that viewport's submenu (only the
+	// display-mode items - skip the HUD toggles past the mode range).
 	PopupMenu *sub = view_submenus[vp];
 	if (sub) {
 		for (int i = 0; i < sub->get_item_count(); i++) {
-			sub->set_item_checked(i, (sub->get_item_id(i) % LevelEditorViewport::DISPLAY_MAX) == disp_mode);
+			int id = sub->get_item_id(i);
+			if (id >= 0 && id < LevelEditorViewport::DISPLAY_MAX) {
+				sub->set_item_checked(i, id == disp_mode);
+			}
 		}
 	}
 

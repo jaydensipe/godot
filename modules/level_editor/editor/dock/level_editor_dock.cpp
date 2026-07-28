@@ -141,7 +141,7 @@ void LevelEditorDock::refresh() {
 		// Sphere sides (only meaningful for the Sphere type).
 		if (screen->get_brush_type() == 2) { // BRUSH_SPHERE
 			Label *sides_label = memnew(Label);
-			sides_label->set_text(TTRC("Sphere Sides"));
+			sides_label->set_text(TTRC("Sides"));
 			form->add_child(sides_label);
 
 			SpinBox *sides = memnew(SpinBox);

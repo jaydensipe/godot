@@ -262,15 +262,15 @@ unproject_position` on a point past the near plane returns a mirrored
     verts exceed a sane coordinate bound.
 
 33b. **Per-frame animation belongs on the PreviewOverlay, never the main
-    Overlay.** The bevel preview's marching-ants originally animated by
-    calling `_update_overlays()` every frame, which repaints ALL FOUR
-    viewports' main overlays (every brush outline/gizmo/hover) - FPS tanked
-    even though the dash walk itself was clipped/cheap. Rule: anything that
-    animates or redraws per-frame (ants, drop highlight, tool previews) draws
-    on the cheap `PreviewOverlay` and redraws via `_queue_preview_redraw()`.
-    `_update_overlays()` queues both, so state changes (arm/disarm/edits)
-    still sync. These are separate costs from #33: #33 is too many draw calls
-    in ONE paint; this is repainting the EXPENSIVE overlay too OFTEN.
+Overlay.** The bevel preview's marching-ants originally animated by
+calling `_update_overlays()` every frame, which repaints ALL FOUR
+viewports' main overlays (every brush outline/gizmo/hover) - FPS tanked
+even though the dash walk itself was clipped/cheap. Rule: anything that
+animates or redraws per-frame (ants, drop highlight, tool previews) draws
+on the cheap `PreviewOverlay` and redraws via `_queue_preview_redraw()`.
+`_update_overlays()` queues both, so state changes (arm/disarm/edits)
+still sync. These are separate costs from #33: #33 is too many draw calls
+in ONE paint; this is repainting the EXPENSIVE overlay too OFTEN.
 
 34. **A drag highlight in the hover color/width is invisible.** The face-mode
     drop highlight drew green 2px dashes over the regular green 2px solid
@@ -403,3 +403,33 @@ unproject_position` on a point past the near plane returns a mirrored
     global transform + normal basis per material. Now: one grouping pass
     (`HashMap<Ref<Material>, (brush, face) pairs>`) and per-brush
     transforms computed once.
+
+52. **PopupMenu IDs collide in two non-obvious ways.** (a) Encoding the
+    viewport index in menu IDs (`id = vp*MAX + mode`) collided with the
+    grid-toggle IDs at `4*MAX` when HUD toggles were added at
+    `vp*MAX + MAX` (vp=3 info = 20 = grid 2D). (b) Worse:
+    `add_submenu_node_item(label, sub)` with no explicit ID assigns
+    `items.size()` as the ID - the 4 viewport submenu items silently got
+    IDs 0..3, so `get_item_index(0)` found "Perspective", not "Show 2D
+    Grid", and the grid checkmarks never updated (the state toggled fine
+    because `id_pressed` still fired with the grid item's own ID). FIX:
+    per-submenu ID spaces with the viewport index bound to each submenu's
+    handler (`callable_mp(...).bind(vp)`), and grid toggles on named
+    constants (VIEW_MENU_GRID_2D_ID/3D_ID = 100/101) well past any
+    auto-assigned range. Never use small literal IDs on a popup that also
+    contains submenu items.
+
+53. **Hover picking must be throttled AND change-gated.** `_update_hover`
+    ran on every mouse-motion event: a full face/edge/vertex ray-pick over
+    every brush triangle PLUS `_update_overlays()` (repainting all 4
+    viewports' brush edges). Bare mouse movement over empty space dropped
+    FPS 240->190. FIX: (a) skip the pick until the cursor moved >= ~4px
+    (same DROP_REPROBE_DIST_SQ throttle as the material-drop probe), (b)
+    repaint only when the pick RESULT changed (brush/face/edge/vertex),
+    (c) reset the throttle in `_clear_selection` so stale cleared state
+    isn't compared against. Any per-motion handler should be assumed hot:
+    profile before letting it ray-cast or repaint unconditionally. Tool input
+    is additionally skipped entirely while the camera navigates
+    (`vp->is_navigating()`: RMB freelook or ortho MMB pan) - hover results
+    are stale the instant the camera moves, and the throttle is reset so the
+    first hover afterwards re-picks.

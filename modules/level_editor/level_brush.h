@@ -210,9 +210,12 @@ public:
 	// all edges in the loop, including p_edge.
 	Vector<EdgeKey> get_edge_loop(const EdgeKey &p_edge) const;
 
-	// Collinear edge chain: from p_edge, walk both directions through shared
-	// vertices following only edges parallel to it (e.g. consecutive segments
-	// of a subdivided straight edge). Returns all chain edges, incl. p_edge.
+	// Edge chain: from p_edge, walk both directions through shared vertices,
+	// at each vertex taking the unvisited edge that turns the least from the
+	// incoming direction (angular continuity, gated by CHAIN_MIN_DOT). Follows
+	// straight runs (subdivided edges) AND smooth curves like a clipped-sphere
+	// cut ring; stops at sharp corners, dead ends, and closed rings. Returns
+	// all chain edges, incl. p_edge.
 	Vector<EdgeKey> get_edge_chain(const EdgeKey &p_edge) const;
 
 	// Bevel the given edges (Blender-style, width = p_distance, 1 segment):

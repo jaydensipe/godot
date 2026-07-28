@@ -1507,6 +1507,55 @@ TEST_CASE("[LevelBrush] get_edge_chain follows collinear segments") {
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] get_edge_chain follows a clipped-sphere cut ring") {
+	// The cut ring of a clipped sphere is a smooth closed curve: each step
+	// turns ~22.5 deg (16 sides), while the edges running up the sphere leave
+	// at ~90 deg. The angular-continuity walk must select the whole ring and
+	// none of the up-sphere edges.
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_sphere(AABB(Vector3(-1, -1, -1), Vector3(1, 1, 1)), 16);
+	brush->clip(Plane(Vector3(0, 1, 0), 0)); // Keep y >= 0, cap at the equator.
+
+	// Find a ring edge: both endpoints on the cut plane (y == 0).
+	LevelBrush::EdgeKey ring_edge;
+	bool found = false;
+	for (int f = 0; f < brush->get_face_count() && !found; f++) {
+		LocalVector<int> loop = brush->get_face(f);
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			int a = loop[i];
+			int b = loop[(i + 1) % loop.size()];
+			if (Math::abs(brush->get_vertex(a).y) < 0.001 && Math::abs(brush->get_vertex(b).y) < 0.001) {
+				ring_edge = LevelBrush::EdgeKey(a, b);
+				found = true;
+				break;
+			}
+		}
+	}
+	REQUIRE(found);
+
+	Vector<LevelBrush::EdgeKey> chain = brush->get_edge_chain(ring_edge);
+	// 16 ring edges around the equator, all on the cut plane, none going up.
+	CHECK(chain.size() == 16);
+	for (const LevelBrush::EdgeKey &e : chain) {
+		CHECK(Math::abs(brush->get_vertex(e.a).y) < 0.001);
+		CHECK(Math::abs(brush->get_vertex(e.b).y) < 0.001);
+	}
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] get_edge_chain stops at sharp corners") {
+	// A box edge's chain is just itself: every continuation at its endpoints
+	// turns 90 deg (dot 0 < CHAIN_MIN_DOT).
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	Vector<LevelBrush::EdgeKey> chain = brush->get_edge_chain(LevelBrush::EdgeKey(0, 1));
+	CHECK(chain.size() == 1);
+
+	memdelete(brush);
+}
+
 TEST_CASE("[LevelBrush] bevel_edges consumes the edge into a strip face") {
 	// Blender/Hammer-style bevel on a 90-degree corner: the original edge
 	// is consumed; one new quad bridges two lines offset p_distance into

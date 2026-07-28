@@ -147,8 +147,7 @@ Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_chain(const EdgeKey &p_edge) co
 	}
 	chain.push_back(p_edge);
 
-	const Vector3 dir = (verts[p_edge.b] - verts[p_edge.a]).normalized();
-	const real_t PARALLEL_DOT = LevelBrushConstants::PARALLEL_DOT;
+	const real_t MIN_DOT = LevelBrushConstants::CHAIN_MIN_DOT;
 
 	// All edges touching a vertex.
 	auto edges_at = [&](int p_vert, Vector<EdgeKey> &r_out) {
@@ -178,22 +177,31 @@ Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_chain(const EdgeKey &p_edge) co
 	HashSet<EdgeKey, EdgeKeyHasher> visited;
 	visited.insert(p_edge);
 
-	// Walk one endpoint direction at a time.
+	// Walk one endpoint direction at a time. At each tip vertex, take the
+	// unvisited edge that turns the LEAST from the incoming travel direction
+	// (angular continuity): a straight run scores ~1.0, a clipped-sphere ring
+	// ~cos(22.5 deg), a box corner 0.0. This subsumes the old strictly-
+	// collinear test while letting chains follow smooth curves.
 	for (int pass = 0; pass < 2; pass++) {
 		int tip = (pass == 0) ? p_edge.a : p_edge.b;
+		int prev = (pass == 0) ? p_edge.b : p_edge.a;
 		Vector<EdgeKey> side;
 		while (true) {
+			const Vector3 in_dir = (verts[tip] - verts[prev]).normalized();
 			Vector<EdgeKey> touching;
 			edges_at(tip, touching);
 			EdgeKey best(-1, -1);
+			real_t best_dot = MIN_DOT;
 			for (const EdgeKey &cand : touching) {
 				if (visited.has(cand)) {
 					continue;
 				}
-				Vector3 cd = (verts[cand.b] - verts[cand.a]).normalized();
-				if (Math::abs(cd.dot(dir)) > PARALLEL_DOT) {
+				const int other = (cand.a == tip) ? cand.b : cand.a;
+				const Vector3 out_dir = (verts[other] - verts[tip]).normalized();
+				const real_t d = in_dir.dot(out_dir);
+				if (d > best_dot) {
+					best_dot = d;
 					best = cand;
-					break; // At most one collinear continuation at a clean vertex.
 				}
 			}
 			if (best.a < 0) {
@@ -201,6 +209,7 @@ Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_chain(const EdgeKey &p_edge) co
 			}
 			side.push_back(best);
 			visited.insert(best);
+			prev = tip;
 			tip = (best.a == tip) ? best.b : best.a;
 		}
 		if (pass == 0) {

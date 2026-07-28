@@ -239,7 +239,10 @@ HashSet<...>>` sets (cross-brush selection). `_set_target` clears
   `MultiNodeEdit` (like SceneTreeDock's TOOL_MULTI_EDIT). Map lookup:
   `_find_map_in_scene()` (single DFS) wrapped by `_update_map_ui()`.
 - View menu: per-viewport display modes (ids = vp*MAX+mode) + global
-  2D/3D grid toggles, persisted via project metadata.
+  2D/3D grid toggles + per-viewport "View Information"/"View Frame Time"
+  HUD toggles (same as the 3D editor; updated per-frame in
+  NOTIFICATION_PROCESS, render-time measurement enabled only while shown),
+  persisted via project metadata.
 - Block flow: drag → editable ghost (AABB + handles + dim labels) → Enter
   commits / Esc cancels. All handle rules funnel through ONE predicate
   `_box_handle_usable(vp, handle, flat_axis)` (shared with select-mode
