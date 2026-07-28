@@ -59,6 +59,10 @@ Known, small, and not worth churning right now. Fix when touching the area.
 - The bevel default shape (0.5) is duplicated between the dock descriptor
   and the screen fallback.
 
+## Good to follow
+
+- **Skills** (`~/.agents/skills`): Zed's `create-skill` tool lets you package reusable agent instructions as skills. For this project, a skill capturing the module's architecture, GOTCHAS, and geometry-op checklist would let any agent pick up context instantly without reading `.ai/` files manually. Worth creating once the module stabilizes — the `.ai/` docs are already the source of truth, so a skill would just be a thin wrapper around them.
+
 ## Discussed but not built yet
 
 - **Per-face texture axes (Hammer texture lock).** Bake UVs are currently

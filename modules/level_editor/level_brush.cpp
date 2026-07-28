@@ -298,6 +298,62 @@ void LevelBrush::flip_faces() {
 	set_faces_flipped(!faces_flipped);
 }
 
+void LevelBrush::setup_sphere(const AABB &p_aabb, int p_sides) {
+	verts.clear();
+	faces.clear();
+	face_materials.clear();
+
+	p_sides = CLAMP(p_sides, 4, 64);
+	const Vector3 center = p_aabb.get_center();
+	const Vector3 radii = p_aabb.size * 0.5;
+
+	// Latitude/longitude sphere: top pole, (rings-1) interior latitude rings,
+	// bottom pole. Every ring vertex is unique (poles are single points), so
+	// all faces are planar and convex - valid brush solids.
+	const int rings = MAX(p_sides / 2, 2); // Latitude segments top to bottom.
+	const int top_pole = 0;
+	verts.push_back(center + Vector3(0, radii.y, 0));
+	for (int r = 1; r < rings; r++) {
+		const real_t phi = Math::PI * (real_t)r / (real_t)rings; // 0 (top) .. PI (bottom).
+		const real_t y = Math::cos(phi);
+		const real_t ring_r = Math::sin(phi);
+		for (int s = 0; s < p_sides; s++) {
+			const real_t theta = Math::TAU * (real_t)s / (real_t)p_sides;
+			verts.push_back(center + Vector3(ring_r * Math::cos(theta) * radii.x, y * radii.y, ring_r * Math::sin(theta) * radii.z));
+		}
+	}
+	const int bottom_pole = (int)verts.size();
+	verts.push_back(center - Vector3(0, radii.y, 0));
+
+	auto ring_index = [&](int p_ring, int p_side) -> int {
+		// p_ring is 0-based over the interior rings; p_side wraps.
+		return 1 + p_ring * p_sides + ((p_side % p_sides + p_sides) % p_sides);
+	};
+
+	// Build faces with a placeholder winding, then fix each outward: the
+	// latitude sweep direction makes hand-winding error-prone, and
+	// rewind_face_outward guarantees the stored outward (CCW) convention.
+	// Top cap fan.
+	for (int s = 0; s < p_sides; s++) {
+		faces.push_back({ top_pole, ring_index(0, s), ring_index(0, s + 1) });
+	}
+	// Quad bands between consecutive interior rings.
+	for (int r = 0; r < rings - 2; r++) {
+		for (int s = 0; s < p_sides; s++) {
+			faces.push_back({ ring_index(r, s), ring_index(r + 1, s), ring_index(r + 1, s + 1), ring_index(r, s + 1) });
+		}
+	}
+	// Bottom cap fan.
+	for (int s = 0; s < p_sides; s++) {
+		faces.push_back({ bottom_pole, ring_index(rings - 2, s + 1), ring_index(rings - 2, s) });
+	}
+
+	_update_face_count_storage();
+	for (int f = 0; f < (int)faces.size(); f++) {
+		rewind_face_outward(f);
+	}
+}
+
 void LevelBrush::set_faces_flipped(bool p_flipped) {
 	if (faces_flipped == p_flipped) {
 		return;

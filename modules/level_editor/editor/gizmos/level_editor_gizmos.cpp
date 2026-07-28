@@ -37,6 +37,8 @@
 #include "../level_editor_screen.h"
 #include "../level_helpers.h"
 
+#include "core/math/geometry_2d.h"
+#include "editor/editor_interface.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/themes/editor_scale.h"
 
@@ -205,19 +207,37 @@ int LevelEditorScreen::_pick_gizmo(Camera3D *p_camera, const Vector2 &p_screen) 
 	}
 
 	const real_t axis_tol = 9.0 * EDSCALE;
-	const real_t plane_tol = 12.0 * EDSCALE;
+	const real_t plane_tol = 4.0 * EDSCALE; // Grow margin around the drawn quad.
 	const real_t center_tol = 7.0 * EDSCALE;
 
-	// Check plane handles first (smaller targets). A plane is pickable only
-	// if both its axes are visible.
+	// Check plane handles first (smaller targets), against the same quad that
+	// _draw_gizmo draws - the previous centroid-circle test left the quad's
+	// corners dead and missed wide/skewed quads entirely. The quad is grown
+	// along both diagonals by plane_tol so thin quads stay grabbable.
 	for (int p = 0; p < 3; p++) {
 		if (!axis_ok[GIZMO_PLANE_AXES[p][0]] || !axis_ok[GIZMO_PLANE_AXES[p][1]]) {
 			continue;
 		}
 		Vector2 pa = so + (axis_end[GIZMO_PLANE_AXES[p][0]] - so) * GIZMO_PLANE_EXTENT;
 		Vector2 pb = so + (axis_end[GIZMO_PLANE_AXES[p][1]] - so) * GIZMO_PLANE_EXTENT;
-		Vector2 center = (so + pa + pb) / 3.0;
-		if (p_screen.distance_to(center) < plane_tol) {
+		Vector2 corner = pa + (pb - so);
+		Vector<Vector2> quad;
+		quad.push_back(so);
+		quad.push_back(pa);
+		quad.push_back(corner);
+		quad.push_back(pb);
+		if (Geometry2D::is_point_in_polygon(p_screen, quad)) {
+			return GIZMO_XY + p;
+		}
+		// Grown quad: push each corner out along its diagonal direction.
+		Vector2 center = (so + corner) * 0.5;
+		Vector<Vector2> grown;
+		for (int i = 0; i < 4; i++) {
+			Vector2 d = quad[i] - center;
+			real_t len = d.length();
+			grown.push_back((len > 0) ? quad[i] + d / len * plane_tol : quad[i]);
+		}
+		if (Geometry2D::is_point_in_polygon(p_screen, grown)) {
 			return GIZMO_XY + p;
 		}
 	}
@@ -261,8 +281,35 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 
 	// Snapshot brush vertices for absolute drags + undo.
 	gizmo_drag_brush_verts.clear();
+	gizmo_scale_last_factors = Vector3(1, 1, 1);
 	if (selection_target == TARGET_MESH) {
 		gizmo_drag_original_positions.clear();
+		gizmo_dup_sources.clear();
+		if (gizmo_duplicate_drag) {
+			// Shift+drag: duplicate every selected brush into a new sibling node
+			// and drag the copies; the originals stay put.
+			Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
+			LevelBrush *old_primary = selected_brush;
+			Vector<LevelBrush *> dupes;
+			for (LevelBrush *b : selected_brushes) {
+				LevelBrush *copy = b->duplicate_brush();
+				copy->set_name(b->get_name());
+				copy->set_transform(b->get_transform());
+				b->get_parent()->add_child(copy);
+				if (root) {
+					copy->set_owner(root);
+				}
+				gizmo_dup_sources[copy] = b;
+				dupes.push_back(copy);
+				if (b == old_primary) {
+					selected_brush = copy;
+				}
+			}
+			selected_brushes = dupes;
+			gizmo_drag_start_origin = _get_gizmo_origin(); // Same spot, but derived from the copies.
+			_sync_editor_selection();
+			_refresh_map();
+		}
 		for (LevelBrush *b : selected_brushes) {
 			gizmo_drag_brush_verts[b] = b->get_vertices_data();
 			gizmo_drag_original_positions[b] = b->get_position();
@@ -716,9 +763,16 @@ void LevelEditorScreen::_rotate_end_drag() {
 	if (rotate_drag_axis < 0) {
 		return;
 	}
+	const int axis = rotate_drag_axis;
 	rotate_drag_axis = -1;
 
 	_commit_brush_verts_undo(selection_target == TARGET_MESH ? TTR("Rotate Brush") : TTR("Rotate Brush Elements"), gizmo_drag_brush_verts);
+	// Remember for Replay Action (Shift+G): mesh-target rotations repeat
+	// around each brush's own center (same rule as the drag).
+	if (selection_target == TARGET_MESH && !Math::is_zero_approx(rotate_drag_last_angle)) {
+		_record_replay_action(ReplayAction::KIND_ROTATE, Vector3(), axis, rotate_drag_last_angle);
+	}
+	rotate_drag_last_angle = 0.0;
 	gizmo_drag_brush_verts.clear();
 }
 
@@ -728,17 +782,12 @@ void LevelEditorScreen::_apply_gizmo_rotate(int p_axis, real_t p_angle) {
 
 	if (selection_target == TARGET_MESH) {
 		// Each selected brush rotates around its OWN center (individual
-		// origins), absolute per drag.
+		// origins), absolute per drag - restore the snapshot, then rotate.
 		Basis rot(axis, p_angle);
 		for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
 			LevelBrush *brush = E.key;
 			brush->set_vertices_data(E.value);
-			const Vector3 center = brush->get_center();
-			for (int i = 0; i < brush->get_vertex_count(); i++) {
-				Vector3 v = brush->get_vertex(i);
-				v = center + rot.xform(v - center);
-				brush->set_vertex(i, v);
-			}
+			_brush_transform_verts(brush, brush->get_center(), rot);
 		}
 		_refresh_map();
 		return;
@@ -803,8 +852,14 @@ void LevelEditorScreen::_apply_gizmo_scale(const Vector3 &p_world_delta) {
 	// against the PRIMARY brush's size (Hammer-style group scale). Each
 	// brush scales around its OWN AABB center; only the primary's scaled
 	// edges land exactly on grid-size multiples.
+	const Vector3 factors = _compute_mesh_scale_factors(p_world_delta);
+	gizmo_scale_last_factors = factors; // Remember for Replay Action recording.
+	_apply_mesh_scale_factors(factors);
+}
+
+Vector3 LevelEditorScreen::_compute_mesh_scale_factors(const Vector3 &p_world_delta) const {
 	if (!selected_brush || !gizmo_drag_brush_verts.has(selected_brush)) {
-		return;
+		return Vector3(1, 1, 1);
 	}
 	const PackedVector3Array &primary_orig = gizmo_drag_brush_verts[selected_brush];
 	const AABB pbb = LevelHelpers::aabb_from_points(primary_orig);
@@ -836,19 +891,34 @@ void LevelEditorScreen::_apply_gizmo_scale(const Vector3 &p_world_delta) {
 		}
 		factors[axis] = f;
 	}
+	return factors;
+}
 
+void LevelEditorScreen::_apply_mesh_scale_factors(const Vector3 &p_factors) {
 	for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
 		LevelBrush *brush = E.key;
 		brush->set_vertices_data(E.value);
 
 		const AABB bb = LevelHelpers::aabb_from_points(E.value);
 		const Vector3 center = bb.get_center();
+		_brush_transform_verts(brush, center, Basis::from_scale(p_factors));
+	}
+	_refresh_map();
+}
 
-		for (int i = 0; i < brush->get_vertex_count(); i++) {
-			Vector3 v = brush->get_vertex(i);
-			Vector3 rel = v - center;
-			v = center + Vector3(rel.x * factors.x, rel.y * factors.y, rel.z * factors.z);
-			brush->set_vertex(i, v);
+void LevelEditorScreen::_brush_transform_verts(LevelBrush *p_brush, const Vector3 &p_center, const Basis &p_basis) {
+	for (int i = 0; i < p_brush->get_vertex_count(); i++) {
+		Vector3 v = p_brush->get_vertex(i);
+		v = p_center + p_basis.xform(v - p_center);
+		p_brush->set_vertex(i, v);
+	}
+}
+
+void LevelEditorScreen::_brushes_transform_own_center(const Basis &p_basis) {
+	// Mesh-target rule: each selected brush transforms around its OWN center.
+	for (LevelBrush *b : selected_brushes) {
+		if (b->is_inside_tree()) {
+			_brush_transform_verts(b, b->get_center(), p_basis);
 		}
 	}
 	_refresh_map();
@@ -964,8 +1034,49 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		return;
 	}
 	gizmo_dragging = false;
+	gizmo_drag_part = GIZMO_NONE; // Clear the active highlight (draw treats drag_part as hot).
+	_update_overlays();
 
 	if (!_has_selection()) {
+		return;
+	}
+
+	// Move tool + Mesh target + Shift: the drag moved live duplicates - commit
+	// their creation (undo removes them and reselects the sources).
+	if (selection_target == TARGET_MESH && tool == TOOL_MOVE && gizmo_duplicate_drag) {
+		gizmo_duplicate_drag = false;
+		EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+		Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
+		undo_redo->create_action(TTR("Duplicate Brush"));
+		TypedArray<Node> sources;
+		TypedArray<Node> copies;
+		for (const KeyValue<LevelBrush *, LevelBrush *> &E : gizmo_dup_sources) {
+			LevelBrush *copy = E.key;
+			Node *parent = E.value->get_parent(); // Source's parent = copy's intended parent.
+			if (!parent) {
+				continue;
+			}
+			sources.push_back(E.value);
+			copies.push_back(copy);
+			undo_redo->add_do_method(parent, "add_child", copy);
+			if (root) {
+				undo_redo->add_do_method(copy, "set_owner", root);
+			}
+			undo_redo->add_undo_method(parent, "remove_child", copy);
+			undo_redo->add_do_reference(copy); // Keep the node alive across undo.
+		}
+		undo_redo->add_do_method(current_map, "refresh");
+		undo_redo->add_undo_method(current_map, "refresh");
+		undo_redo->add_undo_method(this, "set_brush_selection", sources);
+		undo_redo->add_do_method(this, "set_brush_selection", copies);
+		undo_redo->commit_action(false);
+
+		// Remember for Replay Action (Shift+G): total world offset of the drag.
+		_record_replay_action(ReplayAction::KIND_DUPLICATE_DRAG, _get_gizmo_origin() - gizmo_drag_start_origin);
+
+		gizmo_dup_sources.clear();
+		gizmo_drag_original_positions.clear();
+		gizmo_drag_brush_verts.clear();
 		return;
 	}
 
@@ -990,6 +1101,8 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		}
 		if (created) {
 			undo_redo->commit_action(false);
+			// Remember for Replay Action (Shift+G): total world offset of the drag.
+			_record_replay_action(ReplayAction::KIND_MOVE, _get_gizmo_origin() - gizmo_drag_start_origin);
 		}
 		gizmo_drag_original_positions.clear();
 		return;
@@ -998,6 +1111,11 @@ void LevelEditorScreen::_gizmo_end_drag() {
 	// Scale tool + Mesh target: one undo action across all scaled brushes.
 	if (tool == TOOL_SCALE && selection_target == TARGET_MESH) {
 		_commit_brush_verts_undo(TTR("Scale Brush"), gizmo_drag_brush_verts);
+		// Remember for Replay Action (Shift+G): factors captured during the drag
+		// (gizmo_drag_part is already NONE here, so recompute would be identity).
+		if (!gizmo_scale_last_factors.is_equal_approx(Vector3(1, 1, 1))) {
+			_record_replay_action(ReplayAction::KIND_SCALE, Vector3(), 0, 0.0, gizmo_scale_last_factors);
+		}
 		gizmo_drag_brush_verts.clear();
 		return;
 	}
@@ -1184,6 +1302,7 @@ bool LevelEditorScreen::_rotate_input(LevelEditorViewport *p_vp, Camera3D *p_cam
 			real_t delta = cur - rotate_drag_start_angle;
 			// Snap to 15 degrees.
 			delta = Math::snapped(delta, Math::deg_to_rad(15.0));
+			rotate_drag_last_angle = delta;
 			_apply_gizmo_rotate(rotate_drag_axis, delta);
 			_update_overlays();
 			return true;
@@ -1210,6 +1329,8 @@ bool LevelEditorScreen::_gizmo_input(LevelEditorViewport *p_vp, Camera3D *p_came
 			if (part != GIZMO_NONE) {
 				gizmo_drag_part = (GizmoPart)part;
 				gizmo_extrude_drag = (_is_element_target() && mb->is_shift_pressed());
+				// Mesh target: Shift+drag duplicates the brushes and drags the copies.
+				gizmo_duplicate_drag = (selection_target == TARGET_MESH && tool == TOOL_MOVE && mb->is_shift_pressed());
 				_gizmo_begin_drag(p_vp, mb->get_position());
 				return true; // Consumed by gizmo.
 			}

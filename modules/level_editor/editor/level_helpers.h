@@ -34,6 +34,7 @@
 #include "core/math/plane.h"
 #include "core/math/rect2.h"
 #include "core/variant/variant.h"
+#include "scene/gui/control.h"
 
 // Shared box helpers for the level editor (ghost block, select handles,
 // drag feedback). Corner indexing is a bitmask: x|y|z (bit 0/1/2).
@@ -122,6 +123,13 @@ inline Vector2 closest_point_on_segment_2d(const Vector2 &p_a, const Vector2 &p_
 	return p_a + ab * t;
 }
 
+// The clip rect for screen-space overlay drawing: the canvas bounds plus a
+// small margin so antialiased/dashed strokes at the edge still draw fully.
+// Shared so the margin lives in one place.
+inline Rect2 overlay_visible_rect(const Control *p_canvas) {
+	return Rect2(Vector2(-64, -64), p_canvas->get_size() + Vector2(128, 128));
+}
+
 // Clips the 2D segment p_a..p_b to an axis-aligned rect (slab test),
 // returning the visible span as param distances along the segment.
 // Returns false when the segment misses the rect (or is degenerate).
@@ -153,6 +161,51 @@ inline bool clip_segment_to_rect(const Vector2 &p_a, const Vector2 &p_b, const R
 		}
 	}
 	return true;
+}
+
+// Draws a dashed line from p_a to p_b, clipped to the canvas rect (with a
+// small margin) before dashing. Near-plane-asymptotic projections can yield
+// endpoints hundreds of thousands of pixels off-screen; dashing the whole
+// segment then costs millions of draw calls (GOTCHAS: the same guard exists
+// in _draw_material_drop).
+inline void draw_dashed_line_clipped(Control *p_canvas, const Vector2 &p_a, const Vector2 &p_b, const Color &p_color, real_t p_width, real_t p_dash) {
+	real_t t0, t1;
+	if (!clip_segment_to_rect(p_a, p_b, overlay_visible_rect(p_canvas), t0, t1)) {
+		return;
+	}
+	const Vector2 dir = (p_b - p_a).normalized();
+	p_canvas->draw_dashed_line(p_a + dir * t0, p_a + dir * t1, p_color, p_width, p_dash);
+}
+
+// Marching-ants: draws one dashed segment with the dash pattern offset by
+// p_phase, clipped to the canvas rect (with a small margin) so near-plane-
+// asymptotic projections don't generate millions of dashes (GOTCHAS #33).
+// Returns the phase at the end of the FULL segment (advanced by its length,
+// not the clipped span) so a polyline's dashes turn corners continuously.
+// Animate by scrolling p_phase over time.
+inline real_t draw_marching_segment(Control *p_canvas, const Vector2 &p_a, const Vector2 &p_b, real_t p_phase, real_t p_width, const Color &p_color, real_t p_dash = 8.0, const Rect2 &p_visible_rect = Rect2()) {
+	const real_t period = p_dash * 2.0;
+	const real_t len = (p_b - p_a).length();
+	const Rect2 rect = p_visible_rect.has_area() ? p_visible_rect : overlay_visible_rect(p_canvas);
+	real_t t0, t1;
+	if (!clip_segment_to_rect(p_a, p_b, rect, t0, t1)) {
+		// Fully outside the visible rect (or degenerate): still advance the
+		// phase by the full length so downstream segments stay in sync.
+		return Math::fposmod(p_phase - len, period);
+	}
+	const Vector2 dir = (p_b - p_a) / len;
+	// Walk the dash pattern along the visible span, starting p_phase before it
+	// so the offset slides the dashes along the axis.
+	real_t t = t0 - Math::fposmod(t0 + p_phase, period);
+	while (t < t1) {
+		const real_t dash_start = MAX(t, t0);
+		const real_t dash_end = MIN(t + p_dash, t1);
+		if (dash_end > dash_start) {
+			p_canvas->draw_line(p_a + dir * dash_start, p_a + dir * dash_end, p_color, p_width);
+		}
+		t += period;
+	}
+	return Math::fposmod(p_phase - len, period);
 }
 
 // Closest point on the line (p_line_point, p_line_dir) to the ray

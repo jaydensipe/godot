@@ -261,6 +261,17 @@ unproject_position` on a point past the near plane returns a mirrored
     (`LevelHelpers::clip_segment_to_rect`, slab test), and skip fills whose
     verts exceed a sane coordinate bound.
 
+33b. **Per-frame animation belongs on the PreviewOverlay, never the main
+    Overlay.** The bevel preview's marching-ants originally animated by
+    calling `_update_overlays()` every frame, which repaints ALL FOUR
+    viewports' main overlays (every brush outline/gizmo/hover) - FPS tanked
+    even though the dash walk itself was clipped/cheap. Rule: anything that
+    animates or redraws per-frame (ants, drop highlight, tool previews) draws
+    on the cheap `PreviewOverlay` and redraws via `_queue_preview_redraw()`.
+    `_update_overlays()` queues both, so state changes (arm/disarm/edits)
+    still sync. These are separate costs from #33: #33 is too many draw calls
+    in ONE paint; this is repainting the EXPENSIVE overlay too OFTEN.
+
 34. **A drag highlight in the hover color/width is invisible.** The face-mode
     drop highlight drew green 2px dashes over the regular green 2px solid
     hover outline - perfectly camouflaged; hours of "it doesn't draw"

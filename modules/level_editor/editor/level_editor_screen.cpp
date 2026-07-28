@@ -47,6 +47,7 @@ using LevelEditorColors::GIZMO_PLANE_EXTENT;
 #include "editor/editor_string_names.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/inspector/editor_resource_picker.h"
+#include "editor/inspector/multi_node_edit.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/3d/camera_3d.h"
@@ -135,13 +136,14 @@ LevelEditorViewport::LevelEditorViewport() {
 	overlay->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
 	add_child(overlay);
 
-	// The drop highlight gets its own overlay so its animation redraws stay
-	// cheap (the main overlay repaints every brush outline/gizmo/preview).
-	drop_overlay = memnew(DropOverlay);
-	drop_overlay->viewport = this;
-	drop_overlay->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
-	drop_overlay->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
-	add_child(drop_overlay);
+	// The drop highlight + tool previews get their own overlay so per-frame
+	// animation redraws stay cheap (the main overlay repaints every brush
+	// outline/gizmo/preview).
+	preview_overlay = memnew(PreviewOverlay);
+	preview_overlay->viewport = this;
+	preview_overlay->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
+	preview_overlay->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	add_child(preview_overlay);
 
 	// Material drag-and-drop from the FileSystem dock (bound with this control
 	// as the p_from argument - same as SET_DRAG_FORWARDING_CD).
@@ -190,9 +192,9 @@ void LevelEditorViewport::Overlay::_notification(int p_what) {
 	}
 }
 
-void LevelEditorViewport::DropOverlay::_notification(int p_what) {
+void LevelEditorViewport::PreviewOverlay::_notification(int p_what) {
 	if (p_what == NOTIFICATION_DRAW && viewport) {
-		viewport->_drop_overlay_draw();
+		viewport->_preview_overlay_draw();
 	}
 }
 
@@ -203,9 +205,12 @@ void LevelEditorViewport::_overlay_draw() {
 	}
 }
 
-void LevelEditorViewport::_drop_overlay_draw() {
+void LevelEditorViewport::_preview_overlay_draw() {
 	if (screen) {
-		screen->_draw_material_drop(this, drop_overlay);
+		screen->_draw_material_drop(this, preview_overlay);
+		// Animated tool previews (bevel marching-ants) live here too so their
+		// per-frame phase steps don't repaint the expensive main overlay.
+		screen->_draw_tool_preview(this, preview_overlay);
 	}
 }
 
@@ -365,6 +370,12 @@ void LevelEditorViewport::_process_freelook(double p_delta) {
 	}
 	if (view_controller->is_freelook_enabled()) {
 		view_controller->update_freelook((float)p_delta);
+		// Sync the interpolated cursor so that ending freelook doesn't
+		// revert to a stale position (set_freelook_enabled(false) does
+		// cursor = cursor_interp). Use delta=0 to skip inertia smoothing
+		// — we want cursor_interp == cursor exactly, otherwise the
+		// inertia-lagged interpolant causes a jerk-back on RMB release.
+		view_controller->update_camera(0);
 		camera->set_global_transform(view_controller->to_camera_transform());
 		if (overlay) {
 			overlay->update();
@@ -499,9 +510,9 @@ void LevelEditorViewport::queue_overlay_redraw() {
 	}
 }
 
-void LevelEditorViewport::_queue_drop_redraw() {
-	if (drop_overlay) {
-		drop_overlay->queue_redraw();
+void LevelEditorViewport::_queue_preview_redraw() {
+	if (preview_overlay) {
+		preview_overlay->queue_redraw();
 	}
 }
 
@@ -514,7 +525,7 @@ void LevelEditorViewport::clear_drop_state() {
 		drop_brush = nullptr;
 		drop_face = -1;
 		drop_phase = 0.0;
-		_queue_drop_redraw();
+		_queue_preview_redraw();
 	}
 }
 
@@ -551,7 +562,7 @@ bool LevelEditorViewport::can_drop_data_fw(const Point2 &p_point, const Variant 
 			drop_active = ok;
 			drop_brush = brush;
 			drop_face = face;
-			_queue_drop_redraw();
+			_queue_preview_redraw();
 		}
 	}
 	return ok;
@@ -577,11 +588,11 @@ void LevelEditorViewport::_notification(int p_what) {
 			_process_freelook(get_process_delta_time());
 			_update_grid_tracking();
 			if (drop_active) {
-				// Marching-ants drop highlight on the dedicated DropOverlay:
+				// Marching-ants drop highlight on the dedicated PreviewOverlay:
 				// cheap enough to redraw at full speed (1px phase steps).
 				const double new_phase = Math::fposmod(drop_phase + get_process_delta_time() * 60.0, 16.0);
 				if (Math::floor(new_phase) != Math::floor(drop_phase)) {
-					_queue_drop_redraw();
+					_queue_preview_redraw();
 				}
 				drop_phase = new_phase;
 			}
@@ -786,6 +797,21 @@ void LevelEditorViewport::gui_input(const Ref<InputEvent> &p_event) {
 
 void LevelEditorScreen::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("clear_selection"), &LevelEditorScreen::clear_selection);
+	ClassDB::bind_method(D_METHOD("set_brush_selection", "brushes"), &LevelEditorScreen::set_brush_selection);
+}
+
+void LevelEditorScreen::set_brush_selection(const TypedArray<Node> &p_brushes) {
+	selected_brushes.clear();
+	for (int i = 0; i < p_brushes.size(); i++) {
+		LevelBrush *b = Object::cast_to<LevelBrush>(p_brushes[i]);
+		if (b && b->is_inside_tree()) {
+			selected_brushes.push_back(b);
+		}
+	}
+	selected_brush = selected_brushes.is_empty() ? nullptr : selected_brushes[selected_brushes.size() - 1];
+	_clear_element_selection();
+	_sync_editor_selection();
+	_update_overlays();
 }
 
 LevelEditorScreen::LevelEditorScreen() {
@@ -890,6 +916,18 @@ LevelEditorScreen::LevelEditorScreen() {
 	target_buttons[TARGET_EDGE]->set_shortcut(ED_SHORTCUT("level_editor/tool_edge", TTRC("Edge Selection"), Key::KEY_2, true));
 	target_buttons[TARGET_FACE]->set_shortcut(ED_SHORTCUT("level_editor/tool_face", TTRC("Face Selection"), Key::KEY_3, true));
 	target_buttons[TARGET_MESH]->set_shortcut(ED_SHORTCUT("level_editor/target_mesh", TTRC("Mesh Selection"), Key::KEY_4, true));
+
+	toolbar->add_child(memnew(VSeparator));
+
+	// Tools menu: replayable actions (Shift+G repeats the last one).
+	tools_menu = memnew(MenuButton);
+	tools_menu->set_text(TTRC("Tools"));
+	tools_menu->set_flat(false);
+	tools_menu->set_theme_type_variation("FlatMenuButton");
+	PopupMenu *tools_popup = tools_menu->get_popup();
+	tools_popup->add_shortcut(ED_SHORTCUT("level_editor/replay_action", TTRC("Replay Action"), KeyModifierMask::SHIFT | Key::G, true), 0);
+	tools_popup->connect("id_pressed", callable_mp(this, &LevelEditorScreen::_tools_menu_selected));
+	toolbar->add_child(tools_menu);
 
 	toolbar->add_child(memnew(VSeparator));
 
@@ -1125,6 +1163,21 @@ void LevelEditorScreen::input(const Ref<InputEvent> &p_event) {
 			_delete_selection();
 			get_viewport()->set_input_as_handled();
 		} break;
+		case Key::G: {
+			// Shift+G replays the last recorded action (e.g. duplicate-drag).
+			if (k->is_shift_pressed() && last_action.kind != ReplayAction::KIND_NONE) {
+				_replay_last_action();
+				get_viewport()->set_input_as_handled();
+			}
+		} break;
+		case Key::F: {
+			// Edge mode: quick bevel (grid size, default steps/shape). Face mode
+			// leaves F to the Flip Faces button shortcut below.
+			if (selection_target == TARGET_EDGE && !k->is_shift_pressed()) {
+				_action_bevel_edges(true); // Quick bevel.
+				get_viewport()->set_input_as_handled();
+			}
+		} break;
 		case Key::BRACKETLEFT:
 		case Key::BRACKETRIGHT: {
 			int idx = _grid_step_index();
@@ -1197,8 +1250,124 @@ void LevelEditorScreen::shortcut_input(const Ref<InputEvent> &p_event) {
 	}
 	Key code = k->get_keycode();
 	if (code == Key::KEY_DELETE || code == Key::BRACKETLEFT || code == Key::BRACKETRIGHT ||
-			code == Key::ENTER || code == Key::KP_ENTER || code == Key::ESCAPE) {
+			code == Key::ENTER || code == Key::KP_ENTER || code == Key::ESCAPE ||
+			(code == Key::G && k->is_shift_pressed()) ||
+			(code == Key::F && selection_target == TARGET_EDGE && !k->is_shift_pressed())) {
 		accept_event();
+	}
+}
+
+void LevelEditorScreen::_tools_menu_selected(int p_id) {
+	if (p_id == 0) {
+		_replay_last_action();
+	}
+}
+
+void LevelEditorScreen::_record_replay_action(ReplayAction::Kind p_kind, const Vector3 &p_world_delta, int p_axis, real_t p_angle, const Vector3 &p_factors) {
+	last_action.kind = p_kind;
+	last_action.world_delta = p_world_delta;
+	last_action.axis = p_axis;
+	last_action.angle = p_angle;
+	last_action.factors = p_factors;
+}
+
+void LevelEditorScreen::_replay_last_action() {
+	if (last_action.kind == ReplayAction::KIND_NONE || !current_map) {
+		return;
+	}
+
+	if (last_action.kind == ReplayAction::KIND_DUPLICATE_DRAG) {
+		// Repeat the last Shift+drag duplicate on the current selection: copy
+		// each selected brush as a sibling, offset the copies by the recorded
+		// world delta, and select them (so repeated presses keep marching).
+		if (selected_brushes.is_empty()) {
+			return;
+		}
+		Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
+		EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+		undo_redo->create_action(TTR("Replay Duplicate Brush"));
+		TypedArray<Node> sources;
+		TypedArray<Node> copies;
+		for (LevelBrush *b : selected_brushes) {
+			if (!b->is_inside_tree() || !b->get_parent()) {
+				continue;
+			}
+			LevelBrush *copy = b->duplicate_brush();
+			copy->set_name(b->get_name());
+			copy->set_transform(b->get_transform());
+			copy->set_position(b->get_position() + last_action.world_delta);
+			Node *parent = b->get_parent();
+			sources.push_back(b);
+			copies.push_back(copy);
+			undo_redo->add_do_method(parent, "add_child", copy);
+			if (root) {
+				undo_redo->add_do_method(copy, "set_owner", root);
+			}
+			undo_redo->add_undo_method(parent, "remove_child", copy);
+			undo_redo->add_do_reference(copy); // Keep the node alive across undo.
+		}
+		if (copies.is_empty()) {
+			return;
+		}
+		undo_redo->add_do_method(current_map, "refresh");
+		undo_redo->add_undo_method(current_map, "refresh");
+		undo_redo->add_undo_method(this, "set_brush_selection", sources);
+		undo_redo->add_do_method(this, "set_brush_selection", copies);
+		undo_redo->commit_action();
+		return;
+	}
+
+	// Modification replays (move/rotate/scale) operate on the current brush
+	// selection. Snapshot the pre-state, apply the recorded transform, commit.
+	if (selected_brushes.is_empty()) {
+		return;
+	}
+	HashMap<LevelBrush *, PackedVector3Array> old_verts;
+	for (LevelBrush *b : selected_brushes) {
+		if (b->is_inside_tree()) {
+			old_verts[b] = b->get_vertices_data();
+		}
+	}
+	if (old_verts.is_empty()) {
+		return;
+	}
+
+	switch (last_action.kind) {
+		case ReplayAction::KIND_MOVE: {
+			// Position is a node property, not vertex data - commit it directly.
+			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+			undo_redo->create_action(TTR("Replay Move Brush"));
+			for (const KeyValue<LevelBrush *, PackedVector3Array> &E : old_verts) {
+				LevelBrush *b = E.key;
+				Vector3 local = last_action.world_delta;
+				Node3D *parent = Object::cast_to<Node3D>(b->get_parent());
+				if (parent) {
+					local = parent->get_global_transform().affine_inverse().basis.xform(last_action.world_delta);
+				}
+				const Vector3 old_pos = b->get_position();
+				undo_redo->add_do_property(b, "position", old_pos + local);
+				undo_redo->add_undo_property(b, "position", old_pos);
+			}
+			undo_redo->commit_action();
+			_refresh_map();
+			return;
+		}
+		case ReplayAction::KIND_ROTATE: {
+			// Each brush rotates around its OWN center (same rule as the drag).
+			Vector3 axis;
+			axis[last_action.axis] = 1.0;
+			_brushes_transform_own_center(Basis(axis, last_action.angle));
+			_commit_brush_verts_undo(TTR("Replay Rotate Brush"), old_verts);
+			return;
+		}
+		case ReplayAction::KIND_SCALE: {
+			// Each brush scales around its OWN AABB center (same rule as the drag).
+			_brushes_transform_own_center(Basis::from_scale(last_action.factors));
+			_commit_brush_verts_undo(TTR("Replay Scale Brush"), old_verts);
+			return;
+		}
+		default:
+			return;
 	}
 }
 
@@ -1209,6 +1378,47 @@ void LevelEditorScreen::_edit_brush_node(LevelBrush *p_brush) {
 	call_deferred("grab_focus");
 }
 
+void LevelEditorScreen::_sync_editor_selection() {
+	if (applying_editor_selection || !is_visible_in_tree()) {
+		return; // Don't bounce editor-originated selections back (feedback loop).
+	}
+	EditorSelection *sel = EditorInterface::get_singleton()->get_selection();
+	// Diff against the current editor selection: remove stale brush nodes, add
+	// new ones. Non-brush selected nodes are left alone.
+	TypedArray<Node> current = sel->get_selected_nodes();
+	for (int i = 0; i < current.size(); i++) {
+		Node *n = Object::cast_to<Node>(current[i]);
+		LevelBrush *b = Object::cast_to<LevelBrush>(n);
+		if (b && !selected_brushes.has(b)) {
+			sel->remove_node(n);
+		}
+	}
+	for (LevelBrush *b : selected_brushes) {
+		if (b->is_inside_tree() && !sel->is_selected(b)) {
+			sel->add_node(b);
+		}
+	}
+	sel->update();
+	// Inspector: mirror the scene tree dock's behavior - one node shows the
+	// node, several show the multi-node editor (MultiNodeEdit). Pushing the
+	// single primary here would stomp the multi-edit view.
+	if (selected_brushes.size() == 1 && selected_brush) {
+		_edit_brush_node(selected_brush);
+	} else if (selected_brushes.size() > 1) {
+		Node *root = EditorNode::get_singleton()->get_edited_scene();
+		if (root) {
+			Ref<MultiNodeEdit> mne = memnew(MultiNodeEdit);
+			for (LevelBrush *b : selected_brushes) {
+				if (b->is_inside_tree()) {
+					mne->add_node(root->get_path_to(b));
+				}
+			}
+			EditorNode::get_singleton()->push_item(mne.ptr());
+			call_deferred("grab_focus");
+		}
+	}
+}
+
 bool LevelEditorScreen::_mesh_selection_has(LevelBrush *p_brush) const {
 	return selected_brushes.has(p_brush);
 }
@@ -1216,10 +1426,8 @@ bool LevelEditorScreen::_mesh_selection_has(LevelBrush *p_brush) const {
 void LevelEditorScreen::_mesh_selection_set(LevelBrush *p_brush) {
 	selected_brushes.clear();
 	selected_brushes.push_back(p_brush);
-	if (selected_brush != p_brush) {
-		selected_brush = p_brush;
-		_edit_brush_node(p_brush);
-	}
+	selected_brush = p_brush;
+	_sync_editor_selection();
 }
 
 void LevelEditorScreen::_mesh_selection_toggle(LevelBrush *p_brush) {
@@ -1229,29 +1437,55 @@ void LevelEditorScreen::_mesh_selection_toggle(LevelBrush *p_brush) {
 		// Keep the primary valid: fall back to the last remaining brush.
 		if (selected_brush == p_brush) {
 			selected_brush = selected_brushes.is_empty() ? nullptr : selected_brushes[selected_brushes.size() - 1];
-			if (selected_brush) {
-				_edit_brush_node(selected_brush);
-			}
 		}
 	} else {
 		selected_brushes.push_back(p_brush);
 		selected_brush = p_brush;
-		_edit_brush_node(p_brush);
 	}
+	_sync_editor_selection();
 }
 
-void LevelEditorScreen::set_selected_brush_from_editor(LevelBrush *p_brush) {
-	if (!p_brush || p_brush == selected_brush) {
-		return;
+void LevelEditorScreen::apply_editor_selection(const TypedArray<Node> &p_nodes) {
+	applying_editor_selection = true;
+	// Exact mirror of the editor selection: drop brushes no longer selected,
+	// adopt newly selected ones. This keeps replace (plain click) and
+	// accumulate (Shift+click) semantics identical to the scene tree.
+	for (int i = selected_brushes.size() - 1; i >= 0; i--) {
+		bool still = false;
+		for (int j = 0; j < p_nodes.size(); j++) {
+			if (Object::cast_to<Node>(p_nodes[j]) == selected_brushes[i]) {
+				still = true;
+				break;
+			}
+		}
+		if (!still) {
+			selected_brushes.remove_at(i);
+		}
 	}
-	// Adopt the brush and, if it belongs to a map, adopt that map too.
-	_mesh_selection_set(p_brush);
-	LevelMap *map = Object::cast_to<LevelMap>(p_brush->get_parent());
-	if (map && map != current_map) {
-		current_map = map;
-		_update_map_ui();
+	LevelBrush *primary = nullptr;
+	for (int i = 0; i < p_nodes.size(); i++) {
+		LevelBrush *b = Object::cast_to<LevelBrush>(p_nodes[i]);
+		if (b) {
+			if (!selected_brushes.has(b)) {
+				selected_brushes.push_back(b);
+			}
+			primary = b; // Last brush in the editor selection acts as primary.
+		}
+	}
+	if (primary) {
+		selected_brush = primary;
+	} else if (!selected_brushes.has(selected_brush)) {
+		selected_brush = selected_brushes.is_empty() ? nullptr : selected_brushes[selected_brushes.size() - 1];
+	}
+	if (selected_brush) {
+		LevelMap *map = Object::cast_to<LevelMap>(selected_brush->get_parent());
+		if (map && map != current_map) {
+			current_map = map;
+			_update_map_ui();
+		}
 	}
 	_update_overlays();
+	applying_editor_selection = false;
 }
 
 void LevelEditorScreen::make_visible(bool p_visible) {
@@ -1624,19 +1858,31 @@ void LevelEditorScreen::_draw_tool_preview(LevelEditorViewport *p_vp, Control *p
 	if (tool_preview.id == PREVIEW_NONE || !tool_preview.brush || tool_preview.lines.is_empty()) {
 		return;
 	}
-	Color col;
-	switch (tool_preview.id) {
-		case PREVIEW_BEVEL:
-			col = LevelEditorColors::CLIP_LINE;
-			break;
-		default:
-			col = LevelEditorColors::GHOST;
-			break;
-	}
 	const Transform3D gt = tool_preview.brush->get_global_transform();
+
+	if (tool_preview.id == PREVIEW_BEVEL) {
+		// Yellow marching-ants (ACTION_PREVIEW). The phase runs continuously
+		// across segments so dashes turn corners; the helper clips near-plane-
+		// asymptotic projections to the overlay rect.
+		const real_t dash_len = 8.0 * EDSCALE;
+		const real_t period = dash_len * 2.0;
+		const Rect2 visible_rect = LevelHelpers::overlay_visible_rect(p_canvas);
+		real_t phase = Math::fposmod((real_t)preview_ants_phase * EDSCALE, period);
+		for (uint32_t i = 0; i + 1 < tool_preview.lines.size(); i += 2) {
+			Vector2 a, b;
+			// project_segment clips near-plane-crossing endpoints instead of
+			// dropping the whole segment (GOTCHAS #22), like every other edge draw.
+			if (p_vp->project_segment(gt.xform(tool_preview.lines[i]), gt.xform(tool_preview.lines[i + 1]), a, b)) {
+				phase = LevelHelpers::draw_marching_segment(p_canvas, a, b, phase, 2.0, LevelEditorColors::ACTION_PREVIEW, dash_len, visible_rect);
+			}
+		}
+		return;
+	}
+
+	Color col = LevelEditorColors::GHOST;
 	for (uint32_t i = 0; i + 1 < tool_preview.lines.size(); i += 2) {
 		Vector2 a, b;
-		if (p_vp->project(gt.xform(tool_preview.lines[i]), a) && p_vp->project(gt.xform(tool_preview.lines[i + 1]), b)) {
+		if (p_vp->project_segment(gt.xform(tool_preview.lines[i]), gt.xform(tool_preview.lines[i + 1]), a, b)) {
 			p_canvas->draw_line(a, b, col, 2.0);
 		}
 	}
@@ -1834,6 +2080,7 @@ void LevelEditorScreen::_clear_selection() {
 	hover_face = -1;
 	has_hover_edge = false;
 	has_hover_vertex = false;
+	_sync_editor_selection();
 }
 
 void LevelEditorScreen::_clear_element_selection() {
@@ -1868,6 +2115,10 @@ void LevelEditorScreen::_update_overlays() {
 	for (int i = 0; i < 4; i++) {
 		viewports[i]->set_grid_mesh_size(grid_size);
 		viewports[i]->queue_overlay_redraw();
+		// Tool previews (bevel ants) draw on the PreviewOverlay - keep it in sync
+		// on state changes (arm/disarm/dock edits). Cheap: it only draws when
+		// there's a drop or preview active.
+		viewports[i]->_queue_preview_redraw();
 	}
 	_update_menu_states();
 }
@@ -2318,6 +2569,18 @@ void LevelEditorScreen::_notification(int p_what) {
 				_clear_selection();
 				_update_map_ui();
 			}
+			// Advance the bevel preview's marching-ants and repaint while armed.
+			// The preview draws on the cheap PreviewOverlay, so this only repaints
+			// that overlay - not the whole scene overlay (GOTCHAS #33).
+			if (armed_action == ACTION_BEVEL_EDGES && tool_preview.id == PREVIEW_BEVEL) {
+				const double new_phase = Math::fposmod(preview_ants_phase + get_process_delta_time() * 60.0, 16.0);
+				if (Math::floor(new_phase) != Math::floor(preview_ants_phase)) {
+					for (int i = 0; i < 4; i++) {
+						viewports[i]->_queue_preview_redraw();
+					}
+				}
+				preview_ants_phase = new_phase;
+			}
 		} break;
 	}
 }
@@ -2343,7 +2606,7 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 			Vector2 a, b;
 			if (p_vp->project_segment(gt.xform(hover_brush->get_vertex(e.a)), gt.xform(hover_brush->get_vertex(e.b)), a, b)) {
 				if (open_edges.has(e)) {
-					p_canvas->draw_dashed_line(a, b, LevelEditorColors::BRUSH_OUTLINE_HOVER, 1.0, 6.0 * EDSCALE);
+					LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, LevelEditorColors::BRUSH_OUTLINE_HOVER, 1.0, 6.0 * EDSCALE);
 				} else {
 					p_canvas->draw_line(a, b, LevelEditorColors::BRUSH_OUTLINE_HOVER, 1.0);
 				}
@@ -2410,7 +2673,7 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 					edge_width = 1.5;
 				}
 				if (open_edges.has(e)) {
-					p_canvas->draw_dashed_line(a, b, edge_col, edge_width, 6.0 * EDSCALE);
+					LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, edge_col, edge_width, 6.0 * EDSCALE);
 				} else {
 					p_canvas->draw_line(a, b, edge_col, edge_width);
 				}
@@ -2464,8 +2727,9 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 	_draw_rotate_gizmo(p_vp, p_canvas);
 	_draw_clip(p_vp, p_canvas);
 	_draw_mirror(p_vp, p_canvas);
+	// Rebuild the bevel preview cache here (cheap hash check); the preview
+	// itself draws on the PreviewOverlay so its ants don't repaint this overlay.
 	_bevel_preview_rebuild();
-	_draw_tool_preview(p_vp, p_canvas);
 }
 
 void LevelEditorScreen::_draw_material_drop(LevelEditorViewport *p_vp, Control *p_canvas) {
@@ -2473,7 +2737,7 @@ void LevelEditorScreen::_draw_material_drop(LevelEditorViewport *p_vp, Control *
 	// viewport): face mode highlights the hovered face, other targets the
 	// whole brush outline - both with marching-ants dashes (drop_phase
 	// scrolls the pattern along the path). Drawn on the viewport's dedicated
-	// DropOverlay so the animation doesn't repaint the main overlay.
+	// PreviewOverlay so the animation doesn't repaint the main overlay.
 	if (!p_vp->drop_active || !p_vp->drop_brush) {
 		return;
 	}
@@ -2481,33 +2745,11 @@ void LevelEditorScreen::_draw_material_drop(LevelEditorViewport *p_vp, Control *
 	const real_t dash_len = 8.0 * EDSCALE;
 	const real_t period = dash_len * 2.0;
 	// Near-plane-clipped segments can unproject to endpoints hundreds of
-	// thousands of pixels off-screen (asymptotic projection) - generating
-	// dashes along the whole segment then costs millions of draw calls.
-	// Clip to the overlay rect (with a small margin) before dashing.
-	const Rect2 visible_rect(Vector2(-64, -64), p_canvas->get_size() + Vector2(128, 128));
-	// Draws one dashed segment with the dash pattern offset by p_phase.
-	// Returns the phase at the end of the visible span (for loop continuity).
-	auto draw_marching_segment = [&](const Vector2 &p_a, const Vector2 &p_b, real_t p_phase, real_t p_width) -> real_t {
-		const real_t len = (p_b - p_a).length();
-		real_t t0, t1;
-		if (!clip_segment_to_rect(p_a, p_b, visible_rect, t0, t1)) {
-			return p_phase; // Fully outside the visible rect (or degenerate).
-		}
-		const Vector2 dir = (p_b - p_a) / len;
-		// Walk the dash pattern along the visible span, starting p_phase
-		// before it so the offset slides the dashes along the axis.
-		real_t t = t0 - Math::fposmod(t0 + p_phase, period);
-		while (t < t1) {
-			const real_t dash_start = MAX(t, t0);
-			const real_t dash_end = MIN(t + dash_len, t1);
-			if (dash_end > dash_start) {
-				p_canvas->draw_line(p_a + dir * dash_start, p_a + dir * dash_end, LevelEditorColors::SELECTED_ELEMENT, p_width);
-			}
-			t += period;
-		}
-		// Phase continuity for the next edge: advance by the FULL segment
-		// length (not the clipped span) so off-screen portions still count.
-		return Math::fposmod(p_phase - len, period);
+	// thousands of pixels off-screen (asymptotic projection) - the helper clips
+	// to the overlay rect (with a small margin) before dashing.
+	const Rect2 visible_rect = LevelHelpers::overlay_visible_rect(p_canvas);
+	auto march = [&](const Vector2 &p_a, const Vector2 &p_b, real_t p_phase, real_t p_width) -> real_t {
+		return LevelHelpers::draw_marching_segment(p_canvas, p_a, p_b, p_phase, p_width, LevelEditorColors::SELECTED_ELEMENT, dash_len, visible_rect);
 	};
 	if (p_vp->drop_face >= 0) {
 		LocalVector<int> poly = p_vp->drop_brush->get_face(p_vp->drop_face);
@@ -2538,7 +2780,7 @@ void LevelEditorScreen::_draw_material_drop(LevelEditorViewport *p_vp, Control *
 				// distinguishable from a plain hover.
 				real_t phase = Math::fposmod((real_t)p_vp->drop_phase * EDSCALE, period);
 				for (int i = 0; i < pts.size(); i++) {
-					phase = draw_marching_segment(pts[i], pts[(i + 1) % pts.size()], phase, 3.0);
+					phase = march(pts[i], pts[(i + 1) % pts.size()], phase, 3.0);
 				}
 			}
 		}
@@ -2548,7 +2790,7 @@ void LevelEditorScreen::_draw_material_drop(LevelEditorViewport *p_vp, Control *
 		for (const LevelBrush::EdgeKey &e : edges) {
 			Vector2 a, b;
 			if (p_vp->project_segment(gt.xform(p_vp->drop_brush->get_vertex(e.a)), gt.xform(p_vp->drop_brush->get_vertex(e.b)), a, b)) {
-				draw_marching_segment(a, b, phase, 3.0);
+				march(a, b, phase, 3.0);
 			}
 		}
 	}
@@ -2570,7 +2812,7 @@ void LevelEditorScreen::_draw_brush_outline(LevelEditorViewport *p_vp, Control *
 		if (p_vp->project(gt.xform(p_brush->get_vertex(e.a)), a) && p_vp->project(gt.xform(p_brush->get_vertex(e.b)), b)) {
 			if (open_edges.has(e)) {
 				// Open edge (no adjacent face) - draw hashed.
-				p_canvas->draw_dashed_line(a, b, col, width, 6.0 * EDSCALE);
+				LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, col, width, 6.0 * EDSCALE);
 			} else {
 				p_canvas->draw_line(a, b, col, width);
 			}
@@ -2586,18 +2828,24 @@ void LevelEditorScreen::_draw_drag_feedback(LevelEditorViewport *p_vp, Control *
 	Vector3 mins, maxs;
 	_compute_drag_aabb(mins, maxs);
 
-	LevelBrush *preview = memnew(LevelBrush);
-	preview->setup_box(AABB(mins, maxs - mins));
-	HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = preview->get_edges();
-
 	Color col = LevelEditorColors::GHOST;
-	for (const LevelBrush::EdgeKey &e : edges) {
-		Vector2 a, b;
-		if (p_vp->project(preview->get_vertex(e.a), a) && p_vp->project(preview->get_vertex(e.b), b)) {
-			p_canvas->draw_line(a, b, col, 2.0);
+	if (brush_type == BRUSH_SPHERE) {
+		// Sphere drag: draw the cached wireframe (rebuilt only when the drag
+		// AABB or sides change) instead of a per-frame setup_sphere.
+		_rebuild_sphere_preview(AABB(mins, maxs - mins));
+		_draw_sphere_preview(p_vp, p_canvas, col);
+	} else {
+		LevelBrush *preview = memnew(LevelBrush);
+		preview->setup_box(AABB(mins, maxs - mins));
+		HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> edges = preview->get_edges();
+		for (const LevelBrush::EdgeKey &e : edges) {
+			Vector2 a, b;
+			if (p_vp->project(preview->get_vertex(e.a), a) && p_vp->project(preview->get_vertex(e.b), b)) {
+				p_canvas->draw_line(a, b, col, 2.0);
+			}
 		}
+		memdelete(preview);
 	}
-	memdelete(preview);
 
 	// Show the in-progress box's dimensions too.
 	_draw_dim_labels(p_vp, p_canvas, AABB(mins, maxs - mins));
@@ -2655,7 +2903,7 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 				Vector2 a, b;
 				if (p_vp->project_segment(gt.xform(E.key->get_vertex(e.a)), gt.xform(E.key->get_vertex(e.b)), a, b)) {
 					if (open_edges.has(e)) {
-						p_canvas->draw_dashed_line(a, b, edge_col, 3.0, 6.0 * EDSCALE);
+						LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, edge_col, 3.0, 6.0 * EDSCALE);
 					} else {
 						p_canvas->draw_line(a, b, edge_col, 3.0);
 					}
@@ -2704,17 +2952,12 @@ LevelEditorPlugin::LevelEditorPlugin() {
 }
 
 void LevelEditorPlugin::_editor_selection_changed() {
-	// Mirror the editor's node selection into the level editor: if a
-	// LevelBrush node gets selected (e.g. clicked in the 3D tab or scene
-	// tree), make it the active brush here too.
-	TypedArray<Node> sel = EditorInterface::get_singleton()->get_selection()->get_selected_nodes();
-	for (int i = 0; i < sel.size(); i++) {
-		LevelBrush *b = Object::cast_to<LevelBrush>(sel[i]);
-		if (b) {
-			screen->set_selected_brush_from_editor(b);
-			return;
-		}
+	if (screen->is_applying_editor_selection() || !screen->is_visible_in_tree()) {
+		return; // Echo of our own _sync_editor_selection, or the tab is hidden.
 	}
+	// Mirror the editor's node selection into the level editor exactly
+	// (replace vs. accumulate semantics match the scene tree).
+	screen->apply_editor_selection(EditorInterface::get_singleton()->get_selection()->get_selected_nodes());
 }
 
 void LevelEditorPlugin::edited_scene_changed() {
@@ -2742,6 +2985,9 @@ void LevelEditorPlugin::make_visible(bool p_visible) {
 		screen->show();
 		screen->make_visible(true);
 	} else {
+		// Leaving the Level tab: drop the mirrored selection so the scene tree
+		// doesn't keep stale brush selections.
+		screen->clear_selection();
 		screen->hide();
 	}
 }

@@ -147,7 +147,9 @@ void LevelMap::_update_preview() {
 		return;
 	}
 
-	Node3D *baked = bake();
+	// Geometry-only bake: the preview uses just the mesh + material overrides,
+	// so skip the StaticBody/Occluder (the dominant cost on dense brushes).
+	Node3D *baked = bake(true);
 	if (!baked) {
 		preview_mesh_instance->set_mesh(Ref<Mesh>());
 		return;
@@ -163,7 +165,7 @@ void LevelMap::_update_preview() {
 	memdelete(baked);
 }
 
-Node3D *LevelMap::bake() const {
+Node3D *LevelMap::bake(bool p_geometry_only) const {
 	Vector<LevelBrush *> brushes = get_brushes();
 	if (brushes.is_empty()) {
 		return nullptr;
@@ -236,6 +238,18 @@ Node3D *LevelMap::bake() const {
 		mesh->surface_set_material(mesh->get_surface_count() - 1, mat);
 	}
 
+	if (mesh->get_surface_count() == 0) {
+		return nullptr; // Nothing renderable.
+	}
+
+	MeshInstance3D *mi = memnew(MeshInstance3D);
+	mi->set_mesh(mesh);
+	mi->set_name(String(get_name()) + "_Baked");
+
+	if (p_geometry_only) {
+		return mi; // Preview: mesh only, no collision/occluder.
+	}
+
 	// Collision + occluder geometry (map-local).
 	for (LevelBrush *brush : brushes) {
 		const Transform3D brush_to_map = map_inv * (brush->is_inside_tree() ? brush->get_global_transform() : brush->get_transform());
@@ -246,13 +260,10 @@ Node3D *LevelMap::bake() const {
 		}
 	}
 
-	if (mesh->get_surface_count() == 0 || collision_faces.is_empty()) {
-		return nullptr; // Nothing renderable/solid (e.g. all faces deleted).
+	if (collision_faces.is_empty()) {
+		memdelete(mi);
+		return nullptr; // Nothing solid (e.g. all faces deleted).
 	}
-
-	MeshInstance3D *mi = memnew(MeshInstance3D);
-	mi->set_mesh(mesh);
-	mi->set_name(String(get_name()) + "_Baked");
 
 	StaticBody3D *body = memnew(StaticBody3D);
 	body->set_name("Collision");

@@ -87,6 +87,7 @@ class LevelEditorDock : public VBoxContainer {
 	void _setting_changed(double p_value, const StringName &p_id);
 	void _cancel_pressed();
 	void _brush_type_selected(int p_index);
+	void _sphere_sides_changed(double p_value);
 	void _browse_pressed();
 	void _browse_selected(const String &p_path);
 	void _save_pressed();

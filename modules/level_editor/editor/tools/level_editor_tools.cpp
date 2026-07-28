@@ -270,8 +270,18 @@ void LevelEditorScreen::_vertex_menu_selected(int p_id) {
 	}
 }
 
-void LevelEditorScreen::_action_bevel_edges() {
+void LevelEditorScreen::_action_bevel_edges(bool p_quick) {
 	if (!current_map || selected_edges.is_empty()) {
+		return;
+	}
+
+	if (p_quick) {
+		// F in Edge mode: bevel immediately with the current grid size and
+		// default steps/shape (no arming, no dock round-trip).
+		if (selection_target != TARGET_EDGE || armed_action != ACTION_NONE) {
+			return;
+		}
+		_bevel_edges_apply(grid_size, 0, 0.5);
 		return;
 	}
 
@@ -286,6 +296,13 @@ void LevelEditorScreen::_action_bevel_edges() {
 	const real_t width = get_armed_value(StringName("width"), grid_size);
 	const int steps = (int)get_armed_value(StringName("steps"), 0.0);
 	const real_t shape = get_armed_value(StringName("shape"), 0.5);
+	_bevel_edges_apply(width, steps, shape);
+}
+
+void LevelEditorScreen::_bevel_edges_apply(real_t p_width, int p_steps, real_t p_shape) {
+	if (!current_map || selected_edges.is_empty()) {
+		return;
+	}
 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	undo_redo->create_action(TTR("Bevel Edges"));
@@ -302,7 +319,7 @@ void LevelEditorScreen::_action_bevel_edges() {
 		}
 
 		LevelBrush *working = target->duplicate_brush();
-		if (working->bevel_edges_profiled(edges, width, steps, shape) > 0) {
+		if (working->bevel_edges_profiled(edges, p_width, p_steps, p_shape) > 0) {
 			undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
 			undo_redo->add_do_property(target, "faces", working->get_faces_data());
 			undo_redo->add_do_property(target, "face_materials", working->get_face_materials_data());
@@ -778,7 +795,6 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 						if (!_mesh_selection_has(brush)) {
 							selected_brushes.push_back(brush);
 						}
-						_edit_brush_node(brush);
 					}
 					paint_select_active = true;
 					paint_select_viewport = p_vp;
@@ -819,7 +835,6 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 						if (!_mesh_selection_has(brush)) {
 							selected_brushes.push_back(brush);
 						}
-						_edit_brush_node(brush);
 					}
 					paint_select_active = true;
 					paint_select_viewport = p_vp;
@@ -854,7 +869,6 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 						if (!_mesh_selection_has(brush)) {
 							selected_brushes.push_back(brush);
 						}
-						_edit_brush_node(brush);
 					}
 					paint_select_active = true;
 					paint_select_viewport = p_vp;
@@ -865,6 +879,7 @@ bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_
 			default:
 				break;
 		}
+		_selection_sync_to_editor();
 		_update_overlays();
 		return true;
 	}

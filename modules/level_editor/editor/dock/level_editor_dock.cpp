@@ -135,9 +135,26 @@ void LevelEditorDock::refresh() {
 		OptionButton *type = memnew(OptionButton);
 		type->add_item(TTRC("Block"), 0);
 		type->add_item(TTRC("Quad"), 1);
+		type->add_item(TTRC("Sphere"), 2);
 		type->select(screen->get_brush_type());
 		type->connect("item_selected", callable_mp(this, &LevelEditorDock::_brush_type_selected));
 		form->add_child(type);
+
+		// Sphere sides (only meaningful for the Sphere type).
+		if (screen->get_brush_type() == 2) { // BRUSH_SPHERE
+			Label *sides_label = memnew(Label);
+			sides_label->set_text(TTRC("Sphere Sides"));
+			form->add_child(sides_label);
+
+			SpinBox *sides = memnew(SpinBox);
+			sides->set_min(4);
+			sides->set_max(64);
+			sides->set_step(1);
+			sides->set_use_rounded_values(true);
+			sides->set_value(screen->get_brush_sphere_sides());
+			sides->connect("value_changed", callable_mp(this, &LevelEditorDock::_sphere_sides_changed));
+			form->add_child(sides);
+		}
 
 		form->add_child(memnew(HSeparator));
 	}
@@ -145,6 +162,10 @@ void LevelEditorDock::refresh() {
 	if (!screen || screen->get_armed_action() == LevelEditorScreen::ACTION_NONE) {
 		Label *hint = memnew(Label);
 		hint->set_text(TTRC("No active tool settings."));
+		hint->set_v_size_flags(SIZE_EXPAND_FILL);
+		hint->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
+		hint->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		hint->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 		hint->add_theme_color_override("font_color", get_theme_color(SNAME("font_disabled_color"), SNAME("Editor")));
 		form->add_child(hint);
 		return;
@@ -255,6 +276,14 @@ void LevelEditorDock::_material_preview_ready(const String &p_path, const Ref<Te
 void LevelEditorDock::_brush_type_selected(int p_index) {
 	if (screen) {
 		screen->set_brush_type(p_index);
+		// Rebuild the form so the Sphere Sides field appears/disappears.
+		refresh();
+	}
+}
+
+void LevelEditorDock::_sphere_sides_changed(double p_value) {
+	if (screen) {
+		screen->set_brush_sphere_sides((int)p_value);
 	}
 }
 

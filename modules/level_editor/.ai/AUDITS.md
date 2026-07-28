@@ -1,5 +1,7 @@
 # Level Editor - Audit Archive
 
+> **READ ONLY** — Do not read this file when reading the `.ai/` folder for context handoff. It is write-only: append a new dated section only after an audit pass has been completed and its items have been moved into ROADMAP.md or ARCHITECTURE.md.
+
 Completed audit passes, kept for history. For CURRENT open items see
 ROADMAP.md. New audits: append a dated section at the bottom and move
 still-open items into ROADMAP.md.
@@ -7,6 +9,7 @@ still-open items into ROADMAP.md.
 ## Audit (2026-07, pass 3) - multi-agent module sweep
 
 Dead code removed:
+
 - Material chain: `current_material`, `_material_changed`,
   `apply_material_from_dock`, `_action_apply_material`, Face-menu
   "Apply Material" (never assigned since the dock picker was removed;
@@ -17,6 +20,7 @@ Dead code removed:
   (write-only single-brush-era snapshots).
 
 Bugs fixed:
+
 - Multi-brush gizmo move only moved the primary brush (now snapshots and
   moves all selected node positions; one undo action).
 - `last_transform_tool` restore-on-leave-drawing-tool was lost
@@ -62,7 +66,7 @@ duplication.
   `_two_point_plane()`.
 - Newell normal inlined twice in bevel - uses `get_face_normal()`.
 - Magic 0.0005/0.999 -> `LevelBrushConstants::{PLANE_EPSILON, WELD_DIST,
-  PARALLEL_DOT}` in level_brush.h.
+PARALLEL_DOT}` in level_brush.h.
 
 ## Audit (2026-07): bugs fixed
 

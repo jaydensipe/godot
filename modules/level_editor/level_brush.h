@@ -121,6 +121,12 @@ public:
 	// setup_box faces).
 	void setup_quad(const Vector3 p_corners[4]);
 
+	// Initialize as a convex sphere approximation inscribed in the given AABB:
+	// p_sides vertices around the equator, half that many latitude rings, all
+	// planar faces (top/bottom cap fans + quad bands), wound outward.
+	// p_sides is clamped to [4, 64].
+	void setup_sphere(const AABB &p_aabb, int p_sides = 16);
+
 	// Move vertices directly (Blender-style). Only the given vertices move.
 	void move_vertices(const Vector<int> &p_vertices, const Vector3 &p_delta);
 

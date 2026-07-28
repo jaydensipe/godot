@@ -72,7 +72,10 @@ public:
 	//  - StaticBody3D + CollisionShape3D (ConcavePolygonShape3D)
 	//  - OccluderInstance3D (ArrayOccluder3D)
 	// The returned node is NOT added to the tree.
-	Node3D *bake() const;
+	// p_geometry_only skips the StaticBody/Occluder (the live preview only
+	// needs the mesh - building collision+occluder per refresh is wasted work
+	// and the dominant cost on dense brushes, GOTCHAS #35).
+	Node3D *bake(bool p_geometry_only = false) const;
 
 	PackedStringArray get_configuration_warnings() const override;
 

@@ -96,6 +96,7 @@ SubViewportContainer
 ## Data model
 
 `LevelBrush` (Node3D):
+
 - `LocalVector<Vector3> verts`, `LocalVector<LocalVector<int>> faces` (n-gon
   loops, CCW-outward winding per Newell's method), `LocalVector<Ref<Material>> face_materials`,
   `bool faces_flipped`.
@@ -128,6 +129,7 @@ SubViewportContainer
 - `ray_intersect` = Möller–Trumbore over fan tris, local space.
 
 `LevelMap` (Node3D):
+
 - Brushes = `LevelBrush` children (`get_brushes()` scans children).
 - Editor-only internal `_LevelPreview` MeshInstance3D rebuilt in `refresh()`
   from `bake()`. `bake()` returns nullptr when no renderable geometry exists.
@@ -170,7 +172,7 @@ SubViewportContainer
 
 - **Active material & drops**: the screen holds `active_material` (null =
   map default; the dock panel falls back to showing `LevelMap::
-  default_material`'s preview). New brushes get it in `_ghost_commit`
+default_material`'s preview). New brushes get it in `_ghost_commit`
   (null leaves faces empty so the map default applies). Materials can be
   DRAGGED onto viewports - from the FileSystem dock ("files" payload:
   .material/.tres/.png/...), the dock's preview, or any inspector
@@ -178,8 +180,17 @@ SubViewportContainer
   hovered face, every other target drops on the whole brush; textures are
   wrapped via the shared `LevelEditorMaterialCache`. Drop = undo-recorded
   (`_commit_brush_undo`), drop target gets an animated marching-ants
-  highlight on a DEDICATED DropOverlay Control (so the animation redraw
+  highlight on a DEDICATED PreviewOverlay Control (so the animation redraw
   never repaints the main overlay).
+
+- **PreviewOverlay rule**: every viewport has TWO overlay Controls - the main
+  `Overlay` (brush outlines, gizmos, hover, clip/mirror planes) and the cheap
+  `PreviewOverlay`. ANY content that animates or redraws per-frame (marching
+  ants: the material-drop highlight, tool previews like the bevel) MUST draw
+  on the `PreviewOverlay`, never the main `Overlay` - a per-frame repaint of
+  the main overlay re-runs every brush outline/gizmo and tanks FPS (GOTCHAS
+  #33). Redraw it via `_queue_preview_redraw()`; `_update_overlays()` queues
+  both so state changes stay in sync.
 
 - **Extrude material inheritance** (level_modifiers.cpp): `extrude_face`
   cap keeps the source material; each appended wall inherits from the
@@ -196,88 +207,46 @@ SubViewportContainer
   hash of brush + selection + values); `_draw_tool_preview` draws with a
   per-id color. Add a preview: enum entry + color case + producer.
 
-- `Tool` × `SelectionTarget` replace the old single `Mode` enum (Hammer 2
-  style). Tool = Select (pure selection + single-brush AABB resize
-  handles) / Move (translate gizmo + click-drag) / Rotate / Scale + modal
-  Block/Clip/Mirror (entering a modal tool stashes
-  `last_transform_tool`/`last_target`, restores on exit). Shortcuts
-  Q/W/E/R. Target = Vertex/Edge/Face/Mesh (1/2/3/4) - what gets selected
-  and transformed by ANY transform tool. Toolbar: three panels (transform
-  tools, drawing tools, targets); `_set_tool`/`_set_target` end active
-  drags first (committing their undos).
-- **No-map gate**: if the edited scene has no `LevelMap`, the quad viewports
-  are hidden and a warning panel ("Create LevelMap" button) shows instead.
-  `_update_map_ui()` resolves/adopts a map found in the scene (never
-  auto-creates); `LevelEditorPlugin::edited_scene_changed()` override
-  re-resolves on scene switch. The map is only created by the button
-  (`_get_or_create_map`).
-- Selection: Mesh target is MULTI-select - `Vector<LevelBrush *>
-  selected_brushes` is authoritative, with `LevelBrush *selected_brush`
-  as the PRIMARY (last clicked: drives the inspector via
-  `_edit_brush_node`, the single-brush resize handles, and clip/mirror/
-  menus). Click = replace (`_mesh_selection_set`), Shift+click = toggle
-  (`_mesh_selection_toggle`). Move/Rotate/Scale/Delete and the
-  click-drag (`select_moving`) act on ALL selected brushes; Rotate/Scale
-  pivot per-brush around its own center (individual origins); the gizmo
-  sits at the combined center. Per-brush AABB resize handles draw only
-  when exactly one brush is selected. Element targets keep the per-brush
-  `HashMap<LevelBrush *, HashSet<...>>` sets (select across brushes).
-  `_set_target` clears selection; switching among the three transform
-  tools keeps it.
-- Element picking scans ALL brushes in the map (`_pick_vertex`/`_pick_edge`/
-  `_pick_face`). Hover shows the hovered brush (light-blue outline) + its
-  pickable elements: green vertices (vertex target only), green hovered edge,
-  green hovered face fill; selected elements draw in orange
-  (`LevelEditorColors::SELECTED_ELEMENT`). Brushes with any selection keep the
-  highlight after the cursor leaves. Holding LMB and dragging in an element
-  target paint-selects every crossed element (`paint_select_active` +
-  `_paint_select_at` - adds only, no toggle-off mid-drag).
-- Face/edge hover + selection fills pre-flight `Geometry2D::triangulate_
-  polygon` before `draw_colored_polygon` - projected n-gons can be
-  degenerate (edge-on view, concave after vertex edits) and the renderer
-  ERR_FAILs on untriangulable polygons. On failure the fill is skipped;
-  the outline still draws.
-- Editor selection sync: plugin listens to `EditorSelection::selection_changed`
-  and adopts a selected `LevelBrush` (`set_selected_brush_from_editor`).
-- Map lookup: `_find_map_in_scene()` is the single DFS that finds the first
-  LevelMap in the edited scene; `_resolve_map()`/`_update_map_ui()` wrap it.
-- View menu: per-viewport display modes (Normal/Wireframe/Overdraw/Lighting/
-  Unshaded, ids = vp*MAX+mode) + global 2D/3D grid toggles; all persisted via
-  `EditorSettings::set_project_metadata("level_editor", ...)`.
-- Block flow: stage 1 drag → stage 2 "ghost" (AABB + 6 face handles + 8
-  corner handles + inside-drag move + dim labels) → Enter commits
-  (`_ghost_commit`), Esc cancels. `_compute_drag_aabb` shared by preview +
-  commit; reuses last brush's Y height for walls. Brush Type (dock
-  dropdown: Block/Quad): Quad collapses the drag AABB's view axis to zero
-  (`ghost_flat_axis`) and commits a single-face `setup_quad` brush on that
-  plane; ALL handle rules funnel through one predicate,
-  `_box_handle_usable(vp, handle, flat_axis)` (shared with the select-mode
-  AABB handles): in any ortho view the two face handles on the view axis
-  are dropped (undraggable there, stack at the box center); a flat quad
-  additionally drops its thickness handles, and edge-on views (quad
-  projects to a line) keep only the two endpoint face handles, no corners,
-  no inside-drag.
-- Clip flow: `_clip_begin` on brush click (or anywhere in ortho at brush
-  depth), 2 snapped points + captured `clip_view_dir`; plane normal =
-  `along × view_dir` (verified = screen-left of the drawn line). Clip toolbar
-  button re-click cycles KEEP_FRONT(=left)/KEEP_BACK/BOTH (Tab doesn't work -
-  GUI eats it). Preview: wireframe edges split at plane, green=kept,
-  red=discarded (+ white cut markers). Apply on Enter via `input()`.
-- Gizmos (screen-space, custom): move gizmo (arrows + plane quads + center,
-  closest-point-on-axis drag; Move/Scale tools only - pick and draw share
-  `compute_gizmo_axes`), rotate gizmo (3 rings, ortho views restrict to
-  the view axis + click-anywhere), scale (axis handles + uniform via the
-  center/plane handles), Select-tool AABB handles (resize via
-  `_apply_brush_aabb`).
-  Shift+drag in ANY element target extrudes: faces pull caps along their
-  normals (`extrude_face`), edges/vertices duplicate + stitch
-  (`extrude_edge`/`extrude_vertex`) and the drag moves the duplicated
-  verts freely; the selection tracks the new geometry so chained extrudes
-  work. Element-mode drags snapshot `gizmo_drag_brush_verts` (per-brush map) and
-  apply absolute deltas to each brush's selected vertices; Mesh-target
-  node moves snapshot `gizmo_drag_original_positions` (all selected
-  brushes). Undo = `_commit_brush_verts_undo` (one action across all
-  dragged brushes, `commit_action(false)`).
+- `Tool` × `SelectionTarget` (Hammer 2 style): Tool = Select/Move/Rotate/
+  Scale (Q/W/E/R) + modal Block/Clip/Mirror (stashes and restores
+  `last_transform_tool`/`last_target`); Target = Vertex/Edge/Face/Mesh
+  (1/2/3/4). `_set_tool`/`_set_target` end active drags first (committing
+  their undos).
+- **No-map gate**: no `LevelMap` in the scene → warning panel + "Create
+  LevelMap" button instead of viewports. `_update_map_ui()` only ADOPTS a
+  found map (never auto-creates); `edited_scene_changed()` re-resolves.
+- Selection: Mesh target multi-selects (`selected_brushes` authoritative,
+  `selected_brush` = primary/last-clicked for inspector + single-brush
+  handles); element targets keep per-brush `HashMap<LevelBrush *,
+HashSet<...>>` sets (cross-brush selection). `_set_target` clears
+  selection; LMB-drag paint-selects crossed elements (add-only).
+- Hover/selection fills pre-flight `Geometry2D::triangulate_polygon`
+  before `draw_colored_polygon` (GOTCHAS #47); on failure the fill is
+  skipped, outline still draws.
+- Editor selection sync is bidirectional and exact: level-editor selection
+  changes mirror into `EditorSelection` (`_sync_editor_selection`, diff-based,
+  guarded by `applying_editor_selection` against echoes); editor selection
+  changes mirror back via `apply_editor_selection(nodes)` (replace vs.
+  accumulate matches the scene tree). Inspector: 1 brush → `edit_node`, 2+ →
+  `MultiNodeEdit` (like SceneTreeDock's TOOL_MULTI_EDIT). Map lookup:
+  `_find_map_in_scene()` (single DFS) wrapped by `_update_map_ui()`.
+- View menu: per-viewport display modes (ids = vp*MAX+mode) + global
+  2D/3D grid toggles, persisted via project metadata.
+- Block flow: drag → editable ghost (AABB + handles + dim labels) → Enter
+  commits / Esc cancels. All handle rules funnel through ONE predicate
+  `_box_handle_usable(vp, handle, flat_axis)` (shared with select-mode
+  handles; GOTCHAS #49).
+- Clip flow: 2 snapped points + captured view dir; plane normal =
+  `along × view_dir`. Toolbar re-click cycles keep-left/right/both.
+  Preview: green kept / red discarded edges + cut markers. Enter applies.
+- Gizmos (screen-space, custom): move arrows + plane quads + center,
+  rotate rings (ortho restricts to view axis), scale axis/uniform handles,
+  Select-tool AABB resize handles. Pick and draw share size math
+  (`compute_gizmo_axes`, `_rotate_world_radius` - GOTCHAS #25).
+  Shift+drag in any element target extrudes (faces pull caps, edges/verts
+  duplicate + stitch; selection tracks new geometry for chained extrudes).
+  Drags snapshot serialized state at begin and apply absolute deltas;
+  undo = `_commit_brush_verts_undo` (`commit_action(false)`).
 - Keys (handled in `LevelEditorScreen::input()`, `_vp_input` phase, swallowed
   via `set_input_as_handled`): Delete (per-mode delete/collapse), `[`/`]`
   grid ladder (`LevelEditorGrid::STEPS`, 1/8..512), Enter/Esc (ghost/clip/
@@ -343,7 +312,35 @@ SubViewportContainer
 - `LevelEditorScreen::_pick_box_handle(vp, screen, aabb, xform)` - shared
   corner/face handle picking for ghost + select handles.
 - `LevelEditorScreen::_commit_brush_undo(action, brush, old_verts, old_faces,
-  old_mats, execute=false)` - one-call vertices/faces/materials undo record.
+old_mats, execute=false)` - one-call vertices/faces/materials undo record.
+
+## Checklist: adding a LevelBrush geometry op
+
+Every geometry op follows the same recipe - skipping a step produces the
+bugs GOTCHAS is full of (stale previews, desynced materials, undo gaps,
+inward walls):
+
+1. **Topology in `level_modifiers.cpp`** (or `level_brush.cpp` for trivial
+   ops). Winding of any new face is verified against the brush CENTROID
+   (plane-side test), never a pull/normal sign rule (GOTCHAS #30).
+2. **Face materials stay aligned**: `face_materials` must match `faces`
+   1:1 (`_update_face_count_storage()`), and new faces inherit from the
+   geometrically continuing face (seam neighbor / best-normal match -
+   GOTCHAS #37), not null.
+3. **`_notify_map_changed()`** at the end so the preview rebuilds (also
+   covers undo/redo restores).
+4. **Undo**: callers record via `_commit_brush_undo`/`_add_brush_undo_pair`
+   (vertices + faces + face_materials - GOTCHAS #27). If the op runs live
+   during a drag, commit with `commit_action(false)`.
+5. **Compact or document**: if the op can orphan vertices, call
+   `compact_vertices()` (and remember it REMAPS indices - selections/tests
+   must compare positions, not indices). If it deliberately doesn't
+   (delete_faces), note it in ROADMAP/TESTS.
+6. **Selection staleness**: if indices shift, the editor-side caller clears
+   or remaps the per-brush selection sets (GOTCHAS #14).
+7. **Test in `tests/test_level_brush.h`**: topology counts, outward
+   normals, material inheritance, and a degenerate case (flat quad,
+   zero distance, open edge). Pure geometry - no tags needed.
 
 ## Build gotchas encountered
 

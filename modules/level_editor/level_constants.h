@@ -119,6 +119,11 @@ inline const Color CLIP_CUT{ 0.95f, 0.25f, 0.2f, 0.95f };
 inline const Color CLIP_HALF{ 0.4f, 0.6f, 1.0f, 0.95f };
 inline const Color CLIP_MARKER{ 1.0f, 1.0f, 1.0f, 0.9f };
 
+// Armed-action previews (bevel, etc.): same saturation/brightness profile as
+// the clip cyan (low 0.2 / high 1.0) but yellow, so a live action preview
+// reads as distinct from the clip/mirror tools.
+inline const Color ACTION_PREVIEW{ 1.0f, 0.9f, 0.2f, 0.9f };
+
 // Select-mode resize handles (orange family).
 inline const Color SELECT_HANDLE{ 1.0f, 0.6f, 0.1f, 0.8f };
 inline const Color SELECT_HANDLE_HOT{ 1.0f, 0.8f, 0.5f, 0.95f };

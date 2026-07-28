@@ -87,11 +87,13 @@ private:
 
 	Overlay *overlay = nullptr;
 
-	// Dedicated overlay for the material-drop highlight only, so the
-	// marching-ants animation can redraw without repainting the whole scene
-	// overlay (brush outlines, gizmos, previews).
-	class DropOverlay : public Control {
-		GDCLASS(DropOverlay, Control);
+	// Dedicated overlay for ANIMATED/cheap-frequently-redrawn content
+	// (material-drop highlight, tool previews like the bevel marching-ants).
+	// Anything that animates or redraws per-frame MUST draw here, NOT on the
+	// main overlay - the main overlay repaints every brush outline/gizmo/
+	// hover, so a per-frame redraw of it tanks FPS (GOTCHAS #33).
+	class PreviewOverlay : public Control {
+		GDCLASS(PreviewOverlay, Control);
 
 	public:
 		LevelEditorViewport *viewport = nullptr;
@@ -100,7 +102,7 @@ private:
 		void _notification(int p_what);
 	};
 
-	DropOverlay *drop_overlay = nullptr;
+	PreviewOverlay *preview_overlay = nullptr;
 
 	// Material drop from the FileSystem dock: while a droppable file is
 	// dragged over this viewport, the drop target is highlighted with a
@@ -145,7 +147,7 @@ private:
 
 	// Overlay draw hooks (called from the overlays' _notification).
 	void _overlay_draw();
-	void _drop_overlay_draw();
+	void _preview_overlay_draw();
 
 protected:
 	void _notification(int p_what);
@@ -185,7 +187,7 @@ public:
 	bool ray_to_view_plane(const Vector2 &p_screen, const Vector3 &p_point, Vector3 &r_hit) const;
 
 	void queue_overlay_redraw();
-	void _queue_drop_redraw();
+	void _queue_preview_redraw();
 	void clear_drop_state();
 	bool can_drop_data_fw(const Point2 &p_point, const Variant &p_data, Control *p_from);
 	void drop_data_fw(const Point2 &p_point, const Variant &p_data, Control *p_from);
@@ -249,6 +251,7 @@ private:
 	OptionButton *grid_size_option = nullptr;
 	Button *bake_button = nullptr;
 	LevelEditorDock *dock = nullptr; // Owned by the plugin; set after ctor.
+	MenuButton *tools_menu = nullptr;
 	MenuButton *vertex_menu = nullptr;
 	MenuButton *edge_menu = nullptr;
 	MenuButton *face_menu = nullptr;
@@ -265,9 +268,11 @@ private:
 	enum BrushType {
 		BRUSH_BLOCK, // Solid box.
 		BRUSH_QUAD, // Flat plane (one grid unit thick).
+		BRUSH_SPHERE, // Latitude/longitude sphere inscribed in the drag AABB.
 		BRUSH_TYPE_MAX
 	};
 	BrushType brush_type = BRUSH_BLOCK;
+	int brush_sphere_sides = 16; // Sphere longitude segments (dock-editable).
 
 	Tool tool = TOOL_SELECT;
 	Tool last_transform_tool = TOOL_SELECT; // Restored after BLOCK/CLIP/MIRROR.
@@ -321,6 +326,17 @@ private:
 	void _ghost_cancel();
 	void _draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas);
 	void _draw_dim_labels(LevelEditorViewport *p_vp, Control *p_canvas, const AABB &p_aabb);
+
+	// Cached sphere wireframe for the ghost/drag preview: rebuilding
+	// setup_sphere every overlay paint (x4 viewports, hundreds of verts + a
+	// rewind per face) made sphere drags laggy. Rebuilt only when the AABB or
+	// sides change; the cached segments are world-space point pairs.
+	LocalVector<Vector3> sphere_preview_segs;
+	AABB sphere_preview_aabb;
+	int sphere_preview_sides = -1;
+	bool sphere_preview_valid = false;
+	void _rebuild_sphere_preview(const AABB &p_aabb);
+	void _draw_sphere_preview(LevelEditorViewport *p_vp, Control *p_canvas, const Color &p_col);
 	// One predicate for all box-handle rules, shared by ghost + select
 	// handles: in any ortho view the two face handles on the VIEW axis are
 	// dropped (they stack at the box center and can never drag there); a
@@ -424,6 +440,7 @@ private:
 		uint32_t cache_hash = 0; // 0 = invalid/needs rebuild.
 	};
 	ToolPreview tool_preview;
+	double preview_ants_phase = 0.0; // Marching-ants phase for animated previews (bevel).
 
 	void _bevel_preview_rebuild();
 	void _draw_tool_preview(LevelEditorViewport *p_vp, Control *p_canvas);
@@ -438,6 +455,11 @@ public:
 	Tool get_tool() const { return tool; }
 	int get_brush_type() const { return (int)brush_type; }
 	void set_brush_type(int p_type) { brush_type = (BrushType)p_type; }
+	int get_brush_sphere_sides() const { return brush_sphere_sides; }
+	void set_brush_sphere_sides(int p_sides) {
+		brush_sphere_sides = CLAMP(p_sides, 4, 64);
+		_update_overlays(); // The drag/ghost preview follows the sides live.
+	}
 	void cancel_armed_action() { _action_cancel_armed(); }
 
 	// The active material applied to new brushes / faces (null = map default).
@@ -480,6 +502,7 @@ private:
 	int rotate_hover_axis = -1; // 0/1/2 or -1
 	int rotate_drag_axis = -1;
 	real_t rotate_drag_start_angle = 0.0; // Angle of grab point around the axis.
+	real_t rotate_drag_last_angle = 0.0; // Last applied (snapped) rotation; recorded for Replay Action.
 	LevelEditorViewport *rotate_drag_viewport = nullptr;
 
 	int _pick_rotate_ring(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
@@ -549,6 +572,40 @@ private:
 	Vector3 gizmo_drag_plane_normal;
 	Vector3 gizmo_drag_plane_point;
 	HashMap<LevelBrush *, Vector3> gizmo_drag_original_positions; // ALL selected brushes' node positions (multi-brush gizmo move).
+	Vector3 gizmo_scale_last_factors = Vector3(1, 1, 1); // Last mesh-scale factors applied during the drag (recorded for Replay Action at end-drag).
+	bool gizmo_duplicate_drag = false; // Shift+drag in the Mesh target: duplicate the brushes and drag the copies.
+	HashMap<LevelBrush *, LevelBrush *> gizmo_dup_sources; // Duplicate -> original (undo reselects sources, redo the copies).
+
+	// Replay Action (Shift+G): remembers the last gizmo action so it can be
+	// repeated on the current selection (Hammer-style "do it again"). Kinds
+	// store only the *final* parameters of the action (delta / axis+angle /
+	// factors), never node pointers, so replay works on any later selection.
+	struct ReplayAction {
+		enum Kind {
+			KIND_NONE,
+			KIND_MOVE, // Brush move: world_delta.
+			KIND_DUPLICATE_DRAG, // Duplicate + move: world_delta.
+			KIND_ROTATE, // Mesh rotate: axis + angle (each brush around its own center).
+			KIND_SCALE, // Mesh scale: per-axis factors.
+		};
+		Kind kind = KIND_NONE;
+		Vector3 world_delta;
+		int axis = 0;
+		real_t angle = 0.0;
+		Vector3 factors = Vector3(1, 1, 1);
+	};
+	ReplayAction last_action;
+	// Record an action for Replay Action (Shift+G). Centralizes the writes so
+	// new kinds only touch their commit site and the replay dispatch.
+	void _record_replay_action(ReplayAction::Kind p_kind, const Vector3 &p_world_delta = Vector3(), int p_axis = 0, real_t p_angle = 0.0, const Vector3 &p_factors = Vector3(1, 1, 1));
+	void _replay_last_action();
+	void _tools_menu_selected(int p_id);
+
+	// Shared whole-brush transform cores (drag apply + Replay Action reuse).
+	// Transform every vertex of one brush around `p_center` (brush-local) by `p_basis`.
+	static void _brush_transform_verts(LevelBrush *p_brush, const Vector3 &p_center, const Basis &p_basis);
+	// Rotate/scale each selected brush around its OWN center (mesh-target rule).
+	void _brushes_transform_own_center(const Basis &p_basis);
 	bool gizmo_extrude_drag = false; // Shift+drag in an element target: extrude instead of move.
 	// Element extrude-drag snapshots (indices shift after extruding, so the
 	// generic vertex snapshot can't restore them).
@@ -569,6 +626,11 @@ private:
 	void _apply_gizmo_delta(const Vector3 &p_world_delta);
 	void _apply_gizmo_rotate(int p_axis, real_t p_angle);
 	void _apply_gizmo_scale(const Vector3 &p_world_delta);
+	// Mesh-target scale: shared factor computation (drag delta -> snapped
+	// per-axis factors against the primary brush's size). Used by the drag and
+	// by Replay Action recording.
+	Vector3 _compute_mesh_scale_factors(const Vector3 &p_world_delta) const;
+	void _apply_mesh_scale_factors(const Vector3 &p_factors);
 	void _draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas);
 
 	LevelMap *_get_or_create_map();
@@ -605,12 +667,19 @@ private:
 	void _set_target(SelectionTarget p_target);
 	void _update_mode_icons();
 	void _edit_brush_node(LevelBrush *p_brush);
+	// Mirrors selected_brushes into the editor's node selection (scene tree +
+	// inspector). No-op while applying an editor-originated selection.
+	void _sync_editor_selection();
+	bool applying_editor_selection = false;
 
 	// Mesh-target multi-selection helpers (keep selected_brushes and the
 	// selected_brush primary in sync, and the inspector on the primary).
 	void _mesh_selection_set(LevelBrush *p_brush); // Replace with one.
 	void _mesh_selection_toggle(LevelBrush *p_brush); // Shift+click add/remove.
 	bool _mesh_selection_has(LevelBrush *p_brush) const;
+	// Sync the whole current selection to the editor (batched element-target
+	// changes call this once after mutating, instead of per-brush).
+	void _selection_sync_to_editor() { _sync_editor_selection(); }
 
 	void _action_extrude_faces();
 	void _action_extrude_edges();
@@ -627,7 +696,11 @@ private:
 	void _view_display_selected(int p_id);
 	void _view_grid_toggled(int p_id);
 	void _action_bridge_edges();
-	void _action_bevel_edges();
+	// p_quick = F in Edge mode: grid-size bevel with default steps/shape,
+	// applied immediately (no arming). Otherwise arms for dock editing.
+	void _action_bevel_edges(bool p_quick = false);
+	// Shared bevel apply (armed bevel + quick bevel both funnel here).
+	void _bevel_edges_apply(real_t p_width, int p_steps, real_t p_shape);
 	void _grid_size_selected(int p_index);
 
 	int _grid_step_index() const;
@@ -669,7 +742,7 @@ private:
 	bool _material_drop_pick(Camera3D *p_camera, const Vector2 &p_screen, LevelBrush *&r_brush, int &r_face) const;
 	void _apply_material_drop(LevelBrush *p_brush, int p_face, const Variant &p_data);
 	// Marching-ants highlight for the current drop target (drawn on the
-	// viewport's dedicated DropOverlay).
+	// viewport's dedicated PreviewOverlay).
 	void _draw_material_drop(LevelEditorViewport *p_vp, Control *p_canvas);
 	void _update_map_ui();
 	void _create_map_pressed();
@@ -697,12 +770,19 @@ public:
 	bool is_grid_2d_enabled() const { return grid_2d_enabled; }
 	bool is_grid_3d_enabled() const { return grid_3d_enabled; }
 
-	// Sync the level-editor brush selection with the editor's node selection.
-	void set_selected_brush_from_editor(LevelBrush *p_brush);
+	// Sync the level-editor brush selection with the editor's node selection
+	// (exact mirror: brushes added/removed in the scene tree land here 1:1).
+	void apply_editor_selection(const TypedArray<Node> &p_nodes);
+	// True while applying a selection that came FROM the editor (so
+	// _sync_editor_selection doesn't bounce it straight back).
+	bool is_applying_editor_selection() const { return applying_editor_selection; }
 
 	// Bound for undo actions: undoing a topology op that remapped the
 	// selection must drop it (its indices no longer exist).
 	void clear_selection() { _clear_selection(); }
+	// Bound for undo actions: restore a whole-brush selection (duplicate-drag
+	// undo/redo swaps between sources and copies).
+	void set_brush_selection(const TypedArray<Node> &p_brushes);
 
 	void set_dock(LevelEditorDock *p_dock) { dock = p_dock; }
 

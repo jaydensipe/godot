@@ -1,9 +1,10 @@
 # Level Editor Module - Project Overview
 
 Docs in this folder: PROJECT (this), ARCHITECTURE (file layout + class/data
-flow), GOTCHAS (hard-won bug lessons - read before editing), ROADMAP (open
-items + deferred smells), TESTS (how to build/run + coverage), AUDITS
-(archive of completed audit passes).
+flow + the geometry-op checklist), GOTCHAS (hard-won bug lessons - read
+before editing), ROADMAP (open items + deferred smells + good-to-follow notes),
+TESTS (how to build/run + coverage), AUDITS (archive of completed audit passes
+— read-only; append only after an audit is finished, see AUDITS.md header).
 
 **Workflow: the user builds and runs all tests manually.** Never try to
 compile, run the editor, or execute tests yourself - make the changes,
@@ -39,10 +40,10 @@ scons platform=windows target=editor dev_build=yes accesskit=no d3d12=no angle=n
   flipped axes per view) and cursor-centered wheel zoom.
 - **Brush data model**: `LevelBrush` (a `Node3D`) stores explicit topology -
   `LocalVector<Vector3> verts` + n-gon face loops (`LocalVector<LocalVector<int>>`)
-  + per-face materials, serialized as `vertices`, `faces`, `face_materials`
-  properties (persists in scenes). Brushes are children of a `LevelMap` node
-  (created via the Level tab button). Faces may be non-planar; fan-triangulated
-  at bake/preview time.
+    - per-face materials, serialized as `vertices`, `faces`, `face_materials`
+      properties (persists in scenes). Brushes are children of a `LevelMap` node
+      (created via the Level tab button). Faces may be non-planar; fan-triangulated
+      at bake/preview time.
 - **Cross-brush element selection**: vertex/edge/face modes pick from ANY
   brush (per-brush `HashMap` selection sets), with hover highlighting
   (light-blue brush outline, green elements) and orange selected elements.

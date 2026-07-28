@@ -267,41 +267,48 @@ void LevelEditorScreen::_ghost_commit() {
 
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->set_name("Brush");
-	if (brush_type == BRUSH_QUAD) {
-		// Quad: a single flat polygon on the ghost's plane (recorded at drag
-		// time), wound CCW seen from the +axis side - same outward convention
-		// as setup_box.
-		AABB bb = map_inv.xform(ghost_aabb);
-		Vector3 mn = bb.position;
-		Vector3 mx = bb.position + bb.size;
-		int flat_axis = committed_flat_axis;
-		if (flat_axis < 0) {
-			flat_axis = 1; // Fallback (shouldn't happen): floor quad.
-		}
-		Vector3 quad[4];
-		switch (flat_axis) {
-			case 0: // YZ plane at max X, normal +X (CCW seen from +X).
-				quad[0] = Vector3(mx.x, mn.y, mn.z);
-				quad[1] = Vector3(mx.x, mx.y, mn.z);
-				quad[2] = Vector3(mx.x, mx.y, mx.z);
-				quad[3] = Vector3(mx.x, mn.y, mx.z);
-				break;
-			case 1: // XZ plane at max Y, normal +Y (CCW seen from +Y).
-				quad[0] = Vector3(mn.x, mx.y, mn.z);
-				quad[1] = Vector3(mn.x, mx.y, mx.z);
-				quad[2] = Vector3(mx.x, mx.y, mx.z);
-				quad[3] = Vector3(mx.x, mx.y, mn.z);
-				break;
-			default: // XY plane at max Z, normal +Z (CCW seen from +Z).
-				quad[0] = Vector3(mn.x, mn.y, mx.z);
-				quad[1] = Vector3(mx.x, mn.y, mx.z);
-				quad[2] = Vector3(mx.x, mx.y, mx.z);
-				quad[3] = Vector3(mn.x, mx.y, mx.z);
-				break;
-		}
-		brush->setup_quad(quad);
-	} else {
-		brush->setup_box(map_inv.xform(ghost_aabb));
+	switch (brush_type) {
+		case BRUSH_QUAD: {
+			// Quad: a single flat polygon on the ghost's plane (recorded at drag
+			// time), wound CCW seen from the +axis side - same outward convention
+			// as setup_box.
+			AABB bb = map_inv.xform(ghost_aabb);
+			Vector3 mn = bb.position;
+			Vector3 mx = bb.position + bb.size;
+			int flat_axis = committed_flat_axis;
+			if (flat_axis < 0) {
+				flat_axis = 1; // Fallback (shouldn't happen): floor quad.
+			}
+			Vector3 quad[4];
+			switch (flat_axis) {
+				case 0: // YZ plane at max X, normal +X (CCW seen from +X).
+					quad[0] = Vector3(mx.x, mn.y, mn.z);
+					quad[1] = Vector3(mx.x, mx.y, mn.z);
+					quad[2] = Vector3(mx.x, mx.y, mx.z);
+					quad[3] = Vector3(mx.x, mn.y, mx.z);
+					break;
+				case 1: // XZ plane at max Y, normal +Y (CCW seen from +Y).
+					quad[0] = Vector3(mn.x, mx.y, mn.z);
+					quad[1] = Vector3(mn.x, mx.y, mx.z);
+					quad[2] = Vector3(mx.x, mx.y, mx.z);
+					quad[3] = Vector3(mx.x, mx.y, mn.z);
+					break;
+				default: // XY plane at max Z, normal +Z (CCW seen from +Z).
+					quad[0] = Vector3(mn.x, mn.y, mx.z);
+					quad[1] = Vector3(mx.x, mn.y, mx.z);
+					quad[2] = Vector3(mx.x, mx.y, mx.z);
+					quad[3] = Vector3(mn.x, mx.y, mx.z);
+					break;
+			}
+			brush->setup_quad(quad);
+		} break;
+		case BRUSH_SPHERE:
+			brush->setup_sphere(map_inv.xform(ghost_aabb), brush_sphere_sides);
+			break;
+		case BRUSH_BLOCK:
+		default:
+			brush->setup_box(map_inv.xform(ghost_aabb));
+			break;
 	}
 	// New brushes inherit the active material; a null active material leaves
 	// faces empty so the map default applies at bake/preview time.
@@ -330,7 +337,68 @@ void LevelEditorScreen::_ghost_cancel() {
 	ghost_handle_drag = GHOST_NONE;
 	ghost_moving = false;
 	ghost_flat_axis = -1;
+	sphere_preview_valid = false; // Drop the cached wireframe with the ghost.
 	_update_overlays();
+}
+
+void LevelEditorScreen::_rebuild_sphere_preview(const AABB &p_aabb) {
+	if (sphere_preview_valid && sphere_preview_sides == brush_sphere_sides &&
+			sphere_preview_aabb.position.is_equal_approx(p_aabb.position) &&
+			sphere_preview_aabb.size.is_equal_approx(p_aabb.size)) {
+		return; // Cache hit: same AABB + sides.
+	}
+	sphere_preview_segs.clear();
+
+	// Build the wireframe DIRECTLY (latitude rings + longitude spokes) - no
+	// LevelBrush, no faces, no per-face rewind (setup_sphere's costly part).
+	// For a pure line preview, winding/normals are irrelevant, so this is far
+	// cheaper and identical on screen (fixes AABB-drag lag).
+	const int sides = CLAMP(brush_sphere_sides, 4, 64);
+	const int rings = MAX(sides / 2, 2);
+	const Vector3 center = p_aabb.get_center();
+	const Vector3 radii = p_aabb.size * 0.5;
+
+	auto ring_point = [&](int p_ring, int p_side) -> Vector3 {
+		const real_t phi = Math::PI * (real_t)p_ring / (real_t)rings; // 0..PI
+		const real_t theta = Math::TAU * (real_t)p_side / (real_t)sides;
+		const real_t ring_r = Math::sin(phi);
+		return center + Vector3(ring_r * Math::cos(theta) * radii.x, Math::cos(phi) * radii.y, ring_r * Math::sin(theta) * radii.z);
+	};
+
+	// Latitude rings (interior).
+	for (int r = 1; r < rings; r++) {
+		for (int s = 0; s < sides; s++) {
+			sphere_preview_segs.push_back(ring_point(r, s));
+			sphere_preview_segs.push_back(ring_point(r, s + 1));
+		}
+	}
+	// Longitude spokes (pole to pole through each side).
+	const Vector3 top = center + Vector3(0, radii.y, 0);
+	const Vector3 bottom = center - Vector3(0, radii.y, 0);
+	for (int s = 0; s < sides; s++) {
+		Vector3 prev = top;
+		for (int r = 1; r < rings; r++) {
+			const Vector3 p = ring_point(r, s);
+			sphere_preview_segs.push_back(prev);
+			sphere_preview_segs.push_back(p);
+			prev = p;
+		}
+		sphere_preview_segs.push_back(prev);
+		sphere_preview_segs.push_back(bottom);
+	}
+
+	sphere_preview_aabb = p_aabb;
+	sphere_preview_sides = brush_sphere_sides;
+	sphere_preview_valid = true;
+}
+
+void LevelEditorScreen::_draw_sphere_preview(LevelEditorViewport *p_vp, Control *p_canvas, const Color &p_col) {
+	for (uint32_t i = 0; i + 1 < sphere_preview_segs.size(); i += 2) {
+		Vector2 a, b;
+		if (p_vp->project_segment(sphere_preview_segs[i], sphere_preview_segs[i + 1], a, b)) {
+			p_canvas->draw_line(a, b, p_col, 2.0);
+		}
+	}
 }
 
 void LevelEditorScreen::_draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas) {
@@ -341,8 +409,21 @@ void LevelEditorScreen::_draw_ghost(LevelEditorViewport *p_vp, Control *p_canvas
 	Vector3 corners[8];
 	aabb_corners(ghost_aabb, corners);
 
-	// Box edges.
 	Color col = LevelEditorColors::GHOST;
+	// Shape wireframe. The sphere draws its inscribed mesh on top of the box
+	// cage (the cage carries the resize handles, so it always shows).
+	switch (brush_type) {
+		case BRUSH_SPHERE:
+			_rebuild_sphere_preview(ghost_aabb);
+			_draw_sphere_preview(p_vp, p_canvas, col);
+			break;
+		case BRUSH_BLOCK:
+		case BRUSH_QUAD:
+		default:
+			break;
+	}
+
+	// Box edges (the AABB cage the handles act on).
 	for (auto &e : AABB_EDGE_IDX) {
 		Vector2 a, b;
 		if (p_vp->project(corners[e[0]], a) && p_vp->project(corners[e[1]], b)) {

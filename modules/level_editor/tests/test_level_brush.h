@@ -69,6 +69,41 @@ TEST_CASE("[LevelBrush] setup_box produces a valid cube") {
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] setup_sphere produces a valid convex solid") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_sphere(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)), 16);
+
+	const int sides = 16;
+	const int rings = sides / 2; // 8 latitude segments.
+	// 2 poles + (rings-1) interior rings of `sides` verts.
+	CHECK(brush->get_vertex_count() == 2 + (rings - 1) * sides);
+	// sides top-cap tris + sides bottom-cap tris + (rings-2) bands of sides quads.
+	CHECK(brush->get_face_count() == 2 * sides + (rings - 2) * sides);
+	CHECK(brush->is_valid());
+
+	// Every face is planar and points outward (away from the center).
+	const Vector3 center = brush->get_center();
+	CHECK(center.is_equal_approx(Vector3(1, 1, 1)));
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		const Vector3 n = brush->get_face_normal(f);
+		REQUIRE(!n.is_zero_approx());
+		CHECK(n.dot(brush->get_face_center(f) - center) > 0.0);
+	}
+
+	// Closed solid: no open edges (every edge shared by exactly 2 faces).
+	CHECK(brush->get_open_edges().size() == 0);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] setup_sphere clamps degenerate side counts") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_sphere(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)), 1); // Clamped to 4.
+	CHECK(brush->is_valid());
+	CHECK(brush->get_open_edges().size() == 0);
+	memdelete(brush);
+}
+
 TEST_CASE("[LevelBrush] setup_quad produces a single-face flat brush") {
 	LevelBrush *brush = memnew(LevelBrush);
 	// XZ plane at y=1, CCW seen from +Y (same winding the quad brush type
