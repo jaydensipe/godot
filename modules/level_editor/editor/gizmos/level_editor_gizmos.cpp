@@ -446,18 +446,22 @@ bool LevelEditorScreen::_update_outlines() {
 				mi->set_mesh(mesh);
 				viewports[v]->get_gizmo_subviewport()->add_child(mi);
 				inst[b] = mi;
-				outline_versions.erase(b); // Force a build below.
+				outline_versions[v].erase(b); // Force a build below.
 			}
 
 			// Rebuild the line mesh only when the brush geometry changed; the
 			// transform is applied per frame (moves don't trigger rebuilds).
-			const uint64_t built = outline_versions.has(b) ? outline_versions[b] : UINT64_MAX;
+			// NB: the version map is PER VIEWPORT - each pane owns a separate
+			// ImmediateMesh, so each pane must independently detect the change
+			// (a shared map let the first pane bump the version and the other
+			// three skip their rebuild - stale outline after rotate/scale).
+			const uint64_t built = outline_versions[v].has(b) ? outline_versions[v][b] : UINT64_MAX;
 			if (built != b->get_geometry_version()) {
 				ImmediateMesh *mesh = Object::cast_to<ImmediateMesh>(mi->get_mesh().ptr());
 				if (mesh) {
 					_rebuild_outline_mesh(b, mesh);
 				}
-				outline_versions[b] = b->get_geometry_version();
+				outline_versions[v][b] = b->get_geometry_version();
 				any_geometry_changed = true;
 			}
 			mi->set_transform(b->get_global_transform());
@@ -486,14 +490,16 @@ bool LevelEditorScreen::_update_outlines() {
 	}
 
 	// Prune version bookkeeping for dead brushes.
-	List<LevelBrush *> dead_versions;
-	for (KeyValue<LevelBrush *, uint64_t> &E : outline_versions) {
-		if (!live.has(E.key)) {
-			dead_versions.push_back(E.key);
+	for (int v = 0; v < 4; v++) {
+		List<LevelBrush *> dead_versions;
+		for (KeyValue<LevelBrush *, uint64_t> &E : outline_versions[v]) {
+			if (!live.has(E.key)) {
+				dead_versions.push_back(E.key);
+			}
 		}
-	}
-	for (LevelBrush *b : dead_versions) {
-		outline_versions.erase(b);
+		for (LevelBrush *b : dead_versions) {
+			outline_versions[v].erase(b);
+		}
 	}
 	return any_geometry_changed;
 }
@@ -1168,16 +1174,7 @@ real_t LevelEditorScreen::_rotate_world_radius(LevelEditorViewport *p_vp, const 
 
 // The only usable rotate axis per ortho view (-1 = all, perspective).
 int LevelEditorScreen::_rotate_allowed_axis(LevelEditorViewport::ViewType p_type) const {
-	switch (p_type) {
-		case LevelEditorViewport::VIEW_TOP:
-			return 1;
-		case LevelEditorViewport::VIEW_FRONT:
-			return 2;
-		case LevelEditorViewport::VIEW_SIDE:
-			return 0;
-		default:
-			return -1;
-	}
+	return LevelHelpers::ortho_view_axis((int)p_type);
 }
 
 int LevelEditorScreen::_pick_rotate_ring(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {

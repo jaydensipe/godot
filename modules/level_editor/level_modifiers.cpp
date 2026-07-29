@@ -693,8 +693,12 @@ void LevelBrush::move_vertices(const Vector<int> &p_vertices, const Vector3 &p_d
 	if (p_delta.is_zero_approx()) {
 		return;
 	}
+	// Validate all indices up front so a stale index can't half-apply the op
+	// (same rule as delete_faces).
 	for (int idx : p_vertices) {
 		ERR_FAIL_INDEX(idx, (int)verts.size());
+	}
+	for (int idx : p_vertices) {
 		verts[idx] += p_delta;
 	}
 	_notify_map_changed();
@@ -1099,7 +1103,7 @@ bool LevelBrush::subdivide_face(int p_face) {
 }
 
 int LevelBrush::bevel_edges(const Vector<EdgeKey> &p_edges, real_t p_distance) {
-	return bevel_edges_profiled(p_edges, p_distance, 0, 0.5);
+	return bevel_edges_profiled(p_edges, p_distance, 0, LevelBrushConstants::BEVEL_DEFAULT_SHAPE);
 }
 
 int LevelBrush::bevel_edges_profiled(const Vector<EdgeKey> &p_edges, real_t p_width, int p_steps, real_t p_shape) {

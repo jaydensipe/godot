@@ -1,0 +1,36 @@
+{
+  "rules": [
+    {
+      "tool": "Apply 2 edit(s) to file modules/level_editor/editor/gizmos/level_editor_gizmos.cpp?",
+      "action": "allow"
+    },
+    {
+      "tool": "Apply 1 edit(s) to file modules/level_editor/editor/gizmos/level_editor_gizmos.cpp?",
+      "action": "allow"
+    },
+    {
+      "tool": "Apply 1 edit(s) to file modules/level_editor/.ai/GOTCHAS.md?",
+      "action": "allow"
+    },
+    {
+      "tool": "Apply 2 edit(s) to file modules/level_editor/editor/tools/level_editor_tools.cpp?",
+      "action": "allow"
+    },
+    {
+      "tool": "Apply 1 edit(s) to file modules/level_editor/level_modifiers.cpp?",
+      "action": "allow"
+    },
+    {
+      "tool": "Apply 1 edit(s) to file modules/level_editor/tests/test_level_helpers.h?",
+      "action": "allow"
+    },
+    {
+      "tool": "Apply 4 edit(s) to file modules/level_editor/.ai/ROADMAP.md?",
+      "action": "allow"
+    },
+    {
+      "tool": "Apply 1 edit(s) to file modules/level_editor/.ai/AUDITS.md?",
+      "action": "allow"
+    }
+  ]
+}

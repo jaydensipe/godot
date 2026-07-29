@@ -31,6 +31,7 @@
 #include "level_editor_dock.h"
 
 #include "../level_editor_screen.h"
+#include "../../level_constants.h"
 
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
@@ -84,7 +85,7 @@ static Vector<LevelActionSetting> get_action_settings(LevelEditorScreen::ArmedAc
 				s.min = 0.0;
 				s.max = 1.0;
 				s.step = 0.05;
-				s.value = 0.5;
+				s.value = LevelBrushConstants::BEVEL_DEFAULT_SHAPE;
 				settings.push_back(s);
 			}
 		} break;

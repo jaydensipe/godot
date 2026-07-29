@@ -234,6 +234,29 @@ TEST_CASE("[LevelBrush] move_vertices only affects the given vertices") {
 	memdelete(brush);
 }
 
+TEST_CASE("[LevelBrush] move_vertices rejects the whole op on a stale index") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	Vector3 before[8];
+	for (int i = 0; i < 8; i++) {
+		before[i] = brush->get_vertex(i);
+	}
+
+	// One valid index followed by an out-of-bounds one: the up-front
+	// validation must fail the op BEFORE any vertex moves (no partial apply).
+	Vector<int> verts;
+	verts.push_back(6);
+	verts.push_back(999);
+	brush->move_vertices(verts, Vector3(1, 0, 0));
+	for (int i = 0; i < 8; i++) {
+		CHECK(brush->get_vertex(i).is_equal_approx(before[i]));
+	}
+
+	memdelete(brush);
+}
+
+
 TEST_CASE("[LevelBrush] ray_intersect hits the entry face") {
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));

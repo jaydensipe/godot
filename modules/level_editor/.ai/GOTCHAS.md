@@ -462,3 +462,20 @@ in ONE paint; this is repainting the EXPENSIVE overlay too OFTEN.
     (`vp->is_navigating()`: RMB freelook or ortho MMB pan) - hover results
     are stale the instant the camera moves, and the throttle is reset so the
     first hover afterwards re-picks.
+
+54. **Per-viewport resources need per-viewport dirty tracking.** The 3D brush
+    outlines keep one `ImmediateMesh` per brush PER VIEWPORT (in the
+    viewport's `outline_instances`), but the geometry-version bookkeeping
+    (`outline_versions`) was a single screen-level map shared by all four
+    panes. In `_update_outlines()` the per-viewport loop let viewport 0
+    rebuild its mesh on a version bump and write the new version into the
+    shared map - viewports 1/2/3 then read `built == version` and SKIPPED
+    rebuilding their own meshes, leaving a stale outline box in 3 of 4 panes
+    after any local-space vertex edit (rotate/scale/select-handle resize).
+    Move looked fine only because it changes the node transform (applied
+    per-frame via `mi->set_transform()` for all 4 panes) and never rebuilds
+    the mesh. FIX: `outline_versions` is now `outline_versions[4]` (indexed
+    by viewport) so each pane independently detects the change. RULE: when a
+    resource is duplicated per viewport (meshes, caches), its dirty/version
+    tracking must be per viewport too - a shared stamp always starves every
+    consumer after the first.

@@ -204,4 +204,15 @@ TEST_CASE("[LevelHelpers] aabb_from_points encloses all points") {
 	CHECK(empty.size.is_equal_approx(Vector3()));
 }
 
+TEST_CASE("[LevelHelpers] ortho_view_axis maps ortho views to world axes") {
+	// LevelEditorViewport::ViewType: PERSPECTIVE=0, TOP=1, FRONT=2, SIDE=3.
+	CHECK(LevelHelpers::ortho_view_axis(1) == 1); // TOP looks down +Y.
+	CHECK(LevelHelpers::ortho_view_axis(2) == 2); // FRONT looks down +Z.
+	CHECK(LevelHelpers::ortho_view_axis(3) == 0); // SIDE looks down +X.
+	CHECK(LevelHelpers::ortho_view_axis(0) == -1); // PERSPECTIVE: no fixed axis.
+	// Unknown values fall through to -1 (same as perspective).
+	CHECK(LevelHelpers::ortho_view_axis(99) == -1);
+}
+
+
 } // namespace TestLevelHelpers

@@ -714,7 +714,13 @@ private:
 	Ref<Material> outline_mat_selected; // Orange (mesh-target selection).
 	Ref<Material> outline_mat_highlight; // Light blue (element-target hover/selected brush).
 	Ref<Material> outline_mat_hover; // Thin white hover (mesh target).
-	HashMap<LevelBrush *, uint64_t> outline_versions; // Last-built geometry version per brush.
+	// Last-built geometry version per brush, PER VIEWPORT (indexed by viewport).
+	// Each viewport's outline instance owns a separate ImmediateMesh, so the
+	// version bookkeeping must be per-viewport too - a single shared map makes
+	// the first viewport to process a brush bump the recorded version and the
+	// other three viewports skip their own rebuild (stale outline in 3 of 4
+	// panes after rotate/scale/select-resize, which edit verts in local space).
+	HashMap<LevelBrush *, uint64_t> outline_versions[4];
 	bool outline_built = false;
 	void _ensure_outline_mats();
 	// Rebuild dirty brushes' line meshes + sync instances/materials with the

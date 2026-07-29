@@ -33,6 +33,7 @@
 // functions, split out of level_editor_screen.cpp for organization.
 
 #include "../level_editor_screen.h"
+#include "../../level_constants.h"
 
 #include "editor/editor_interface.h"
 #include "editor/editor_undo_redo_manager.h"
@@ -281,7 +282,7 @@ void LevelEditorScreen::_action_bevel_edges(bool p_quick) {
 		if (selection_target != TARGET_EDGE || armed_action != ACTION_NONE) {
 			return;
 		}
-		_bevel_edges_apply(grid_size, 0, 0.5);
+		_bevel_edges_apply(grid_size, 0, LevelBrushConstants::BEVEL_DEFAULT_SHAPE);
 		return;
 	}
 
@@ -295,7 +296,7 @@ void LevelEditorScreen::_action_bevel_edges(bool p_quick) {
 
 	const real_t width = get_armed_value(StringName("width"), grid_size);
 	const int steps = (int)get_armed_value(StringName("steps"), 0.0);
-	const real_t shape = get_armed_value(StringName("shape"), 0.5);
+	const real_t shape = get_armed_value(StringName("shape"), LevelBrushConstants::BEVEL_DEFAULT_SHAPE);
 	_bevel_edges_apply(width, steps, shape);
 }
 

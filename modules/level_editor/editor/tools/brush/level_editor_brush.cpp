@@ -86,20 +86,7 @@ bool LevelEditorScreen::_box_handle_usable(LevelEditorViewport *p_vp, int p_hand
 		return false;
 	}
 	// View axis of this ortho view (-1 for perspective).
-	int view_axis = -1;
-	switch (p_vp->get_view_type()) {
-		case LevelEditorViewport::VIEW_TOP:
-			view_axis = 1;
-			break;
-		case LevelEditorViewport::VIEW_FRONT:
-			view_axis = 2;
-			break;
-		case LevelEditorViewport::VIEW_SIDE:
-			view_axis = 0;
-			break;
-		default:
-			break;
-	}
+	const int view_axis = LevelHelpers::ortho_view_axis((int)p_vp->get_view_type());
 	if (p_handle < GHOST_CORNER_0 && view_axis >= 0) {
 		const int axis = (p_handle - GHOST_FACE_XN) / 2;
 		if (axis == view_axis) {

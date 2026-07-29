@@ -48,10 +48,10 @@ inline constexpr real_t PARALLEL_DOT = 0.999;
 // is still considered a chain (e.g. a clipped-sphere ring turns ~22.5 deg per
 // step, a box corner turns 90 deg and stops the walk).
 inline constexpr real_t CHAIN_MIN_DOT = 0.5;
-// Winding side-test ambiguity threshold (fraction of the loop-normal length):
-// below this the centroid lies ~in the wall plane and the bisector fallback
-// decides (extrude_edge/extrude_vertex; GOTCHAS #30).
-inline constexpr real_t WINDING_SIDE_EPS = 0.001;
+// Default bevel profile shape (0..1): 0.5 = quadratic-Bezier round-over.
+// Single source for the dock descriptor default and the screen's quick-bevel
+// / armed fallback (was duplicated as a bare 0.5 in three places).
+inline constexpr real_t BEVEL_DEFAULT_SHAPE = 0.5;
 // Bevel mitre: minimum sine of the angle between an edge pair before the
 // corner is rejected as nearly parallel (level_modifiers bevel).
 inline constexpr real_t BEVEL_MITRE_MIN_SIN = 0.05;

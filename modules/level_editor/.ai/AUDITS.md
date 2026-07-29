@@ -6,6 +6,57 @@ Completed audit passes, kept for history. For CURRENT open items see
 ROADMAP.md. New audits: append a dated section at the bottom and move
 still-open items into ROADMAP.md.
 
+## Audit (2026-07, pass 5) - targeted deferred-smell sweep
+
+Scope: the small, safe, non-churn items from ROADMAP "Deferred smells".
+The big refactors (clip/mirror ~250-line state-machine merge, ctor /
+`_gizmo_begin_drag` / `_selection_input` splits, `bevel_edges_profiled`
+split) were deliberately LEFT - the roadmap marks those "only when next
+editing them"; doing them cold is regression risk with no behavior win.
+Also fixed the stale-outline bug separately this session (GOTCHAS #54:
+per-viewport `outline_versions`).
+
+Bugs fixed:
+
+- Stale 3D brush outline in 3 of 4 viewports after rotate/scale/
+  select-handle resize: `outline_versions` (the per-brush geometry-version
+  stamp that gates outline-mesh rebuilds) was a single map shared across
+  all four viewports, but each viewport owns a SEPARATE `ImmediateMesh`.
+  Viewport 0 rebuilt on a version bump and bumped the shared stamp, so
+  viewports 1/2/3 read `built == version` and skipped their own rebuild.
+  Move looked fine only because it changes the node transform (applied
+  per-frame for all 4 panes) and never rebuilds the mesh. Fix:
+  `outline_versions` is now `outline_versions[4]` (per viewport).
+- `move_vertices` validated each index mid-loop - a stale index half-
+  applied the delta. Now validates all indices up front (same rule
+  `delete_faces` got in pass 4). Regression test added.
+
+Dead code removed:
+
+- `LevelBrushConstants::WINDING_SIDE_EPS` - unused since the GOTCHAS #30
+  two-phase-winding fix removed the centroid/bisector winding rule it
+  fed. Only docs referenced it.
+
+Helpers/constants added:
+
+- `LevelHelpers::ortho_view_axis(int view_type)` -> world axis the ortho
+  view looks down (TOP=Y, FRONT=Z, SIDE=X, perspective/unknown=-1).
+  Replaced the identical switch in `_box_handle_usable` and
+  `_rotate_allowed_axis`. Takes the view type as an int so level_helpers.h
+  stays free of the screen class (no circular include).
+- `LevelBrushConstants::BEVEL_DEFAULT_SHAPE` (0.5) - the bevel profile
+  default was a bare `0.5` in four places (dock descriptor, quick-bevel,
+  armed fallback, `bevel_edges`). Now one constant; all four sites use it.
+  (`level_editor_dock.cpp` and `level_editor_tools.cpp` needed an explicit
+  `level_constants.h` include - it wasn't transitively reachable.)
+
+Tests added: `ortho_view_axis` mapping (test_level_helpers.h);
+`move_vertices` stale-index whole-op rejection (test_level_brush.h).
+
+Verified-already-done (removed from ROADMAP): the level_modifiers.cpp
+`newell_normal` duplication no longer exists - all sites call
+`LevelBrush::get_face_normal`.
+
 ## Audit (2026-07, pass 4) - multi-agent module sweep
 
 Bugs fixed:

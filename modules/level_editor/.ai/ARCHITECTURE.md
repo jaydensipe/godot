@@ -313,7 +313,9 @@ HashSet<...>>` sets (cross-brush selection). `_set_target` clears
 
 - `level_helpers.h` (`LevelHelpers` namespace): `aabb_corners()`,
   `AABB_EDGE_IDX`, `AABB_FACE_DIRS`, `aabb_face_center()` - all box
-  drawing/picking uses these.
+  drawing/picking uses these. `ortho_view_axis(view_type)` maps an ortho
+  view to the world axis it looks down (TOP=Y, FRONT=Z, SIDE=X,
+  perspective/unknown=-1) - the one place that mapping lives.
 - `level_constants.h` (`LevelEditorColors`): all overlay colors + `hot(color)`
   (50% white lerp for hover/drag states). (`LevelEditorGrid`): grid `STEPS`/
   `STEP_COUNT` ladder + `GRID_3D_EXTENT`/`GRID_3D_REBUILD_DIST` for the

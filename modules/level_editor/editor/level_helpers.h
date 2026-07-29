@@ -40,6 +40,25 @@
 // drag feedback). Corner indexing is a bitmask: x|y|z (bit 0/1/2).
 namespace LevelHelpers {
 
+// The world axis an ortho view looks down (TOP=+Y, FRONT=+Z, SIDE=+X),
+// or -1 for the perspective view. Takes the LevelEditorViewport::ViewType
+// as an int so this header stays free of the screen class (PERSPECTIVE=0,
+// TOP=1, FRONT=2, SIDE=3). Shared by box handles, the rotate gizmo, dim
+// labels, and the drag AABB - the switch used to live in 5 places.
+inline int ortho_view_axis(int p_view_type) {
+	switch (p_view_type) {
+		case 1: // VIEW_TOP
+			return 1;
+		case 2: // VIEW_FRONT
+			return 2;
+		case 3: // VIEW_SIDE
+			return 0;
+		default: // VIEW_PERSPECTIVE
+			return -1;
+	}
+}
+
+
 inline void aabb_corners(const AABB &p_aabb, Vector3 r_corners[8]) {
 	const Vector3 c = p_aabb.get_center();
 	const Vector3 hs = p_aabb.size * 0.5;

@@ -39,7 +39,8 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
   winding flips it) - the Quad brush type's commit path
 - vertex/face accessors round-trip; `is_valid` negative (empty) and minimal
   (single quad) cases
-- `move_vertices` isolation (only the moved vertex changes; incident faces tilt)
+- `move_vertices` isolation (only the moved vertex changes; incident faces tilt);
+  stale-index rejection (one bad index fails the whole op, no partial apply)
 - `ray_intersect` (entry face, distance, miss)
 - `extrude_face` (cap + side walls, counts)
 - `extrude_edge` (edge dup + one wall per using face, winding verified
@@ -117,7 +118,8 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
   entry, parallel-outside + slab-non-overlap + degenerate rejection)
 - `aabb_corners` (x|y|z bitmask layout), `AABB_EDGE_IDX` (unit edges, every
   corner in exactly 3 edges), `aabb_face_center`/`AABB_FACE_DIRS` (opposite
-  pairs), `aabb_from_points` (enclosure + empty-input behavior)
+  pairs), `aabb_from_points` (enclosure + empty-input behavior),
+  `ortho_view_axis` (TOP/FRONT/SIDE map to Y/Z/X, perspective + unknown -> -1)
 
 **`test_level_map.h`** — tagged `[SceneTree]` (needs the test harness's
 physics server for `StaticBody3D` construction — untagged cases crash):
@@ -146,8 +148,8 @@ physics server for `StaticBody3D` construction — untagged cases crash):
   INDICES after these ops - compaction reuses indices; compare positions.
 - Geometry tolerances live in `LevelBrushConstants` (level_constants.h,
   module root): `PLANE_EPSILON` 0.0005, `WELD_DIST` = 4x that,
-  `PARALLEL_DOT` 0.999, `WINDING_SIDE_EPS` 0.001, `BEVEL_MITRE_MIN_SIN`
-  0.05, `BAKE_UV_SCALE` 0.25.
+  `PARALLEL_DOT` 0.999, `CHAIN_MIN_DOT` 0.5, `BEVEL_DEFAULT_SHAPE` 0.5,
+  `BEVEL_MITRE_MIN_SIN` 0.05, `BAKE_UV_SCALE` 0.25.
 - `LevelMap::bake()` falls back to local transforms when detached from the
   tree, but in `[SceneTree]` tests the map/brushes are in-tree and use
   globals — write assertions accordingly.

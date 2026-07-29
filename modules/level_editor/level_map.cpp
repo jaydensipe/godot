@@ -134,6 +134,11 @@ void LevelMap::_notification(int p_what) {
 				preview_mesh_instance->queue_free();
 				preview_mesh_instance = nullptr;
 			}
+			// Clear stale bookkeeping so a fresh scene doesn't reuse old
+			// surface indices (GOTCHA: stale arrays survive scene change).
+			brush_cache.clear();
+			preview_surface_brush.clear();
+			preview_surface_idx.clear();
 		} break;
 		case NOTIFICATION_PROCESS: {
 			if (preview_dirty) {
@@ -241,7 +246,8 @@ void LevelMap::_update_preview() {
 
 	Ref<ArrayMesh> mesh = preview_mesh_instance->get_mesh();
 	const bool structure_changed = any_dirty || dead.size() > 0 || mesh.is_null() ||
-			(int)preview_surface_brush.size() != mesh->get_surface_count();
+			(int)preview_surface_brush.size() != mesh->get_surface_count() ||
+			(!mesh.is_null() && mesh->get_surface_count() == 0 && any_dirty);
 
 	if (!structure_changed && mesh.is_valid()) {
 		return; // Nothing to do.
