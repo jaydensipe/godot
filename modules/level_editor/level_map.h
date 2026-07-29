@@ -49,7 +49,29 @@ class LevelMap : public Node3D {
 	MeshInstance3D *preview_mesh_instance = nullptr;
 	bool preview_dirty = false;
 
+	// Per-brush bake cache: tessellated surface arrays in MAP-LOCAL space,
+	// grouped per material (one preview surface per brush per material).
+	// Only brushes marked dirty re-tessellate on a preview rebuild; clean
+	// brushes reuse their cached arrays, and only dirty brushes' surfaces
+	// are re-uploaded to the GPU (surface_remove + re-add).
+	struct BrushCache {
+		struct SurfaceData {
+			Ref<Material> material;
+			PackedVector3Array verts;
+			PackedVector3Array normals;
+			PackedVector2Array uvs;
+		};
+		LocalVector<SurfaceData> surfaces;
+		bool dirty = true;
+	};
+	HashMap<LevelBrush *, BrushCache> brush_cache;
+	// Preview surface bookkeeping: flat list of (brush, cache surface idx) in
+	// mesh surface order, so a dirty brush can replace just its own surfaces.
+	LocalVector<LevelBrush *> preview_surface_brush;
+	LocalVector<int> preview_surface_idx;
+
 	void _update_preview();
+	void _rebuild_brush_cache(LevelBrush *p_brush, BrushCache &r_cache) const;
 
 	Ref<Material> _get_face_material_or_default(LevelBrush *p_brush, int p_face) const;
 
@@ -65,6 +87,9 @@ public:
 	Ref<Material> get_default_material() const;
 
 	void refresh();
+	// Mark one brush's cache dirty (called by the brush on any geometry/
+	// topology/material/transform change) and schedule a preview rebuild.
+	void notify_brush_changed(LevelBrush *p_brush);
 
 	// Bake everything into a fresh node hierarchy rooted at a new
 	// MeshInstance3D (name "<LevelMap name>_Baked"), containing:

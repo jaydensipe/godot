@@ -37,7 +37,6 @@
 #include "../level_editor_screen.h"
 #include "../level_helpers.h"
 
-#include "core/math/geometry_2d.h"
 #include "core/math/geometry_3d.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_undo_redo_manager.h"
@@ -45,8 +44,6 @@
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/surface_tool.h"
-
-using LevelEditorColors::GIZMO_PLANE_EXTENT;
 
 // ---- Shared gizmo geometry --------------------------------------------------
 
@@ -57,36 +54,7 @@ static const real_t GIZMO_AXIS_LEN = 64.0;
 // Plane-handle axis pairs; GizmoPart = GIZMO_XY + index.
 static const int GIZMO_PLANE_AXES[3][2] = { { 0, 1 }, { 0, 2 }, { 1, 2 } };
 
-// Screen-space axis endpoints for the gizmo at p_origin: each axis projects
-// to GIZMO_AXIS_LEN pixels. ORTHO VIEWS ONLY - the perspective view uses the
-// 3D gizmo (real geometry, foreshortens correctly). Axis directions come from
-// the camera ray AT the origin (ortho rays are parallel to the camera
-// forward, so the direction is exact and stable at any angle).
-static bool compute_gizmo_axes(Camera3D *p_camera, const Vector3 &p_origin, Vector2 &r_origin_2d, Vector2 r_axis_end[3], bool r_axis_ok[3]) {
-	if (p_camera->is_position_behind(p_origin)) {
-		return false;
-	}
-	r_origin_2d = p_camera->unproject_position(p_origin);
-	static const Vector3 AXES[3] = { Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(0, 0, 1) };
-	const real_t axis_len = GIZMO_AXIS_LEN * EDSCALE;
-	const Vector3 ray_dir = -p_camera->get_global_transform().basis[2].normalized();
-	for (int i = 0; i < 3; i++) {
-		r_axis_ok[i] = false;
-		const Vector3 far_point = p_origin + ray_dir + AXES[i];
-		if (p_camera->is_position_behind(far_point)) {
-			continue;
-		}
-		const Vector2 delta = p_camera->unproject_position(far_point) - r_origin_2d;
-		if (delta.length_squared() < 1e-6) {
-			continue; // Axis exactly along the view direction: no 2D handle.
-		}
-		r_axis_end[i] = r_origin_2d + delta.normalized() * axis_len;
-		r_axis_ok[i] = true;
-	}
-	return true;
-}
-
-// ---- Perspective-view 3D gizmo (Godot 3D-editor style) ----------------------
+// ---- 3D gizmo (Godot 3D-editor style) ---------------------------------------
 // Real geometry rendered with no-depth-test materials. A view-parallel axis
 // foreshortens into a small blob (correct) instead of warping (2D projection)
 // or popping in/out (angle cutoffs). Sizes are the gizmo's world-unit
@@ -97,8 +65,8 @@ static const real_t AXIS_LEN = 1.0;
 static const real_t SHAFT_RADIUS = 0.03;
 static const real_t HEAD_LEN = 0.22;
 static const real_t HEAD_RADIUS = 0.09;
-static const real_t PLANE_EXTENT = 0.45; // Handle offset along each axis.
-static const real_t PLANE_SIZE = 0.22;
+static const real_t PLANE_EXTENT = 0.4; // Handle offset along each axis.
+static const real_t PLANE_SIZE = 0.28;
 static const real_t CENTER_SIZE = 0.12;
 static const real_t TIP_CUBE_SIZE = 0.14; // Scale-tool tip (Godot's scale gizmo look).
 // Pick radii (world units at scale 1) - generous like the 3D editor's sphere
@@ -204,8 +172,14 @@ static Ref<ArrayMesh> _build_gizmo_scale_mesh() {
 	// 6 faces, 2 triangles each, outward winding (material is cull-disabled
 	// anyway).
 	const Vector3 c[8] = {
-		Vector3(-h, cy - h, -h), Vector3(h, cy - h, -h), Vector3(h, cy - h, h), Vector3(-h, cy - h, h),
-		Vector3(-h, cy + h, -h), Vector3(h, cy + h, -h), Vector3(h, cy + h, h), Vector3(-h, cy + h, h),
+		Vector3(-h, cy - h, -h),
+		Vector3(h, cy - h, -h),
+		Vector3(h, cy - h, h),
+		Vector3(-h, cy - h, h),
+		Vector3(-h, cy + h, -h),
+		Vector3(h, cy + h, -h),
+		Vector3(h, cy + h, h),
+		Vector3(-h, cy + h, h),
 	};
 	static const int FACES[6][4] = {
 		{ 0, 1, 2, 3 }, // -Y
@@ -227,20 +201,21 @@ static Ref<ArrayMesh> _build_gizmo_scale_mesh() {
 	return mesh;
 }
 
-// Double-sided handle quad in the XZ plane, offset +extent on both axes
-// (matches the 2D overlay's plane-handle placement).
-static Ref<ArrayMesh> _build_gizmo_plane_mesh() {
+// Handle quad in the positive quadrant of the p_a0/p_a1 axis pair - same
+// placement as _pick_gizmo's quad, so pick and draw always agree.
+static Ref<ArrayMesh> _build_gizmo_plane_mesh(int p_a0, int p_a1) {
 	using namespace LevelGizmo3D;
 	const real_t e = PLANE_EXTENT;
 	const real_t s = PLANE_SIZE;
+	static const Vector3 AXES[3] = { Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(0, 0, 1) };
 	Ref<SurfaceTool> st;
 	st.instantiate();
 	st->begin(Mesh::PRIMITIVE_TRIANGLES);
 	const Vector3 quad[4] = {
-		Vector3(e, 0, e),
-		Vector3(e + s, 0, e),
-		Vector3(e + s, 0, e + s),
-		Vector3(e, 0, e + s),
+		AXES[p_a0] * e + AXES[p_a1] * e,
+		AXES[p_a0] * (e + s) + AXES[p_a1] * e,
+		AXES[p_a0] * (e + s) + AXES[p_a1] * (e + s),
+		AXES[p_a0] * e + AXES[p_a1] * (e + s),
 	};
 	// Both windings (drawn double-sided anyway via CULL_DISABLED, but keep the
 	// mesh valid for any material).
@@ -271,30 +246,19 @@ static Ref<StandardMaterial3D> _make_gizmo_material(const Color &p_color) {
 	return mat;
 }
 
-void LevelEditorScreen::_ensure_gizmo_3d() {
-	if (gizmo_3d_root) {
-		return;
-	}
+// One gizmo node tree: axes + plane handles + center cube. One per viewport,
+// living in the viewport's gizmo overlay SubViewport (own World3D, immune to
+// the scene viewport's debug draw modes); all share meshes/materials.
+void LevelEditorScreen::_build_gizmo_instance(Gizmo3DInstance &r_inst) {
 	using namespace LevelGizmo3D;
-	gizmo_3d_root = memnew(Node3D);
-	gizmo_3d_root->set_name("LevelGizmo3D");
-
-	const Color axis_col[3] = { LevelEditorColors::GIZMO_AXIS_X, LevelEditorColors::GIZMO_AXIS_Y, LevelEditorColors::GIZMO_AXIS_Z };
-	gizmo_3d_arrow_mesh = _build_gizmo_arrow_mesh();
-	gizmo_3d_scale_mesh = _build_gizmo_scale_mesh();
-	Ref<ArrayMesh> plane = _build_gizmo_plane_mesh();
-
-	// Arrow meshes point down +Y; rotate into each axis. Plane mesh lies in XZ
-	// (the Y-normal handle); GIZMO_PLANE_AXES maps handle index -> axis pair.
+	r_inst.root = memnew(Node3D);
 	for (int i = 0; i < 3; i++) {
-		gizmo_3d_axis_mat[i] = _make_gizmo_material(axis_col[i]);
-		gizmo_3d_axis_mat_hot[i] = _make_gizmo_material(LevelEditorColors::hot(axis_col[i]));
-
-		gizmo_3d_axes[i] = memnew(MeshInstance3D);
-		gizmo_3d_axes[i]->set_mesh(gizmo_3d_arrow_mesh);
-		gizmo_3d_axes[i]->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
-		gizmo_3d_axes[i]->set_surface_override_material(0, gizmo_3d_axis_mat[i]);
-		gizmo_3d_axes[i]->set_surface_override_material(1, gizmo_3d_axis_mat[i]); // Cube-tip surface (scale mesh).
+		MeshInstance3D *axis = memnew(MeshInstance3D);
+		axis->set_mesh(gizmo_3d_arrow_mesh);
+		axis->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+		axis->set_surface_override_material(0, gizmo_3d_axis_mat[i]);
+		// NB: surface 1 (the scale mesh's cube tip) only exists while the scale
+		// mesh is active - its override is set in _update_gizmo_3d on swap.
 		Basis b;
 		switch (i) {
 			case 0:
@@ -306,48 +270,59 @@ void LevelEditorScreen::_ensure_gizmo_3d() {
 			default:
 				break;
 		}
-		gizmo_3d_axes[i]->set_transform(Transform3D(b, Vector3()));
-		gizmo_3d_root->add_child(gizmo_3d_axes[i]);
+		axis->set_transform(Transform3D(b, Vector3()));
+		r_inst.root->add_child(axis);
+		r_inst.axes[i] = axis;
 
-		// Plane handle for axis PAIR i (XY, XZ, YZ). The mesh sits in the XZ
-		// plane (normal +Y); orient its normal along the missing axis.
-		Color pc = axis_col[GIZMO_PLANE_AXES[i][0]].lerp(axis_col[GIZMO_PLANE_AXES[i][1]], 0.5);
-		pc.a = 0.35;
-		gizmo_3d_plane_mat[i] = _make_gizmo_material(pc);
-		Color pc_hot = pc;
-		pc_hot.a = 0.6;
-		gizmo_3d_plane_mat_hot[i] = _make_gizmo_material(pc_hot);
-
-		gizmo_3d_planes[i] = memnew(MeshInstance3D);
-		gizmo_3d_planes[i]->set_mesh(plane);
-		gizmo_3d_planes[i]->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
-		gizmo_3d_planes[i]->set_surface_override_material(0, gizmo_3d_plane_mat[i]);
-		Basis pb;
-		switch (i) {
-			case 0:
-				pb.rotate(Vector3(1, 0, 0), Math::PI / 2.0); // XZ plane -> XY plane (normal +Y -> +Z)
-				break;
-			case 2:
-				pb.rotate(Vector3(0, 0, 1), -Math::PI / 2.0); // XZ plane -> YZ plane (normal +Y -> +X)
-				break;
-			default:
-				break; // case 1: XZ stays (normal +Y).
-		}
-		gizmo_3d_planes[i]->set_transform(Transform3D(pb, Vector3()));
-		gizmo_3d_root->add_child(gizmo_3d_planes[i]);
+		MeshInstance3D *plane = memnew(MeshInstance3D);
+		plane->set_mesh(gizmo_3d_plane_mesh[i]); // Built per-pair, already placed.
+		plane->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+		plane->set_surface_override_material(0, gizmo_3d_plane_mat[i]);
+		r_inst.root->add_child(plane);
+		r_inst.planes[i] = plane;
 	}
 
 	Ref<BoxMesh> center_box;
 	center_box.instantiate();
 	center_box->set_size(Vector3(CENTER_SIZE, CENTER_SIZE, CENTER_SIZE));
-	gizmo_3d_center_mat = _make_gizmo_material(LevelEditorColors::GIZMO_CENTER);
-	gizmo_3d_center = memnew(MeshInstance3D);
-	gizmo_3d_center->set_mesh(center_box);
-	gizmo_3d_center->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
-	gizmo_3d_center->set_surface_override_material(0, gizmo_3d_center_mat);
-	gizmo_3d_root->add_child(gizmo_3d_center);
+	MeshInstance3D *center = memnew(MeshInstance3D);
+	center->set_mesh(center_box);
+	center->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+	center->set_surface_override_material(0, gizmo_3d_center_mat);
+	r_inst.root->add_child(center);
+	r_inst.center = center;
+}
 
-	gizmo_3d_root->set_visible(false);
+void LevelEditorScreen::_ensure_gizmo_3d() {
+	if (gizmo_3d_built) {
+		return;
+	}
+	gizmo_3d_built = true;
+
+	const Color axis_col[3] = { LevelEditorColors::GIZMO_AXIS_X, LevelEditorColors::GIZMO_AXIS_Y, LevelEditorColors::GIZMO_AXIS_Z };
+	gizmo_3d_arrow_mesh = _build_gizmo_arrow_mesh();
+	gizmo_3d_scale_mesh = _build_gizmo_scale_mesh();
+	for (int i = 0; i < 3; i++) {
+		gizmo_3d_plane_mesh[i] = _build_gizmo_plane_mesh(GIZMO_PLANE_AXES[i][0], GIZMO_PLANE_AXES[i][1]);
+	}
+
+	for (int i = 0; i < 3; i++) {
+		gizmo_3d_axis_mat[i] = _make_gizmo_material(axis_col[i]);
+		gizmo_3d_axis_mat_hot[i] = _make_gizmo_material(LevelEditorColors::hot(axis_col[i]));
+		Color pc = axis_col[GIZMO_PLANE_AXES[i][0]].lerp(axis_col[GIZMO_PLANE_AXES[i][1]], 0.5);
+		pc.a = 0.8;
+		gizmo_3d_plane_mat[i] = _make_gizmo_material(pc);
+		Color pc_hot = LevelEditorColors::hot(pc);
+		pc_hot.a = 0.95;
+		gizmo_3d_plane_mat_hot[i] = _make_gizmo_material(pc_hot);
+	}
+	gizmo_3d_center_mat = _make_gizmo_material(LevelEditorColors::GIZMO_CENTER);
+
+	for (int v = 0; v < 4; v++) {
+		_build_gizmo_instance(gizmo_3d[v]);
+		gizmo_3d[v].root->set_visible(false);
+		viewports[v]->set_gizmo_root(gizmo_3d[v].root);
+	}
 }
 
 // World scale that makes the gizmo read at ~GIZMO_AXIS_LEN pixels on screen
@@ -365,49 +340,206 @@ real_t LevelEditorScreen::_gizmo_3d_world_scale(LevelEditorViewport *p_vp, const
 	return (GIZMO_AXIS_LEN * EDSCALE) / dd;
 }
 
+// ---- 3D brush outlines ------------------------------------------------------
+// One line mesh per brush per viewport in the gizmo overlay world (no depth
+// test, debug-draw-immune). Rebuilt ONLY when the brush's geometry version
+// changes - the old 2D overlay re-projected every edge of every brush every
+// frame (the interactive-drag hotspot). Open edges are pre-dashed into the
+// mesh; selection/hover is a per-instance material swap.
+
+void LevelEditorScreen::_ensure_outline_mats() {
+	if (outline_built) {
+		return;
+	}
+	outline_built = true;
+	auto make = [](const Color &p_color) {
+		Ref<StandardMaterial3D> mat;
+		mat.instantiate();
+		mat->set_shading_mode(StandardMaterial3D::SHADING_MODE_UNSHADED);
+		mat->set_flag(StandardMaterial3D::FLAG_DISABLE_DEPTH_TEST, true);
+		mat->set_flag(StandardMaterial3D::FLAG_DISABLE_FOG, true);
+		mat->set_albedo(p_color);
+		if (p_color.a < 1.0) {
+			mat->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+		}
+		return mat;
+	};
+	outline_mat = make(LevelEditorColors::BRUSH_OUTLINE);
+	outline_mat_selected = make(LevelEditorColors::BRUSH_OUTLINE_SELECTED);
+	outline_mat_highlight = make(LevelEditorColors::HOVER_BRUSH_OUTLINE);
+	outline_mat_hover = make(LevelEditorColors::BRUSH_OUTLINE_HOVER);
+}
+
+// Tessellates in BRUSH-LOCAL space; the instance carries the brush's global
+// transform, so moving a brush costs zero rebuilds (only geometry edits do).
+void LevelEditorScreen::_rebuild_outline_mesh(LevelBrush *p_brush, ImmediateMesh *r_mesh) const {
+	const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &edges = p_brush->get_edges();
+	const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &open_edges = p_brush->get_open_edges();
+
+	r_mesh->clear_surfaces();
+	r_mesh->surface_begin(Mesh::PRIMITIVE_LINES);
+	for (const LevelBrush::EdgeKey &e : edges) {
+		const Vector3 a = p_brush->get_vertex(e.a);
+		const Vector3 b = p_brush->get_vertex(e.b);
+		if (!open_edges.has(e)) {
+			r_mesh->surface_add_vertex(a);
+			r_mesh->surface_add_vertex(b);
+			continue;
+		}
+		// Open edge: pre-dash into segments (6px at EDSCALE 1, in world units
+		// approximated from the brush scale - dashes are cosmetic).
+		const real_t dash = 0.125; // ~Hammer grid dash; cosmetic only.
+		const real_t len = a.distance_to(b);
+		if (len < dash * 1.5) {
+			r_mesh->surface_add_vertex(a);
+			r_mesh->surface_add_vertex(b);
+			continue;
+		}
+		const int dashes = MAX(1, (int)Math::floor(len / (dash * 2.0)));
+		for (int d = 0; d < dashes; d++) {
+			const real_t t0 = (real_t)d / dashes;
+			const real_t t1 = t0 + 0.5 / dashes;
+			r_mesh->surface_add_vertex(a.lerp(b, t0));
+			r_mesh->surface_add_vertex(a.lerp(b, t1));
+		}
+	}
+	r_mesh->surface_end();
+}
+
+bool LevelEditorScreen::_update_outlines() {
+	_ensure_outline_mats();
+	if (!current_map) {
+		return false;
+	}
+	bool any_geometry_changed = false;
+
+	Vector<LevelBrush *> brushes = current_map->get_brushes();
+	HashSet<LevelBrush *> live;
+	for (LevelBrush *b : brushes) {
+		live.insert(b);
+	}
+
+	// Per viewport: sync instances with the brush set, rebuild dirty meshes,
+	// and apply the selection/hover material.
+	for (int v = 0; v < 4; v++) {
+		HashMap<LevelBrush *, MeshInstance3D *> &inst = viewports[v]->get_outline_instances();
+
+		// Prune instances for brushes that left the map.
+		List<LevelBrush *> dead;
+		for (KeyValue<LevelBrush *, MeshInstance3D *> &E : inst) {
+			if (!live.has(E.key)) {
+				dead.push_back(E.key);
+			}
+		}
+		for (LevelBrush *b : dead) {
+			inst[b]->queue_free();
+			inst.erase(b);
+		}
+
+		for (LevelBrush *b : brushes) {
+			MeshInstance3D *mi = inst.getptr(b) ? inst[b] : nullptr;
+			if (!mi) {
+				mi = memnew(MeshInstance3D);
+				mi->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
+				Ref<ImmediateMesh> mesh;
+				mesh.instantiate();
+				mi->set_mesh(mesh);
+				viewports[v]->get_gizmo_subviewport()->add_child(mi);
+				inst[b] = mi;
+				outline_versions.erase(b); // Force a build below.
+			}
+
+			// Rebuild the line mesh only when the brush geometry changed; the
+			// transform is applied per frame (moves don't trigger rebuilds).
+			const uint64_t built = outline_versions.has(b) ? outline_versions[b] : UINT64_MAX;
+			if (built != b->get_geometry_version()) {
+				ImmediateMesh *mesh = Object::cast_to<ImmediateMesh>(mi->get_mesh().ptr());
+				if (mesh) {
+					_rebuild_outline_mesh(b, mesh);
+				}
+				outline_versions[b] = b->get_geometry_version();
+				any_geometry_changed = true;
+			}
+			mi->set_transform(b->get_global_transform());
+
+			// Material from selection/hover state (same rules as the old 2D
+			// overlay). Skip redundant re-assignments - set_material_override
+			// touches the renderer even for the same RID.
+			Ref<Material> mat = outline_mat;
+			if (_is_element_target()) {
+				// Light blue for hovered brush or any brush with selected elements.
+				bool highlighted = (b == hover_brush) || selected_faces.has(b) || selected_edges.has(b) || selected_vertices.has(b);
+				if (highlighted) {
+					mat = outline_mat_highlight;
+				}
+			} else {
+				if (_mesh_selection_has(b)) {
+					mat = outline_mat_selected;
+				} else if (b == hover_brush && !_is_drawing_tool()) {
+					mat = outline_mat_hover;
+				}
+			}
+			if (mi->get_material_override() != mat) {
+				mi->set_material_override(mat);
+			}
+		}
+	}
+
+	// Prune version bookkeeping for dead brushes.
+	List<LevelBrush *> dead_versions;
+	for (KeyValue<LevelBrush *, uint64_t> &E : outline_versions) {
+		if (!live.has(E.key)) {
+			dead_versions.push_back(E.key);
+		}
+	}
+	for (LevelBrush *b : dead_versions) {
+		outline_versions.erase(b);
+	}
+	return any_geometry_changed;
+}
+
 void LevelEditorScreen::_update_gizmo_3d() {
 	_ensure_gizmo_3d();
 
-	// Find the active perspective viewport (there is exactly one in the quad
-	// layout, but don't assume the index).
-	LevelEditorViewport *persp = nullptr;
-	for (int i = 0; i < 4; i++) {
-		if (viewports[i]->get_view_type() == LevelEditorViewport::VIEW_PERSPECTIVE) {
-			persp = viewports[i];
-			break;
+	const bool want_visible = !_is_drawing_tool() && tool != TOOL_SELECT && tool != TOOL_ROTATE && _has_selection();
+	const Vector3 origin = want_visible ? _get_gizmo_origin() : Vector3();
+
+	// Highlight from hover/drag (material swap, Godot-style) and cube tips in
+	// the Scale tool. Materials/meshes are shared by all four instances, so
+	// update them once via instance 0's nodes.
+	if (want_visible) {
+		const Ref<ArrayMesh> &tip_mesh = (tool == TOOL_SCALE) ? gizmo_3d_scale_mesh : gizmo_3d_arrow_mesh;
+		for (int i = 0; i < 3; i++) {
+			if (gizmo_3d[0].axes[i]->get_mesh() != tip_mesh) {
+				for (int v = 0; v < 4; v++) {
+					gizmo_3d[v].axes[i]->set_mesh(tip_mesh);
+				}
+			}
+			const bool axis_active = (gizmo_hover == (GizmoPart)i || gizmo_drag_part == (GizmoPart)i);
+			const Ref<Material> &am = axis_active ? gizmo_3d_axis_mat_hot[i] : gizmo_3d_axis_mat[i];
+			const bool plane_active = (gizmo_hover == (GizmoPart)(GIZMO_XY + i) || gizmo_drag_part == (GizmoPart)(GIZMO_XY + i));
+			const Ref<Material> &pm = plane_active ? gizmo_3d_plane_mat_hot[i] : gizmo_3d_plane_mat[i];
+			for (int v = 0; v < 4; v++) {
+				gizmo_3d[v].axes[i]->set_surface_override_material(0, am);
+				if (tool == TOOL_SCALE) {
+					// Scale mesh has a second surface (cube tip).
+					gizmo_3d[v].axes[i]->set_surface_override_material(1, am);
+				}
+				gizmo_3d[v].planes[i]->set_surface_override_material(0, pm);
+			}
 		}
 	}
 
-	const bool want_visible = persp && !_is_drawing_tool() && tool != TOOL_SELECT && tool != TOOL_ROTATE && _has_selection();
-	if (!want_visible) {
-		gizmo_3d_root->set_visible(false);
-		return;
-	}
-
-	if (gizmo_3d_root->get_parent() != persp->get_subviewport()) {
-		if (gizmo_3d_root->get_parent()) {
-			gizmo_3d_root->get_parent()->remove_child(gizmo_3d_root);
+	// Per viewport: transform + visibility (screen-size compensation is per
+	// camera, and ortho views get the 3D gizmo too).
+	for (int v = 0; v < 4; v++) {
+		if (!want_visible) {
+			gizmo_3d[v].root->set_visible(false);
+			continue;
 		}
-		persp->get_subviewport()->add_child(gizmo_3d_root);
-	}
-
-	const Vector3 origin = _get_gizmo_origin();
-	const real_t s = _gizmo_3d_world_scale(persp, origin);
-	gizmo_3d_root->set_transform(Transform3D(Basis().scaled(Vector3(s, s, s)), origin));
-	gizmo_3d_root->set_visible(true);
-
-	// Highlight from hover/drag (material swap, Godot-style). Cube tips in the
-	// Scale tool, arrows everywhere else (matches the 3D editor's gizmos).
-	const Ref<ArrayMesh> &tip_mesh = (tool == TOOL_SCALE) ? gizmo_3d_scale_mesh : gizmo_3d_arrow_mesh;
-	for (int i = 0; i < 3; i++) {
-		if (gizmo_3d_axes[i]->get_mesh() != tip_mesh) {
-			gizmo_3d_axes[i]->set_mesh(tip_mesh);
-		}
-		const bool axis_active = (gizmo_hover == (GizmoPart)i || gizmo_drag_part == (GizmoPart)i);
-		gizmo_3d_axes[i]->set_surface_override_material(0, axis_active ? gizmo_3d_axis_mat_hot[i] : gizmo_3d_axis_mat[i]);
-		gizmo_3d_axes[i]->set_surface_override_material(1, axis_active ? gizmo_3d_axis_mat_hot[i] : gizmo_3d_axis_mat[i]);
-		const bool plane_active = (gizmo_hover == (GizmoPart)(GIZMO_XY + i) || gizmo_drag_part == (GizmoPart)(GIZMO_XY + i));
-		gizmo_3d_planes[i]->set_surface_override_material(0, plane_active ? gizmo_3d_plane_mat_hot[i] : gizmo_3d_plane_mat[i]);
+		const real_t s = _gizmo_3d_world_scale(viewports[v], origin);
+		gizmo_3d[v].root->set_transform(Transform3D(Basis().scaled(Vector3(s, s, s)), origin));
+		gizmo_3d[v].root->set_visible(true);
 	}
 }
 
@@ -535,130 +667,18 @@ int LevelEditorScreen::_pick_gizmo(LevelEditorViewport *p_vp, Camera3D *p_camera
 	}
 	const Vector3 origin = _get_gizmo_origin();
 
-	// Perspective: 3D picking against the gizmo geometry (Godot's sphere-grab
-	// approach). Foreshortened axes stay grabbable at exactly their visual
-	// size - the pick volumes match what the 3D mesh shows.
-	if (p_vp->get_view_type() == LevelEditorViewport::VIEW_PERSPECTIVE) {
-		using namespace LevelGizmo3D;
-		const real_t scale = _gizmo_3d_world_scale(p_vp, origin);
-		Vector3 ro, rd;
-		p_vp->get_ray(p_screen, ro, rd);
-		static const Vector3 AXES[3] = { Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(0, 0, 1) };
+	// 3D picking against the gizmo geometry (Godot's sphere-grab approach),
+	// used by ALL view types: pick volumes match the 3D mesh visuals exactly,
+	// so foreshortened axes stay grabbable at their drawn size.
+	using namespace LevelGizmo3D;
+	const real_t scale = _gizmo_3d_world_scale(p_vp, origin);
+	Vector3 ro, rd;
+	p_vp->get_ray(p_screen, ro, rd);
+	static const Vector3 AXES[3] = { Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(0, 0, 1) };
 
-		// Center cube first (smallest, most central target).
-		if (Geometry3D::segment_intersects_sphere(ro, ro + rd * 100000.0, origin, CENTER_PICK_RADIUS * scale)) {
-			// Free-move in the camera plane, like the 2D overlay's center pick.
-			Vector3 cam_fwd = -p_camera->get_global_transform().basis[2];
-			Vector3 ac = cam_fwd.abs();
-			if (ac.z >= ac.x && ac.z >= ac.y) {
-				return GIZMO_XY;
-			} else if (ac.y >= ac.x) {
-				return GIZMO_XZ;
-			}
-			return GIZMO_YZ;
-		}
-
-		// Plane handles (ray vs handle quad; handles are smaller targets than
-		// the axis lines, so they win first - same precedence as the overlay).
-		for (int p = 0; p < 3; p++) {
-			const int a0 = GIZMO_PLANE_AXES[p][0];
-			const int a1 = GIZMO_PLANE_AXES[p][1];
-			const real_t e = PLANE_EXTENT * scale;
-			const real_t s2 = PLANE_SIZE * scale;
-			Vector3 quad[4] = {
-				origin + AXES[a0] * e + AXES[a1] * e,
-				origin + AXES[a0] * (e + s2) + AXES[a1] * e,
-				origin + AXES[a0] * (e + s2) + AXES[a1] * (e + s2),
-				origin + AXES[a0] * e + AXES[a1] * (e + s2),
-			};
-			Vector3 hit;
-			if (Geometry3D::segment_intersects_triangle(ro, ro + rd * 100000.0, quad[0], quad[1], quad[2], &hit) ||
-					Geometry3D::segment_intersects_triangle(ro, ro + rd * 100000.0, quad[0], quad[2], quad[3], &hit)) {
-				return GIZMO_XY + p;
-			}
-		}
-
-		// Axis arrows: closest point between the pick ray and the axis segment
-		// must come within the pick radius (segment-vs-segment distance).
-		int best = GIZMO_NONE;
-		real_t best_d = AXIS_PICK_RADIUS * scale;
-		for (int i = 0; i < 3; i++) {
-			const Vector3 tip = origin + AXES[i] * (AXIS_LEN * scale);
-			// Closest points between ray (ro,rd) and segment (origin,tip).
-			Vector3 r1, r2;
-			Geometry3D::get_closest_points_between_segments(origin, tip, ro, ro + rd * 100000.0, r1, r2);
-			const real_t d = r1.distance_to(r2);
-			if (d < best_d) {
-				best_d = d;
-				best = i;
-			}
-		}
-		return best;
-	}
-
-	// Ortho views: 2D overlay picking (stable under parallel projection).
-	Vector2 so;
-	Vector2 axis_end[3];
-	bool axis_ok[3];
-	if (!compute_gizmo_axes(p_camera, origin, so, axis_end, axis_ok)) {
-		return GIZMO_NONE;
-	}
-
-	const real_t axis_tol = 9.0 * EDSCALE;
-	const real_t plane_tol = 4.0 * EDSCALE; // Grow margin around the drawn quad.
-	const real_t center_tol = 7.0 * EDSCALE;
-
-	// Check plane handles first (smaller targets), against the same quad that
-	// _draw_gizmo draws - the previous centroid-circle test left the quad's
-	// corners dead and missed wide/skewed quads entirely. The quad is grown
-	// along both diagonals by plane_tol so thin quads stay grabbable.
-	for (int p = 0; p < 3; p++) {
-		if (!axis_ok[GIZMO_PLANE_AXES[p][0]] || !axis_ok[GIZMO_PLANE_AXES[p][1]]) {
-			continue;
-		}
-		Vector2 pa = so + (axis_end[GIZMO_PLANE_AXES[p][0]] - so) * GIZMO_PLANE_EXTENT;
-		Vector2 pb = so + (axis_end[GIZMO_PLANE_AXES[p][1]] - so) * GIZMO_PLANE_EXTENT;
-		Vector2 corner = pa + (pb - so);
-		Vector<Vector2> quad;
-		quad.push_back(so);
-		quad.push_back(pa);
-		quad.push_back(corner);
-		quad.push_back(pb);
-		if (Geometry2D::is_point_in_polygon(p_screen, quad)) {
-			return GIZMO_XY + p;
-		}
-		// Grown quad: push each corner out along its diagonal direction.
-		Vector2 center = (so + corner) * 0.5;
-		Vector<Vector2> grown;
-		for (int i = 0; i < 4; i++) {
-			Vector2 d = quad[i] - center;
-			real_t len = d.length();
-			grown.push_back((len > 0) ? quad[i] + d / len * plane_tol : quad[i]);
-		}
-		if (Geometry2D::is_point_in_polygon(p_screen, grown)) {
-			return GIZMO_XY + p;
-		}
-	}
-
-	// Axis lines.
-	for (int i = 0; i < 3; i++) {
-		if (!axis_ok[i]) {
-			continue;
-		}
-		Vector2 a = so;
-		Vector2 b = axis_end[i];
-		Vector2 ab = b - a;
-		real_t len2 = ab.length_squared();
-		real_t t = (len2 > 0) ? CLAMP((p_screen - a).dot(ab) / len2, 0.0, 1.0) : 0.0;
-		real_t d = (a + ab * t).distance_to(p_screen);
-		if (d < axis_tol) {
-			return i;
-		}
-	}
-
-	// Center: free move in the camera plane.
-	if (p_screen.distance_to(so) < center_tol) {
-		// Pick the plane most facing the camera for a natural drag.
+	// Center cube first (smallest, most central target): free move in the
+	// camera plane.
+	if (Geometry3D::segment_intersects_sphere(ro, ro + rd * 100000.0, origin, CENTER_PICK_RADIUS * scale)) {
 		Vector3 cam_fwd = -p_camera->get_global_transform().basis[2];
 		Vector3 ac = cam_fwd.abs();
 		if (ac.z >= ac.x && ac.z >= ac.y) {
@@ -668,7 +688,42 @@ int LevelEditorScreen::_pick_gizmo(LevelEditorViewport *p_vp, Camera3D *p_camera
 		}
 		return GIZMO_YZ;
 	}
-	return GIZMO_NONE;
+
+	// Plane handles (ray vs handle quad; handles are smaller targets than the
+	// axis lines, so they win first).
+	for (int p = 0; p < 3; p++) {
+		const int a0 = GIZMO_PLANE_AXES[p][0];
+		const int a1 = GIZMO_PLANE_AXES[p][1];
+		const real_t e = PLANE_EXTENT * scale;
+		const real_t s2 = PLANE_SIZE * scale;
+		Vector3 quad[4] = {
+			origin + AXES[a0] * e + AXES[a1] * e,
+			origin + AXES[a0] * (e + s2) + AXES[a1] * e,
+			origin + AXES[a0] * (e + s2) + AXES[a1] * (e + s2),
+			origin + AXES[a0] * e + AXES[a1] * (e + s2),
+		};
+		Vector3 hit;
+		if (Geometry3D::segment_intersects_triangle(ro, ro + rd * 100000.0, quad[0], quad[1], quad[2], &hit) ||
+				Geometry3D::segment_intersects_triangle(ro, ro + rd * 100000.0, quad[0], quad[2], quad[3], &hit)) {
+			return GIZMO_XY + p;
+		}
+	}
+
+	// Axis arrows: closest point between the pick ray and the axis segment must
+	// come within the pick radius (segment-vs-segment distance).
+	int best = GIZMO_NONE;
+	real_t best_d = AXIS_PICK_RADIUS * scale;
+	for (int i = 0; i < 3; i++) {
+		const Vector3 tip = origin + AXES[i] * (AXIS_LEN * scale);
+		Vector3 r1, r2;
+		Geometry3D::get_closest_points_between_segments(origin, tip, ro, ro + rd * 100000.0, r1, r2);
+		const real_t d = r1.distance_to(r2);
+		if (d < best_d) {
+			best_d = d;
+			best = i;
+		}
+	}
+	return best;
 }
 
 void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vector2 &p_mouse) {
@@ -744,6 +799,7 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 	gizmo_extrude_cap_faces.clear();
 	gizmo_extrude_cap_normals.clear();
 	gizmo_extrude_elem_verts.clear();
+	gizmo_extrude_wall_edges.clear();
 	gizmo_extrude_orig_verts.clear();
 	gizmo_extrude_orig_faces.clear();
 	gizmo_extrude_orig_mats.clear();
@@ -800,6 +856,7 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 					gizmo_extrude_orig_mats[b] = b->get_face_materials_data();
 
 					Vector<int> new_verts;
+					Vector<LevelBrush::EdgeKey> wall_edges;
 					HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> new_edges;
 					for (const LevelBrush::EdgeKey &e : E.value) {
 						// Stub offset along the average normal of the edge's faces,
@@ -823,6 +880,7 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 						if (b->extrude_edge(e, dir.normalized() * 0.001, ids)) {
 							new_verts.push_back(ids[0]);
 							new_verts.push_back(ids[1]);
+							wall_edges.push_back(e); // Original seam edge, same order as walls.
 							LevelBrush::EdgeKey ne;
 							ne.a = ids[0];
 							ne.b = ids[1];
@@ -830,6 +888,7 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 						}
 					}
 					gizmo_extrude_elem_verts[b] = new_verts;
+					gizmo_extrude_wall_edges[b] = wall_edges;
 					gizmo_extrude_moved_verts[b] = b->get_vertices_data();
 					E.value = new_edges; // Selection tracks the duplicated edges.
 				}
@@ -985,17 +1044,102 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 	}
 
 	// Scale mode: axis drag distance -> scale factor along that axis.
-	// EXTRUDE drags (Shift+drag) always go through _apply_gizmo_delta: the
-	// scale paths restore the PRE-extrude vertex snapshot, which shrinks the
-	// brush below the extruded faces' vert indices (bake crash, GOTCHAS #32).
-	if (tool == TOOL_SCALE && !gizmo_extrude_drag) {
-		_apply_gizmo_scale(delta);
+	if (tool == TOOL_SCALE) {
+		if (gizmo_extrude_drag) {
+			// Shift+drag extrude in the Scale tool: extrude once, then SCALE the
+			// new geometry per element (each cap around its own center) instead
+			// of translating it. Must not reuse _apply_gizmo_scale: its snapshot
+			// restore would shrink the brush below the extruded faces' vert
+			// indices (bake crash, GOTCHAS #32).
+			_apply_gizmo_scale_extrude(delta);
+		} else {
+			_apply_gizmo_scale(delta);
+		}
 		_update_overlays();
 		return;
 	}
 
 	_apply_gizmo_delta(delta);
 	_update_overlays();
+}
+
+// Extrude-drag scaling (Scale tool, element targets): per-axis factors from
+// the drag delta, applied to the extruded geometry on top of the POST-extrude
+// snapshot. Face caps scale around their OWN centers (each extrusion grows
+// independently); edge/vertex extrusions scale their duplicated-vert cluster
+// around the cluster center.
+void LevelEditorScreen::_apply_gizmo_scale_extrude(const Vector3 &p_world_delta) {
+	const real_t SCALE_RATE = 0.25; // Same rate as _apply_gizmo_scale.
+	Vector3 factors(1, 1, 1);
+	if (gizmo_drag_part == GIZMO_XY || gizmo_drag_part == GIZMO_XZ || gizmo_drag_part == GIZMO_YZ) {
+		const real_t f = 1.0 + MAX(p_world_delta.x, MAX(p_world_delta.y, p_world_delta.z)) * SCALE_RATE;
+		factors = Vector3(f, f, f);
+	} else if (gizmo_drag_part >= GIZMO_X && gizmo_drag_part <= GIZMO_Z) {
+		factors[gizmo_drag_part] = 1.0 + p_world_delta[gizmo_drag_part] * SCALE_RATE;
+	}
+	factors.x = MAX(factors.x, 0.01);
+	factors.y = MAX(factors.y, 0.01);
+	factors.z = MAX(factors.z, 0.01);
+
+	auto scale_verts_around = [&](LevelBrush *p_brush, const Vector<int> &p_indices, const Vector3 &p_pivot_world) {
+		Transform3D gt = p_brush->get_global_transform();
+		Transform3D inv = gt.affine_inverse();
+		for (int idx : p_indices) {
+			Vector3 v = gt.xform(p_brush->get_vertex(idx));
+			Vector3 rel = v - p_pivot_world;
+			v = p_pivot_world + Vector3(rel.x * factors.x, rel.y * factors.y, rel.z * factors.z);
+			p_brush->set_vertex(idx, inv.xform(v));
+		}
+	};
+
+	if (selection_target == TARGET_FACE) {
+		for (KeyValue<LevelBrush *, Vector<int>> &E : gizmo_extrude_cap_faces) {
+			LevelBrush *brush = E.key;
+			brush->set_vertices_data(gizmo_extrude_moved_verts[brush]); // Post-extrude snapshot.
+			Transform3D gt = brush->get_global_transform();
+			for (int cap : E.value) {
+				Vector<int> loop_verts;
+				LocalVector<int> loop = brush->get_face(cap);
+				for (int idx : loop) {
+					loop_verts.push_back(idx);
+				}
+				// Cap center in world space.
+				Vector3 center;
+				for (int idx : loop_verts) {
+					center += gt.xform(brush->get_vertex(idx));
+				}
+				if (!loop_verts.is_empty()) {
+					center /= loop_verts.size();
+				}
+				scale_verts_around(brush, loop_verts, center);
+			}
+			// Walls keep the seam-winding set at extrude time (GOTCHAS #30 is
+			// superseded by manifold seam winding): the drag only moves the
+			// duplicated verts rigidly, so no re-wind is needed.
+		}
+	} else {
+		for (KeyValue<LevelBrush *, Vector<int>> &E : gizmo_extrude_elem_verts) {
+			LevelBrush *brush = E.key;
+			brush->set_vertices_data(gizmo_extrude_moved_verts[brush]);
+			Transform3D gt = brush->get_global_transform();
+			Vector3 center;
+			for (int idx : E.value) {
+				center += gt.xform(brush->get_vertex(idx));
+			}
+			if (!E.value.is_empty()) {
+				center /= E.value.size();
+			}
+			scale_verts_around(brush, E.value, center);
+			if (gizmo_extrude_wall_edges.has(brush)) {
+				const Vector<LevelBrush::EdgeKey> &wedges = gizmo_extrude_wall_edges[brush];
+				const int first_wall = brush->get_face_count() - wedges.size();
+				for (int i = 0; i < wedges.size(); i++) {
+					brush->rewind_edge_wall(first_wall + i, wedges[i].a, wedges[i].b);
+				}
+			}
+		}
+	}
+	_refresh_map();
 }
 
 // ---- Rotate gizmo ------------------------------------------------------------
@@ -1381,16 +1525,7 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 					}
 					brush->move_vertices(loop_verts, n * amount);
 				}
-
-				// The side walls were wound at begin-drag from the 0.001 stub;
-				// the drag can move the cap to the opposite side of the source
-				// plane, flipping which way the walls face (GOTCHAS #30). Re-wind
-				// them against the current geometry. Walls are the faces appended
-				// after the pre-extrude topology.
-				const int first_wall = gizmo_extrude_orig_faces[brush].size();
-				for (int f = first_wall; f < brush->get_face_count(); f++) {
-					brush->rewind_face_outward(f);
-				}
+				// Walls keep the seam-winding set at extrude time; no re-wind.
 			}
 		} else {
 			for (KeyValue<LevelBrush *, Vector<int>> &E : gizmo_extrude_elem_verts) {
@@ -1401,13 +1536,17 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 				Vector3 local_delta = _snap(inv.basis.xform(p_world_delta));
 				brush->move_vertices(E.value, local_delta);
 
-				// The extruded walls were wound at begin-drag from a stub offset;
-				// the drag rotates their planes, which can flip which side faces
-				// out (GOTCHAS #30). Re-wind them against the current geometry.
-				// Walls are the faces appended after the pre-extrude topology.
-				const int first_wall = gizmo_extrude_orig_faces[brush].size();
-				for (int f = first_wall; f < brush->get_face_count(); f++) {
-					brush->rewind_face_outward(f);
+				// Edge extrusions: re-wind each wall against the CURRENT geometry.
+				// Begin-drag wound them from a 0.001 stub whose direction ties between
+				// the two using faces, so the initial winding is unstable; as the drag
+				// rotates each wall to its real plane, align it with the source face it
+				// now continues (GOTCHAS #30). Walls are the last wall_edges faces.
+				if (gizmo_extrude_wall_edges.has(brush)) {
+					const Vector<LevelBrush::EdgeKey> &wedges = gizmo_extrude_wall_edges[brush];
+					const int first_wall = brush->get_face_count() - wedges.size();
+					for (int i = 0; i < wedges.size(); i++) {
+						brush->rewind_edge_wall(first_wall + i, wedges[i].a, wedges[i].b);
+					}
 				}
 			}
 		}
@@ -1550,6 +1689,7 @@ void LevelEditorScreen::_gizmo_end_drag() {
 		gizmo_extrude_cap_faces.clear();
 		gizmo_extrude_cap_normals.clear();
 		gizmo_extrude_elem_verts.clear();
+		gizmo_extrude_wall_edges.clear();
 		gizmo_extrude_moved_verts.clear();
 		gizmo_drag_brush_verts.clear();
 		return;
@@ -1563,69 +1703,6 @@ void LevelEditorScreen::_gizmo_end_drag() {
 	// brushes. (Rotate has its own ring-gizmo drag path and never reaches here.)
 	_commit_brush_verts_undo(tool == TOOL_SCALE ? TTR("Scale Brush Elements") : TTR("Move Brush Element"), gizmo_drag_brush_verts);
 	gizmo_drag_brush_verts.clear();
-}
-
-void LevelEditorScreen::_draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas) {
-	if (_is_drawing_tool() || tool == TOOL_SELECT || tool == TOOL_ROTATE || !_has_selection()) {
-		return; // No arrow gizmo in the drawing tools, Select, or Rotate tool.
-	}
-	if (p_vp->get_view_type() == LevelEditorViewport::VIEW_PERSPECTIVE) {
-		return; // Perspective uses the 3D gizmo node (_update_gizmo_3d).
-	}
-	const Vector3 origin = _get_gizmo_origin();
-	Camera3D *cam = p_vp->get_camera();
-	Vector2 so;
-	Vector2 axis_end[3];
-	bool axis_ok[3];
-	if (!compute_gizmo_axes(cam, origin, so, axis_end, axis_ok)) {
-		return;
-	}
-
-	Color axis_col[3] = { LevelEditorColors::GIZMO_AXIS_X, LevelEditorColors::GIZMO_AXIS_Y, LevelEditorColors::GIZMO_AXIS_Z };
-
-	// Plane handles (quads at halfway between axes).
-	for (int p = 0; p < 3; p++) {
-		if (!axis_ok[GIZMO_PLANE_AXES[p][0]] || !axis_ok[GIZMO_PLANE_AXES[p][1]]) {
-			continue;
-		}
-		Vector2 pa = so + (axis_end[GIZMO_PLANE_AXES[p][0]] - so) * GIZMO_PLANE_EXTENT;
-		Vector2 pb = so + (axis_end[GIZMO_PLANE_AXES[p][1]] - so) * GIZMO_PLANE_EXTENT;
-		PackedVector2Array quad;
-		quad.push_back(so);
-		quad.push_back(pa);
-		quad.push_back(pa + (pb - so));
-		quad.push_back(pb);
-		Color c = axis_col[GIZMO_PLANE_AXES[p][0]].lerp(axis_col[GIZMO_PLANE_AXES[p][1]], 0.5);
-		c.a = (gizmo_hover == (GizmoPart)(GIZMO_XY + p) || gizmo_drag_part == (GizmoPart)(GIZMO_XY + p)) ? 0.55 : 0.22;
-		p_canvas->draw_colored_polygon(quad, c);
-	}
-
-	// Axis lines; arrowheads in translate modes, cube tips in Scale mode
-	// (matches the 3D editor's scale gizmo).
-	for (int i = 0; i < 3; i++) {
-		if (!axis_ok[i]) {
-			continue;
-		}
-		bool active = (gizmo_hover == (GizmoPart)i || gizmo_drag_part == (GizmoPart)i);
-		Color c = active ? LevelEditorColors::hot(axis_col[i]) : axis_col[i];
-		p_canvas->draw_line(so, axis_end[i], c, (active ? 3.0 : 2.0) * EDSCALE);
-		if (tool == TOOL_SCALE) {
-			real_t hs = 5.0 * EDSCALE;
-			p_canvas->draw_rect(Rect2(axis_end[i] - Vector2(hs, hs), Size2(hs * 2, hs * 2)), c);
-		} else {
-			// Arrowhead.
-			Vector2 dir = (axis_end[i] - so).normalized();
-			Vector2 perp(-dir.y, dir.x);
-			real_t arrow_len = 10.0 * EDSCALE;
-			real_t arrow_w = 4.0 * EDSCALE;
-			p_canvas->draw_line(axis_end[i], axis_end[i] - dir * arrow_len + perp * arrow_w, c, 2.0 * EDSCALE);
-			p_canvas->draw_line(axis_end[i], axis_end[i] - dir * arrow_len - perp * arrow_w, c, 2.0 * EDSCALE);
-		}
-	}
-
-	// Center square.
-	real_t cs = 4.0 * EDSCALE;
-	p_canvas->draw_rect(Rect2(so - Vector2(cs, cs), Size2(cs * 2, cs * 2)), LevelEditorColors::GIZMO_CENTER);
 }
 
 // ---------------------------------------------------------------------------

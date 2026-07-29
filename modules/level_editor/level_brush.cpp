@@ -31,6 +31,7 @@
 #include "level_brush.h"
 
 #include "level_constants.h"
+#include "level_map.h"
 
 #include "core/config/engine.h"
 #include "core/object/class_db.h"
@@ -70,10 +71,15 @@ void LevelBrush::_update_face_count_storage() {
 void LevelBrush::_notify_map_changed() {
 	// Topology/geometry changed: the cached edge sets are stale.
 	edges_dirty = true;
-	// Ask the parent map to rebuild its preview (e.g. after serialized data
-	// changes through undo/redo, which bypasses the editing code paths).
+	geometry_version++;
+	// Tell the parent map WHICH brush changed (per-brush bake cache) and
+	// schedule a coalesced preview rebuild. Falls back to a generic refresh
+	// for non-LevelMap parents.
 	Node *parent = get_parent();
-	if (parent && parent->has_method("refresh")) {
+	LevelMap *map = Object::cast_to<LevelMap>(parent);
+	if (map) {
+		map->notify_brush_changed(this);
+	} else if (parent && parent->has_method("refresh")) {
 		parent->call_deferred("refresh");
 	}
 }

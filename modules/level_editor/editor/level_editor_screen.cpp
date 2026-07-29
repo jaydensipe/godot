@@ -67,6 +67,7 @@ using LevelEditorColors::GIZMO_PLANE_EXTENT;
 #include "scene/resources/environment.h"
 #include "scene/resources/gradient.h"
 #include "scene/resources/material.h"
+#include "servers/display/display_server.h"
 #include "servers/rendering/rendering_server.h"
 
 // ---------------------------------------------------------------------------
@@ -132,6 +133,21 @@ LevelEditorViewport::LevelEditorViewport() {
 	// z-fight the grid lines.
 	grid_mesh_instance->set_position(Vector3(0, -0.002, 0));
 	subviewport->add_child(grid_mesh_instance);
+
+	// Gizmo overlay pass: transparent SubViewport with its OWN World3D so the
+	// viewport's debug draw mode (wireframe/overdraw/...) can't restyle the
+	// gizmo. Stacked above the scene viewport; its camera is synced to the
+	// scene camera per frame (sync_gizmo_camera).
+	gizmo_subviewport = memnew(SubViewport);
+	gizmo_subviewport->set_disable_input(true);
+	gizmo_subviewport->set_handle_input_locally(false);
+	gizmo_subviewport->set_transparent_background(true);
+	gizmo_subviewport->set_use_own_world_3d(true);
+	gizmo_subviewport->set_update_mode(SubViewport::UPDATE_ALWAYS);
+	gizmo_camera = memnew(Camera3D);
+	gizmo_camera->set_current(true);
+	gizmo_subviewport->add_child(gizmo_camera);
+	add_child(gizmo_subviewport);
 
 	overlay = memnew(Overlay);
 	overlay->viewport = this;
@@ -255,6 +271,31 @@ void LevelEditorViewport::_preview_overlay_draw() {
 		// per-frame phase steps don't repaint the expensive main overlay.
 		screen->_draw_tool_preview(this, preview_overlay);
 	}
+}
+
+void LevelEditorViewport::set_gizmo_root(Node3D *p_root) {
+	if (gizmo_root == p_root) {
+		return;
+	}
+	if (gizmo_root && gizmo_root->get_parent() == gizmo_subviewport) {
+		gizmo_subviewport->remove_child(gizmo_root);
+	}
+	gizmo_root = p_root;
+	if (gizmo_root) {
+		gizmo_subviewport->add_child(gizmo_root);
+	}
+}
+
+void LevelEditorViewport::sync_gizmo_camera() {
+	if (!gizmo_camera || !camera) {
+		return;
+	}
+	gizmo_camera->set_global_transform(camera->get_global_transform());
+	gizmo_camera->set_projection(camera->get_projection());
+	gizmo_camera->set_fov(camera->get_fov());
+	gizmo_camera->set_size(camera->get_size());
+	gizmo_camera->set_near(camera->get_near());
+	gizmo_camera->set_far(camera->get_far());
 }
 
 void LevelEditorViewport::set_grid_mesh_size(real_t p_grid_size) {
@@ -625,6 +666,16 @@ bool LevelEditorViewport::project_polygon(const Vector<Vector3> &p_world, Packed
 	return r_screen.size() >= 3;
 }
 
+void LevelEditorViewport::set_hover_cursor(DisplayServerEnums::CursorShape p_shape) {
+	if (p_shape == hover_cursor) {
+		return;
+	}
+	hover_cursor = p_shape;
+	if (DisplayServer::get_singleton()->has_feature(DisplayServerEnums::FEATURE_CURSOR_SHAPE)) {
+		DisplayServer::get_singleton()->cursor_set_shape(p_shape);
+	}
+}
+
 void LevelEditorViewport::queue_overlay_redraw() {
 	if (overlay) {
 		overlay->update();
@@ -641,6 +692,10 @@ void LevelEditorViewport::clear_drop_state() {
 	drop_payload_checked = false;
 	drop_payload_ok = false;
 	drop_last_probe = Vector2(Math::INF, Math::INF);
+	if (drop_cursor_set) {
+		drop_cursor_set = false;
+		DisplayServer::get_singleton()->cursor_set_shape(DisplayServerEnums::CURSOR_ARROW);
+	}
 	if (drop_active) {
 		drop_active = false;
 		drop_brush = nullptr;
@@ -686,6 +741,14 @@ bool LevelEditorViewport::can_drop_data_fw(const Point2 &p_point, const Variant 
 			_queue_preview_redraw();
 		}
 	}
+
+	// OS cursor feedback for the drag: the Viewport cursor update skips
+	// SubViewportContainers, so we must set it ourselves (and restore the
+	// arrow in clear_drop_state).
+	if (DisplayServer::get_singleton()->has_feature(DisplayServerEnums::FEATURE_CURSOR_SHAPE)) {
+		drop_cursor_set = true;
+		DisplayServer::get_singleton()->cursor_set_shape(ok ? DisplayServerEnums::CURSOR_CAN_DROP : DisplayServerEnums::CURSOR_FORBIDDEN);
+	}
 	return ok;
 }
 
@@ -700,6 +763,18 @@ void LevelEditorViewport::drop_data_fw(const Point2 &p_point, const Variant &p_d
 
 void LevelEditorViewport::_notification(int p_what) {
 	switch (p_what) {
+		case NOTIFICATION_MOUSE_ENTER: {
+			// Viewports are SubViewportContainers, which the Viewport cursor
+			// update deliberately SKIPS (scene/main/viewport.cpp: the OS cursor
+			// is only set when NOT over one). So a resize cursor grabbed over an
+			// adjacent SplitContainer dragger would otherwise leak and stay
+			// stuck over this viewport. Re-assert the arrow on mouse enter; the
+			// splitter re-sets its own cursor when hovered.
+			hover_cursor = DisplayServerEnums::CURSOR_ARROW;
+			if (DisplayServer::get_singleton()->has_feature(DisplayServerEnums::FEATURE_CURSOR_SHAPE)) {
+				DisplayServer::get_singleton()->cursor_set_shape(DisplayServerEnums::CURSOR_ARROW);
+			}
+		} break;
 		case NOTIFICATION_RESIZED: {
 			if (overlay) {
 				overlay->update();
@@ -718,6 +793,7 @@ void LevelEditorViewport::_notification(int p_what) {
 		case NOTIFICATION_PROCESS: {
 			_process_freelook(get_process_delta_time());
 			_update_grid_tracking();
+			sync_gizmo_camera();
 			_update_info_hud();
 			_update_frame_time_hud();
 			if (drop_active) {
@@ -2283,6 +2359,7 @@ void LevelEditorScreen::_update_overlays() {
 		viewports[i]->_queue_preview_redraw();
 	}
 	_update_gizmo_3d();
+	_update_outlines();
 	_update_menu_states();
 }
 
@@ -2771,6 +2848,17 @@ void LevelEditorScreen::_notification(int p_what) {
 			// refresh it per frame (cheap early-outs when hidden/unchanged in
 			// practice: the transform set is one node).
 			_update_gizmo_3d();
+			// 3D outlines must poll per frame: undo/redo restores brush data
+			// through the property system (no editor code path runs), so the
+			// geometry-version check is the only thing that catches it. Cheap:
+			// version compares + material checks; meshes rebuild only on change.
+			// When geometry DID change, also repaint the 2D overlay (AABB handles,
+			// selection, hover) - it only redraws on explicit _update_overlays().
+			if (_update_outlines()) {
+				for (int i = 0; i < 4; i++) {
+					viewports[i]->queue_overlay_redraw();
+				}
+			}
 			// Advance the bevel preview's marching-ants and repaint while armed.
 			// The preview draws on the cheap PreviewOverlay, so this only repaints
 			// that overlay - not the whole scene overlay (GOTCHAS #33).
@@ -2794,17 +2882,12 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 		return;
 	}
 
-	Vector<LevelBrush *> brushes = current_map->get_brushes();
-	for (LevelBrush *b : brushes) {
-		_draw_brush_outline(p_vp, p_canvas, b, _mesh_selection_has(b));
-	}
-	if (selection_target == TARGET_MESH && !_is_drawing_tool() && hover_brush && !_mesh_selection_has(hover_brush)) {
-		// Hover highlight (thin white) - in every transform tool, not just
-		// Select, so the user can see what a click would pick.
-		_draw_brush_edges(p_vp, p_canvas, hover_brush, LevelEditorColors::BRUSH_OUTLINE_HOVER, 1.0);
-	}
+	// Base brush outlines are 3D line meshes now (_update_outlines) - the 2D
+	// pass re-projected every edge of every brush every frame (drag hotspot).
+	// What remains here is the cheap per-element 2D feedback: hovered element,
+	// vertex markers, face fills, selection, gizmos, tool previews.
 	// Element targets: the hovered brush - and any brush with selected elements
-	// of the current target - gets a light-blue outline and green vertices.
+	// of the current target - gets green hover elements and vertex markers.
 	if (_is_element_target()) {
 		// Collect the brushes to highlight: hovered + those with a selection.
 		LocalVector<LevelBrush *> highlight;
@@ -2842,9 +2925,6 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 		const real_t vs = LevelEditorHandles::VERTEX_SIZE * EDSCALE; // half-size, normal.
 		const real_t vs_hot = LevelEditorHandles::VERTEX_HOT_SIZE * EDSCALE; // half-size, hovered.
 		for (LevelBrush *brush : highlight) {
-			// Edges stay light-blue; only the hovered edge turns green (drawn on
-			// top of the base outline pass).
-			_draw_brush_edges(p_vp, p_canvas, brush, LevelEditorColors::HOVER_BRUSH_OUTLINE, 1.5);
 			if (selection_target == TARGET_EDGE && brush == hover_brush && has_hover_edge) {
 				Transform3D gt = brush->get_global_transform();
 				Vector2 a, b;
@@ -2900,7 +2980,6 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 	_draw_ghost(p_vp, p_canvas);
 	_draw_selection(p_vp, p_canvas);
 	_draw_select_handles(p_vp, p_canvas);
-	_draw_gizmo(p_vp, p_canvas);
 	_draw_rotate_gizmo(p_vp, p_canvas);
 	_draw_clip(p_vp, p_canvas);
 	_draw_mirror(p_vp, p_canvas);
@@ -2973,33 +3052,7 @@ void LevelEditorScreen::_draw_material_drop(LevelEditorViewport *p_vp, Control *
 	}
 }
 
-void LevelEditorScreen::_draw_brush_edges(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, const Color &p_color, real_t p_width) const {
-	Transform3D gt = p_brush->get_global_transform();
-	const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &open_edges = p_brush->get_open_edges();
-	const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &edges = p_brush->get_edges();
-	for (const LevelBrush::EdgeKey &e : edges) {
-		Vector2 a, b;
-		// project_segment (not per-endpoint project) so edges with one endpoint
-		// behind the near plane still draw clipped (GOTCHAS #22).
-		if (p_vp->project_segment(gt.xform(p_brush->get_vertex(e.a)), gt.xform(p_brush->get_vertex(e.b)), a, b)) {
-			if (open_edges.has(e)) {
-				// Open edge (no adjacent face) - draw hashed.
-				LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, p_color, p_width, 6.0 * EDSCALE);
-			} else {
-				p_canvas->draw_line(a, b, p_color, p_width);
-			}
-		}
-	}
-}
 
-void LevelEditorScreen::_draw_brush_outline(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, bool p_selected) {
-	// In element targets there is no whole-brush selection - draw all brushes
-	// with the plain outline (hovered brush gets its own highlight).
-	bool element_mode = _is_element_target();
-	Color col = (p_selected && !element_mode) ? LevelEditorColors::BRUSH_OUTLINE_SELECTED : LevelEditorColors::BRUSH_OUTLINE;
-	real_t width = (p_selected && !element_mode) ? 2.0 : 1.0;
-	_draw_brush_edges(p_vp, p_canvas, p_brush, col, width);
-}
 
 void LevelEditorScreen::_draw_drag_feedback(LevelEditorViewport *p_vp, Control *p_canvas) {
 	if (!dragging || !drag_active || !drag_viewport || ghost_active) {

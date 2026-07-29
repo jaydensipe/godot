@@ -131,6 +131,36 @@ int LevelEditorScreen::_pick_ghost_handle(LevelEditorViewport *p_vp, const Vecto
 	return _ghost_handle_usable(p_vp, h) ? h : GHOST_NONE;
 }
 
+DisplayServerEnums::CursorShape LevelEditorScreen::_handle_cursor(LevelEditorViewport *p_vp, int p_handle, const AABB &p_aabb, const Transform3D &p_xform) const {
+	// Ortho views only: pick the resize cursor from the handle's position
+	// relative to the box center - top/bottom faces resize vertically, left/
+	// right faces horizontally, corners diagonally (towards their corner).
+	if (p_vp->get_view_type() == LevelEditorViewport::VIEW_PERSPECTIVE) {
+		return DisplayServerEnums::CURSOR_ARROW;
+	}
+	Vector2 center_sp, handle_sp;
+	if (!p_vp->project(p_xform.xform(p_aabb.get_center()), center_sp)) {
+		return DisplayServerEnums::CURSOR_ARROW;
+	}
+	Vector3 handle_local;
+	if (p_handle >= GHOST_CORNER_0) {
+		Vector3 corners[8];
+		aabb_corners(p_aabb, corners);
+		handle_local = corners[p_handle - GHOST_CORNER_0];
+	} else {
+		handle_local = aabb_face_center(p_aabb, p_handle - GHOST_FACE_XN);
+	}
+	if (!p_vp->project(p_xform.xform(handle_local), handle_sp)) {
+		return DisplayServerEnums::CURSOR_ARROW;
+	}
+	const Vector2 d = handle_sp - center_sp;
+	if (p_handle >= GHOST_CORNER_0) {
+		// FDIAG runs top-left to bottom-right (\), BDIAG the other way.
+		return (d.x * d.y > 0.0) ? DisplayServerEnums::CURSOR_FDIAGSIZE : DisplayServerEnums::CURSOR_BDIAGSIZE;
+	}
+	return Math::abs(d.x) > Math::abs(d.y) ? DisplayServerEnums::CURSOR_HSIZE : DisplayServerEnums::CURSOR_VSIZE;
+}
+
 bool LevelEditorScreen::_ghost_hit_test(LevelEditorViewport *p_vp, const Vector2 &p_screen) const {
 	// A quad seen edge-on has no clickable area (only its endpoint handles):
 	// if a corner handle wouldn't be usable, the inside-drag isn't either.
@@ -315,7 +345,9 @@ void LevelEditorScreen::_ghost_commit() {
 	if (active_material.is_valid()) {
 		brush->set_all_face_materials(active_material);
 	}
-	brush->set_owner(root);
+	// NOTE: do NOT set_owner here - the brush is not in the tree until the
+	// undo action's add_child runs, and set_owner before that errors with
+	// "Invalid owner. Owner must be an ancestor in the tree."
 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
 	undo_redo->create_action(TTR("Add Level Brush"));
@@ -648,6 +680,7 @@ bool LevelEditorScreen::_brush_input(LevelEditorViewport *p_vp, Camera3D *p_came
 				if (prev != ghost_handle_hover) {
 					_update_overlays();
 				}
+				vp->set_hover_cursor(ghost_handle_hover != GHOST_NONE ? _handle_cursor(vp, ghost_handle_hover, ghost_aabb, Transform3D()) : DisplayServerEnums::CURSOR_ARROW);
 			}
 			return true;
 		}

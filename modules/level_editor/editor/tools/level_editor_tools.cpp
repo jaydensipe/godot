@@ -679,6 +679,7 @@ bool LevelEditorScreen::_select_handles_input(LevelEditorViewport *p_vp, Camera3
 		if (prev != select_handle_hover) {
 			_update_overlays();
 		}
+		p_vp->set_hover_cursor(select_handle_hover != GHOST_NONE ? _handle_cursor(p_vp, select_handle_hover, _get_brush_local_aabb(selected_brush), selected_brush->get_global_transform()) : DisplayServerEnums::CURSOR_ARROW);
 	}
 	return false;
 }

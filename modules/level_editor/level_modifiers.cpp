@@ -39,19 +39,12 @@
 #include "core/templates/hash_map.h"
 #include "scene/resources/material.h"
 
-// Newell's method for a point loop (same algorithm as get_face_normal, kept
-// here so the extrude paths don't hand-roll a third copy).
-static Vector3 newell_normal(const Vector3 p_pts[], int p_count) {
-	Vector3 n;
-	for (int i = 0; i < p_count; i++) {
-		const Vector3 &c = p_pts[i];
-		const Vector3 &nx = p_pts[(i + 1) % p_count];
-		n.x += (c.y - nx.y) * (c.z + nx.z);
-		n.y += (c.z - nx.z) * (c.x + nx.x);
-		n.z += (c.x - nx.x) * (c.y + nx.y);
-	}
-	return n;
-}
+// Manifold seam winding (the rule behind every extrude op): a new wall
+// stitched across a seam edge must traverse that shared edge in the OPPOSITE
+// direction to its neighbor face. Two faces that share an edge and wind it
+// oppositely are consistently oriented (the surface flows continuously over
+// the seam) - this holds for solids, open shells, and interior brushes alike,
+// with no centroid or flip-flag test (GOTCHAS #30 history).
 
 Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_loop(const EdgeKey &p_edge) const {
 	Vector<EdgeKey> loop;
@@ -742,12 +735,14 @@ int LevelBrush::extrude_face(int p_face, real_t p_distance) {
 	// on that side either way.
 	faces[p_face] = cap;
 
-	// Append side quads stitching the source loop to the cap. Winding must
-	// keep normals pointing out of the solid: test each quad against the
-	// brush centroid (same rule as extrude_edge, GOTCHAS #30) instead of
-	// the extrude sign - interior brushes extrude along the NEGATED stored
-	// normal, which inverts the old p_distance>0 rule.
-	const Vector3 center = get_center();
+	// Append side quads stitching the source loop to the cap. Manifold seam
+	// winding (same rule as extrude_edge): each wall forms a consistent band
+	// between the source loop and the cap loop. The source loop traversed
+	// src[i] -> src[j]; the cap (which replaced it) traverses base+i -> base+j
+	// in the SAME rotational direction. For the wall to share both its long
+	// edges consistently (opposite traversal), it runs src[i] -> src[j] along
+	// the source edge and base+j -> base+i along the cap edge. This is purely
+	// local - correct for solids, open shells, and interior brushes alike.
 	const uint32_t old_face_count = faces.size();
 	// The neighbor each wall is stitched to: seam edge (src[i], src[j]) is
 	// shared with exactly one other face of the brush (open edges have none).
@@ -778,16 +773,7 @@ int LevelBrush::extrude_face(int p_face, real_t p_distance) {
 
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t j = (i + 1) % n;
-		const Vector3 &pa = verts[src[i]];
-		const Vector3 &pb = verts[src[j]];
-		const Vector3 &pc = verts[base + j];
-		const Vector3 quad_n = (pb - pa).cross(pc - pa);
-		if (quad_n.dot(center - pa) > 0.0) {
-			// Normal points at the interior: use the opposite winding.
-			faces.push_back({ src[i], (int)(base + i), (int)(base + j), src[j] });
-		} else {
-			faces.push_back({ src[i], src[j], (int)(base + j), (int)(base + i) });
-		}
+		faces.push_back({ src[i], src[j], (int)(base + j), (int)(base + i) });
 	}
 
 	// Materials: the cap IS the source face (same index) and keeps its
@@ -819,7 +805,6 @@ bool LevelBrush::extrude_edge(const EdgeKey &p_edge, const Vector3 &p_offset, in
 	// Source faces are NEVER rewired - the extrude appends new geometry and
 	// the original brush stays put (Hammer-style edge pull).
 	LocalVector<int> using_faces;
-	Vector3 normal_sum;
 	for (int f = 0; f < (int)faces.size(); f++) {
 		const LocalVector<int> &loop = faces[f];
 		const uint32_t n = loop.size();
@@ -828,7 +813,6 @@ bool LevelBrush::extrude_edge(const EdgeKey &p_edge, const Vector3 &p_offset, in
 			const int b = loop[(i + 1) % n];
 			if ((a == p_edge.a && b == p_edge.b) || (a == p_edge.b && b == p_edge.a)) {
 				using_faces.push_back(f);
-				normal_sum += get_face_normal(f);
 				break;
 			}
 		}
@@ -845,33 +829,41 @@ bool LevelBrush::extrude_edge(const EdgeKey &p_edge, const Vector3 &p_offset, in
 	r_new[0] = new_a;
 	r_new[1] = new_b;
 
-	// Append ONE wall quad spanning (a, b, b', a'). The wall must face OUT
-	// of the solid. The reliable test is which side of the wall plane the
-	// brush body lies on: the centroid is strictly inside for any real
-	// pull, so the wall normal points AWAY from it. (Every normal-based
-	// rule tried here - edge_dir x pull signed toward normal_sum, the edge
-	// bisector cross, and hybrids - had a degenerate case: flat quads,
-	// bisector-parallel pulls, or diagonal bevels. History: GOTCHAS #30.)
-	// Degenerate fallback (centroid in the wall plane, e.g. a begin-drag
-	// stub along the bisector): face the edge-bisector side.
-	const Vector3 edge_dir = (verts[p_edge.b] - verts[p_edge.a]).normalized();
-	Vector3 out = normal_sum - edge_dir * normal_sum.dot(edge_dir);
-	if (out.is_zero_approx()) {
-		out = normal_sum;
-	}
-	const Vector3 pts[4] = { verts[p_edge.a], verts[p_edge.b], verts[new_b], verts[new_a] };
-	const Vector3 wn = newell_normal(pts, 4);
-	real_t side = wn.dot(get_center() - verts[p_edge.a]);
-	if (Math::abs(side) < wn.length() * LevelBrushConstants::WINDING_SIDE_EPS) {
-		side = -wn.dot(out); // Ambiguous: prefer the bisector-facing order.
+	// Append ONE wall quad spanning (a, b, b', a'). Begin-drag uses a 0.001
+	// stub along the face-normal bisector, whose DIRECTION ties between the
+	// two using faces - so no pull-based reference is stable here. Use the
+	// plain manifold seam rule (traverse the shared edge OPPOSITE to the first
+	// using face); the GIZMO re-winds the wall each drag frame against the
+	// real geometry as the wall's plane rotates to its final orientation
+	// (GOTCHAS #30).
+	bool face_goes_ab = true; // Does the first using face traverse a -> b?
+	{
+		const LocalVector<int> &loop = faces[using_faces[0]];
+		const uint32_t n = loop.size();
+		for (uint32_t i = 0; i < n; i++) {
+			if (loop[i] == p_edge.a && loop[(i + 1) % n] == p_edge.b) {
+				face_goes_ab = true;
+				break;
+			}
+			if (loop[i] == p_edge.b && loop[(i + 1) % n] == p_edge.a) {
+				face_goes_ab = false;
+				break;
+			}
+		}
 	}
 	const uint32_t wall_idx = faces.size();
-	if (side > 0.0) {
-		// Centroid on the +wn side: this order faces inward; swap it.
-		faces.push_back({ p_edge.a, new_a, new_b, p_edge.b });
+	if (face_goes_ab) {
+		// Neighbor traverses a -> b, so the wall must traverse b -> a: b, a, a', b'.
+		faces.push_back({ p_edge.b, p_edge.a, new_a, new_b });
 	} else {
+		// Neighbor traverses b -> a, so the wall must traverse a -> b: a, b, b', a'.
 		faces.push_back({ p_edge.a, p_edge.b, new_b, new_a });
 	}
+	// Align the wall with the using face it continues (most parallel in its
+	// current orientation). For a real offset this is the correct final
+	// winding; for the gizmo's 0.001 stub it is a placeholder the per-frame
+	// drag re-wind (rewind_edge_wall) refines as the wall's plane rotates.
+	rewind_edge_wall(wall_idx, p_edge.a, p_edge.b);
 
 	// The wall inherits the material of the using face whose normal best
 	// matches the WALL's normal - pulling a floor edge sideways produces a
@@ -924,34 +916,19 @@ int LevelBrush::extrude_vertex(int p_vertex, const Vector3 &p_offset) {
 	const int new_v = (int)verts.size();
 	verts.push_back(verts[p_vertex] + p_offset);
 
-	// Out-of-solid test for each wedge: the wall plane side of the brush
-	// centroid (reliable for any real pull; see extrude_edge / GOTCHAS #30),
-	// with the all-face normal sum as the degenerate fallback.
-	const Vector3 center = get_center();
-	Vector3 vert_normal_sum;
-	for (const VertUse &u : uses) {
-		vert_normal_sum += get_face_normal(u.face);
-	}
-
 	for (const VertUse &u : uses) {
 		const LocalVector<int> &loop = faces[u.face];
 		const uint32_t n = loop.size();
 		const int prev = loop[(u.pos + n - 1) % n];
 		const int next = loop[(u.pos + 1) % n];
 
-		// Wedge wound so its normal sits on the out-of-solid side.
-		const Vector3 pts[4] = { verts[prev], verts[p_vertex], verts[new_v], verts[next] };
-		const Vector3 wn = newell_normal(pts, 4);
-		real_t side = wn.dot(center - verts[prev]);
-		if (Math::abs(side) < wn.length() * LevelBrushConstants::WINDING_SIDE_EPS) {
-			side = -wn.dot(vert_normal_sum);
-		}
+		// Manifold seam winding (same rule as extrude_edge): the source face
+		// traverses prev -> v -> next, so the wedge must traverse those shared
+		// edges oppositely (v -> prev and next -> v). The quad (v, prev, new_v,
+		// next) does exactly that, keeping the surface continuous over the seams
+		// for solids, open shells, and interior brushes alike.
 		const uint32_t wedge_idx = faces.size();
-		if (side > 0.0) {
-			faces.push_back({ prev, next, new_v, p_vertex });
-		} else {
-			faces.push_back({ prev, p_vertex, new_v, next });
-		}
+		faces.push_back({ p_vertex, prev, new_v, next });
 
 		// Each wedge inherits the material of the face it's stitched to.
 		if (face_materials.size() < faces.size()) {
@@ -976,8 +953,6 @@ void LevelBrush::rewind_face_outward(int p_face) {
 		return; // Degenerate face: no meaningful side.
 	}
 	// Centroid strictly inside the solid => the face must point away from it.
-	// Silent (no _notify_map_changed): callers batch this per drag frame and
-	// refresh the map themselves.
 	if (n.dot(get_center() - verts[loop[0]]) > 0.0) {
 		LocalVector<int> rev;
 		rev.resize(loop.size());
@@ -985,6 +960,55 @@ void LevelBrush::rewind_face_outward(int p_face) {
 			rev[i] = loop[loop.size() - 1 - i];
 		}
 		faces[p_face] = rev;
+	}
+}
+
+void LevelBrush::rewind_edge_wall(int p_wall, int p_edge_a, int p_edge_b) {
+	ERR_FAIL_INDEX(p_wall, (int)faces.size());
+	// Re-wind an extruded edge wall as the drag rotates its plane. The wall
+	// shares the seam edge (a,b) with up to two source faces; it must continue
+	// the one it is most PARALLEL to in its CURRENT orientation (the face it
+	// extends), i.e. align its normal with that face's normal. Evaluated on
+	// real dragged geometry, so unlike the begin-drag stub this is stable.
+	const Vector3 wall_n = get_face_normal(p_wall);
+	if (wall_n.is_zero_approx()) {
+		return;
+	}
+	// Find the source faces sharing the seam edge (exclude the wall itself).
+	int best_face = -1;
+	real_t best_dot = -1.0;
+	for (int f = 0; f < (int)faces.size(); f++) {
+		if (f == p_wall) {
+			continue;
+		}
+		const LocalVector<int> &loop = faces[f];
+		const uint32_t n = loop.size();
+		bool has_a = false, has_b = false;
+		for (uint32_t i = 0; i < n; i++) {
+			has_a = has_a || loop[i] == p_edge_a;
+			has_b = has_b || loop[i] == p_edge_b;
+		}
+		if (!has_a || !has_b) {
+			continue;
+		}
+		const real_t d = Math::abs(get_face_normal(f).dot(wall_n));
+		if (d > best_dot) {
+			best_dot = d;
+			best_face = f;
+		}
+	}
+	if (best_face < 0) {
+		return;
+	}
+	// Align the wall's normal with the continued face's normal.
+	if (wall_n.dot(get_face_normal(best_face)) < 0.0) {
+		LocalVector<int> rev;
+		const LocalVector<int> &loop = faces[p_wall];
+		rev.resize(loop.size());
+		for (uint32_t i = 0; i < loop.size(); i++) {
+			rev[i] = loop[loop.size() - 1 - i];
+		}
+		faces[p_wall] = rev;
 	}
 }
 

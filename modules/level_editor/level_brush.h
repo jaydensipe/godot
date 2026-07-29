@@ -88,12 +88,20 @@ private:
 	mutable bool edges_dirty = true;
 	mutable HashSet<EdgeKey, EdgeKeyHasher> edges_cache;
 	mutable HashSet<EdgeKey, EdgeKeyHasher> open_edges_cache;
+
+	// Geometry version: bumped by _notify_map_changed() on ANY verts/faces/
+	// materials/transform change. Lets external caches (the editor's 3D
+	// outline meshes) rebuild only when the brush actually changed, without
+	// depending on notification ordering.
+	uint64_t geometry_version = 0;
 	void _rebuild_edges_cache() const;
 
 	void _update_face_count_storage();
 	void _notify_map_changed();
 
 public:
+	// Bumped on any geometry/topology/material/transform change.
+	uint64_t get_geometry_version() const { return geometry_version; }
 	int get_vertex_count() const { return (int)verts.size(); }
 	Vector3 get_vertex(int p_index) const;
 	void set_vertex(int p_index, const Vector3 &p_pos);
@@ -146,6 +154,8 @@ public:
 	void flip_faces();
 
 	// Exported property: when true, faces are treated as flipped (interior).
+	// Pure RENDER toggle (bake emits loops as-is): topology ops always wind by
+	// the manifold seam rule, independent of this flag.
 	void set_faces_flipped(bool p_flipped);
 	bool is_faces_flipped() const { return faces_flipped; }
 
@@ -167,10 +177,14 @@ public:
 	int extrude_vertex(int p_vertex, const Vector3 &p_offset);
 
 	// Re-orient a face loop so its normal points away from the brush
-	// centroid (out of the solid). Used to keep extruded walls correctly
-	// wound as a gizmo drag moves them (their winding is decided at
-	// extrude time from a stub offset and can go stale - GOTCHAS #30).
+	// centroid (out of the solid). Only used when CONSTRUCTING a fresh solid
+	// (setup_sphere) to enforce the stored CCW-outward convention.
 	void rewind_face_outward(int p_face);
+
+	// Re-wind an extruded edge wall as the drag rotates its plane: align its
+	// normal with the source face it currently extends (most parallel). Needs
+	// the original seam edge endpoints (not the duplicated far verts).
+	void rewind_edge_wall(int p_wall, int p_edge_a, int p_edge_b);
 
 	// Subdivide a face: quads split into 4 quads via edge midpoints + centroid
 	// (Hammer-style); n-gons fall back to a triangle fan from the centroid.

@@ -401,6 +401,37 @@ TEST_CASE("[LevelBrush] extrude_edge cube top edge wall faces outward for every 
 	}
 }
 
+TEST_CASE("[LevelBrush] extrude_edge winding is identical flipped or not") {
+	// faces_flipped is a RENDER toggle: topology ops must ignore it. The same
+	// edge pull on a solid vs flipped brush produces the SAME wall winding.
+	const Vector3 pulls[4] = {
+		Vector3(1, 0, 0),
+		Vector3(-1, 0, 0),
+		Vector3(0, 0, 1),
+		Vector3(0, 0, -1),
+	};
+
+	for (int p = 0; p < 4; p++) {
+		Vector3 normals[2];
+		for (int flip = 0; flip < 2; flip++) {
+			LevelBrush *brush = memnew(LevelBrush);
+			brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+			if (flip) {
+				brush->set_faces_flipped(true);
+			}
+			int new_ids[2] = { -1, -1 };
+			LevelBrush::EdgeKey e;
+			e.a = 6;
+			e.b = 7;
+			REQUIRE(brush->extrude_edge(e, pulls[p] * 0.5, new_ids));
+			normals[flip] = brush->get_face_normal(brush->get_face_count() - 1);
+			memdelete(brush);
+		}
+		CHECK_MESSAGE(normals[0].is_equal_approx(normals[1]), "pull ", pulls[p],
+				"flipped ", normals[1], " != solid ", normals[0], " (flip changed winding)");
+	}
+}
+
 TEST_CASE("[LevelBrush] extrude_vertex duplicates the vert and stitches wedges") {
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
@@ -916,56 +947,58 @@ TEST_CASE("[LevelBrush] weld_vertices merges to the average and drops degenerate
 	memdelete(brush);
 }
 
-TEST_CASE("[LevelBrush] extrude_face with negative distance keeps outward normals") {
-	LevelBrush *brush = memnew(LevelBrush);
-	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+TEST_CASE("[LevelBrush] extrude_face walls stay manifold-consistent with the cap") {
+	// Each wall shares one long edge with the cap and one with the source's old
+	// boundary. Consistent orientation = the wall traverses its cap-edge
+	// OPPOSITE to how the cap traverses it. Holds for solid AND flipped brushes,
+	// and for negative (inward) extrude distances.
+	for (int flip = 0; flip < 2; flip++) {
+		for (int neg = 0; neg < 2; neg++) {
+			LevelBrush *brush = memnew(LevelBrush);
+			brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+			if (flip) {
+				brush->set_faces_flipped(true);
+			}
 
-	// Pull the top face DOWN by 0.25 (cap at y=0.75, still above the center).
-	// Winding is flipped for negative distance so normals must stay outward.
-	brush->extrude_face(4, -0.25);
+			int cap = brush->extrude_face(4, neg ? -0.25 : 0.5); // +Y top.
+			REQUIRE(cap >= 0);
+			REQUIRE(brush->get_face_count() == 10);
 
-	Vector3 center = brush->get_center();
-	for (int f = 0; f < brush->get_face_count(); f++) {
-		Vector3 fc = brush->get_face_center(f);
-		Vector3 n = brush->get_face_normal(f);
-		Vector3 out = fc - center;
-		if (out.length_squared() < 0.0001) {
-			continue; // Face centered on the brush centroid: no outward direction.
+			// Cap loop (face index 4) and the 4 walls (faces 6..9).
+			LocalVector<int> cap_loop = brush->get_face(cap);
+			auto traversal = [&](int p_face, int p_a, int p_b) -> int {
+				LocalVector<int> loop = brush->get_face(p_face);
+				for (uint32_t i = 0; i < loop.size(); i++) {
+					if (loop[i] == p_a && loop[(i + 1) % loop.size()] == p_b) {
+						return 1;
+					}
+					if (loop[i] == p_b && loop[(i + 1) % loop.size()] == p_a) {
+						return -1;
+					}
+				}
+				return 0;
+			};
+			// For each cap edge, the wall sharing it must traverse it oppositely.
+			for (uint32_t i = 0; i < cap_loop.size(); i++) {
+				int a = cap_loop[i];
+				int b = cap_loop[(i + 1) % cap_loop.size()];
+				int cap_dir = traversal(cap, a, b);
+				REQUIRE(cap_dir != 0);
+				// Find the wall that shares this cap edge.
+				bool checked = false;
+				for (int f = 6; f < brush->get_face_count(); f++) {
+					int wd = traversal(f, a, b);
+					if (wd != 0) {
+						CHECK_MESSAGE(wd == -cap_dir, "flip=", flip, " neg=", neg, " wall ", f, " cap-edge traversal not opposite to cap");
+						checked = true;
+					}
+				}
+				CHECK(checked);
+			}
+
+			memdelete(brush);
 		}
-		CHECK(n.dot(out) > 0.0);
 	}
-
-	memdelete(brush);
-}
-
-TEST_CASE("[LevelBrush] extrude_face on an interior brush keeps stored-normal direction") {
-	// Interior (flipped) brush: stored loops keep solid-outward normals, and
-	// extrude_face stubs along the STORED normal like any solid. (The gizmo
-	// decides the visual extrude direction; the op stays flip-agnostic.)
-	LevelBrush *brush = memnew(LevelBrush);
-	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
-	brush->set_faces_flipped(true);
-
-	int cap = brush->extrude_face(3, 0.5); // -X face.
-	REQUIRE(cap >= 0);
-
-	LocalVector<int> cap_loop = brush->get_face(cap);
-	for (int idx : cap_loop) {
-		CHECK(brush->get_vertex(idx).x == doctest::Approx(-0.5));
-	}
-	CHECK(brush->get_face_normal(cap).is_equal_approx(Vector3(-1, 0, 0)));
-
-	// Side walls face out of the solid (away from the centroid).
-	Vector3 center = brush->get_center();
-	for (int f = 0; f < brush->get_face_count(); f++) {
-		Vector3 out = brush->get_face_center(f) - center;
-		if (out.length_squared() < 0.0001) {
-			continue;
-		}
-		CHECK(brush->get_face_normal(f).dot(out) > 0.0);
-	}
-
-	memdelete(brush);
 }
 
 TEST_CASE("[LevelBrush] get_face_normal invariants (unit length, planar match, bent quad, degenerate)") {
@@ -1513,7 +1546,7 @@ TEST_CASE("[LevelBrush] get_edge_chain follows a clipped-sphere cut ring") {
 	// at ~90 deg. The angular-continuity walk must select the whole ring and
 	// none of the up-sphere edges.
 	LevelBrush *brush = memnew(LevelBrush);
-	brush->setup_sphere(AABB(Vector3(-1, -1, -1), Vector3(1, 1, 1)), 16);
+	brush->setup_sphere(AABB(Vector3(-1, -1, -1), Vector3(2, 2, 2)), 16);
 	brush->clip(Plane(Vector3(0, 1, 0), 0)); // Keep y >= 0, cap at the equator.
 
 	// Find a ring edge: both endpoints on the cut plane (y == 0).

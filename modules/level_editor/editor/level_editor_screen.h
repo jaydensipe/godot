@@ -43,6 +43,7 @@
 #include "scene/resources/gradient.h"
 #include "scene/resources/immediate_mesh.h"
 #include "scene/resources/mesh.h"
+#include "servers/display/display_server.h"
 
 class Button;
 class Camera3D;
@@ -73,6 +74,20 @@ private:
 	Camera3D *camera = nullptr;
 	DirectionalLight3D *light = nullptr;
 	WorldEnvironment *world_env = nullptr;
+
+	// Gizmo-only overlay pass: a transparent SubViewport stacked above the
+	// scene viewport, with its own World3D and a camera synced to the scene
+	// camera each frame. Keeps the 3D gizmo immune to the viewport's debug
+	// draw modes (wireframe/overdraw would restyle it) in ALL view types.
+	SubViewport *gizmo_subviewport = nullptr;
+	Camera3D *gizmo_camera = nullptr;
+	Node3D *gizmo_root = nullptr; // Screen-owned 3D gizmo, one per viewport.
+
+	// 3D brush outlines: one line mesh per brush in the overlay world (no
+	// depth test, debug-draw-immune), rebuilt ONLY when the brush's geometry
+	// changes - the 2D overlay re-projected every edge of every brush every
+	// frame, which was the interactive-drag hotspot. Screen-owned.
+	HashMap<LevelBrush *, MeshInstance3D *> outline_instances;
 
 	class Overlay : public Control {
 		GDCLASS(Overlay, Control);
@@ -139,9 +154,16 @@ private:
 	// ray-pick only re-runs when the cursor has moved a few pixels.
 	bool drop_payload_checked = false;
 	bool drop_payload_ok = false;
+	bool drop_cursor_set = false;
 	Vector2 drop_last_probe = Vector2(Math::INF, Math::INF);
 
 	ViewType view_type = VIEW_PERSPECTIVE;
+
+	// OS cursor the tool code asked for this frame (resize cursors over box
+	// handles). Viewports are SubViewportContainers, which the engine's
+	// cursor update skips - so the tool sets/restores the cursor itself via
+	// set_hover_cursor().
+	DisplayServerEnums::CursorShape hover_cursor = DisplayServerEnums::CURSOR_ARROW;
 
 	// Perspective navigation is handled by the same controller the 3D editor
 	// viewport uses (orbit/pan/zoom + RMB freelook with editor settings).
@@ -201,6 +223,12 @@ public:
 
 	Camera3D *get_camera() const { return camera; }
 	SubViewport *get_subviewport() const { return subviewport; }
+	SubViewport *get_gizmo_subviewport() const { return gizmo_subviewport; }
+	Node3D *get_gizmo_root() const { return gizmo_root; }
+	void set_gizmo_root(Node3D *p_root);
+	HashMap<LevelBrush *, MeshInstance3D *> &get_outline_instances() { return outline_instances; }
+	// Sync the gizmo overlay camera to the scene camera (called per frame).
+	void sync_gizmo_camera();
 	bool is_freelook_active() const { return view_controller.is_valid() && view_controller->is_freelook_enabled(); }
 	// Any camera navigation in progress (perspective freelook or ortho MMB
 	// pan) - tool input/hover picks are skipped while the camera moves.
@@ -214,6 +242,7 @@ public:
 
 	void queue_overlay_redraw();
 	void _queue_preview_redraw();
+	void set_hover_cursor(DisplayServerEnums::CursorShape p_shape);
 	void clear_drop_state();
 	bool can_drop_data_fw(const Point2 &p_point, const Variant &p_data, Control *p_from);
 	void drop_data_fw(const Point2 &p_point, const Variant &p_data, Control *p_from);
@@ -374,6 +403,9 @@ private:
 	// and, in edge-on views, everything but the two endpoint handles.
 	bool _ghost_handle_usable(LevelEditorViewport *p_vp, int p_handle) const;
 	bool _box_handle_usable(LevelEditorViewport *p_vp, int p_handle, int p_flat_axis) const;
+	// Resize cursor for a box handle: projects the handle's drag direction(s)
+	// to screen space and picks the closest of the 4 resize cursors.
+	DisplayServerEnums::CursorShape _handle_cursor(LevelEditorViewport *p_vp, int p_handle, const AABB &p_aabb, const Transform3D &p_xform) const;
 
 	// --- Clip tool state ---
 	enum ClipSide {
@@ -651,6 +683,7 @@ private:
 	HashMap<LevelBrush *, Vector<int>> gizmo_extrude_cap_faces; // Face target: cap face per brush, in extrude order.
 	HashMap<LevelBrush *, Vector<Vector3>> gizmo_extrude_cap_normals; // Cap normals per brush, same order as cap_faces (per-brush so HashMap order can't misalign them).
 	HashMap<LevelBrush *, Vector<int>> gizmo_extrude_elem_verts; // Edge/vertex targets: duplicated vert indices per brush (flat list).
+	HashMap<LevelBrush *, Vector<LevelBrush::EdgeKey>> gizmo_extrude_wall_edges; // Edge target: original seam edge per extruded wall (same order as walls appended).
 	HashMap<LevelBrush *, PackedVector3Array> gizmo_extrude_moved_verts; // Post-extrude topology at drag start.
 
 	Vector3 _get_gizmo_origin() const; // World-space pivot of current selection.
@@ -662,12 +695,39 @@ private:
 	// view instead of warping like a 2D-projected overlay). One root node,
 	// re-parented to the active perspective viewport's subviewport; updated
 	// from _update_overlays().
-	Node3D *gizmo_3d_root = nullptr;
-	MeshInstance3D *gizmo_3d_axes[3] = {};
+	// One 3D gizmo per viewport, living in the viewport's gizmo overlay
+	// SubViewport (own World3D, immune to the scene viewport's debug draw
+	// modes). All four share meshes/materials (built once in _ensure_gizmo_3d).
+	struct Gizmo3DInstance {
+		Node3D *root = nullptr;
+		MeshInstance3D *axes[3] = {};
+		MeshInstance3D *planes[3] = {};
+		MeshInstance3D *center = nullptr;
+	};
+	Gizmo3DInstance gizmo_3d[4];
+	void _build_gizmo_instance(Gizmo3DInstance &r_inst);
+	bool gizmo_3d_built = false;
+
+	// 3D brush outlines (one line mesh per brush per viewport, rebuilt only
+	// on brush geometry change). Materials shared across all instances.
+	Ref<Material> outline_mat; // Base white.
+	Ref<Material> outline_mat_selected; // Orange (mesh-target selection).
+	Ref<Material> outline_mat_highlight; // Light blue (element-target hover/selected brush).
+	Ref<Material> outline_mat_hover; // Thin white hover (mesh target).
+	HashMap<LevelBrush *, uint64_t> outline_versions; // Last-built geometry version per brush.
+	bool outline_built = false;
+	void _ensure_outline_mats();
+	// Rebuild dirty brushes' line meshes + sync instances/materials with the
+	// current brush set and selection/hover state. Called from _update_overlays.
+	// Returns true when any brush's geometry changed (callers use it to repaint
+	// the 2D overlay, which draws geometry-dependent content like AABB handles).
+	bool _update_outlines();
+	// Tessellate one brush's edges (solid + pre-dashed open edges) into r_mesh
+	// in WORLD space (the overlay worlds share the scene's coordinate frame).
+	void _rebuild_outline_mesh(LevelBrush *p_brush, ImmediateMesh *r_mesh) const;
 	Ref<ArrayMesh> gizmo_3d_arrow_mesh; // Move tool (arrow tips).
 	Ref<ArrayMesh> gizmo_3d_scale_mesh; // Scale tool (cube tips).
-	MeshInstance3D *gizmo_3d_planes[3] = {};
-	MeshInstance3D *gizmo_3d_center = nullptr;
+	Ref<ArrayMesh> gizmo_3d_plane_mesh[3]; // One per axis pair (XY, XZ, YZ).
 	Ref<Material> gizmo_3d_axis_mat[3];
 	Ref<Material> gizmo_3d_axis_mat_hot[3];
 	Ref<Material> gizmo_3d_plane_mat[3];
@@ -682,12 +742,14 @@ private:
 	void _apply_gizmo_delta(const Vector3 &p_world_delta);
 	void _apply_gizmo_rotate(int p_axis, real_t p_angle);
 	void _apply_gizmo_scale(const Vector3 &p_world_delta);
+	// Shift+drag extrude in the Scale tool: scale the extruded geometry per
+	// element (caps around their own centers) instead of translating it.
+	void _apply_gizmo_scale_extrude(const Vector3 &p_world_delta);
 	// Mesh-target scale: shared factor computation (drag delta -> snapped
 	// per-axis factors against the primary brush's size). Used by the drag and
 	// by Replay Action recording.
 	Vector3 _compute_mesh_scale_factors(const Vector3 &p_world_delta) const;
 	void _apply_mesh_scale_factors(const Vector3 &p_factors);
-	void _draw_gizmo(LevelEditorViewport *p_vp, Control *p_canvas);
 
 	LevelMap *_get_or_create_map();
 	void _resolve_map();
@@ -815,12 +877,6 @@ private:
 	friend class LevelEditorViewport;
 	friend class LevelEditorDock;
 	void _draw_viewport_overlay(LevelEditorViewport *p_vp, Control *p_canvas);
-	void _draw_brush_outline(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, bool p_selected);
-	// Shared edge-outline pass: solid lines for closed edges, hashed dashes for
-	// open ones, always via project_segment so edges crossing the near plane
-	// still draw (GOTCHAS #22). Used by the base outlines, hover highlight, and
-	// element-target highlights.
-	void _draw_brush_edges(LevelEditorViewport *p_vp, Control *p_canvas, LevelBrush *p_brush, const Color &p_color, real_t p_width) const;
 	void _draw_drag_feedback(LevelEditorViewport *p_vp, Control *p_canvas);
 	void _draw_selection(LevelEditorViewport *p_vp, Control *p_canvas);
 

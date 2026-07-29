@@ -113,14 +113,18 @@ SubViewportContainer
   `move_vertices`, `extrude_face` (cap + walls),
   `extrude_edge`/`extrude_vertex` (duplicate the element's verts with an
   offset, rewire using faces to the dupes, stitch one wall quad/wedge per
-  face; wall winding is verified against the brush center and flipped if
-  inward - using faces may traverse the element in either direction),
+  face; the wall is wound to CONTINUE the using face it is most parallel to
+  - `rewind_edge_wall` - and re-wound per-frame by the gizmo as the drag
+  rotates it off the 0.001 stub, see GOTCHAS #30),
   `clip(plane)` (solid clip + cap), `split_faces(plane)` (subdivide in place),
   `mirror(plane)` (reflect verts + reverse winding - reflection flips
   chirality), `compact_vertices` (drop unreferenced verts, remap loops),
   `clip_split`, `delete_faces`, `collapse_vertices`, `weld_vertices`,
   `bridge_edges`, `get_edge_loop`/`get_edge_chain` (quad-strip walkers),
-  `subdivide_face`, `rewind_face_outward` (per-face winding fix),
+  `subdivide_face`, `rewind_face_outward` (per-face winding fix, setup_sphere
+  only), `rewind_edge_wall` (re-wind an extruded edge wall to continue its
+  most-parallel source face; called at extrude time and per-frame by the
+  gizmo drag),
   `bevel_edges`/`bevel_edges_profiled` (Blender-style bevel: edge consumed, one
   strip quad per edge bridging offset lines p_distance into each adjacent
   face; meeting edges mitred to shared corner verts; collinear chains
@@ -332,8 +336,11 @@ bugs GOTCHAS is full of (stale previews, desynced materials, undo gaps,
 inward walls):
 
 1. **Topology in `level_modifiers.cpp`** (or `level_brush.cpp` for trivial
-   ops). Winding of any new face is verified against the brush CENTROID
-   (plane-side test), never a pull/normal sign rule (GOTCHAS #30).
+   ops). Winding of any new stitched face must make it CONTINUE the source
+   face it is most parallel to (align normals). For an op driven by a gizmo
+   drag, wind on REAL geometry - never decide from the 0.001 begin-drag
+   stub, whose direction is degenerate (GOTCHAS #30). Reuse
+   `rewind_edge_wall` for edge-style ops.
 2. **Face materials stay aligned**: `face_materials` must match `faces`
    1:1 (`_update_face_count_storage()`), and new faces inherit from the
    geometrically continuing face (seam neighbor / best-normal match -

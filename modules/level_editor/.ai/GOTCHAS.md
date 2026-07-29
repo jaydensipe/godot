@@ -193,35 +193,64 @@ unproject_position` on a point past the near plane returns a mirrored
     `clip()` keeps `distance >= -eps`. A clip plane at +X normal, d=5 keeps
     only x>=5 (clips a unit box at origin AWAY) - the tests got this wrong
     once (no-op plane needs the brush fully on the keep side).
-30. **Stitched-wall winding: test the centroid's SIDE of the wall plane,
-    and re-wind as the drag moves.** Getting `extrude_edge`/
-    `extrude_vertex` walls to face out of the solid (Hammer behavior,
-    user-verified in Hammer 2) burned FIVE sign rules before landing:
-    - Every rule built from `edge_dir x pull` / `edge_dir x bisector` /
-      dots against `normal_sum` has a degenerate case: flat quads
-      (normal_sum perpendicular to every wall -> sign flip is a no-op,
-      3 of 4 walls arbitrary), convex edges (bisector cross points
-      inward depending on loop order), bisector-parallel pulls (cross
-      perpendicular to the wall, useless).
-    - `normal.dot(centroid - wall_center)` (direction dot) is ALSO
-      degenerate: the 45-degree bevel plane from a bisector pull passes
-      exactly through the centroid.
-      What works: `wn.dot(centroid - wall_point)` - the wall normal must
-      point AWAY from the brush centroid as a PLANE-SIDE test. The
-      centroid is strictly inside for any real pull, so it never
-      degenerates except the begin-drag stub (bisector bevel through the
-      centroid), which falls back to the bisector side.
-      **The stub freeze is the second half of the bug**: winding is decided
-      at extrude time from the 0.001 stub while the drag rotates the wall
-      plane, so NO once-computed rule is correct for all final positions.
-      `_apply_gizmo_delta` (edge/vertex extrude branch) re-winds every
-      appended wall face (indices >= pre-extrude face count) each frame via
-      `LevelBrush::rewind_face_outward()`. Undo is safe because
-      `_add_brush_undo_pair` reads the CURRENT faces for the do-side.
+30. **Stitched-wall winding: THE 0.001 STUB MAKES BEGIN-DRAG WINDING
+    UNKNOWABLE - decide it from REAL geometry, per-frame.** This one burned a
+    full day of flip-flopping between rules (centroid, perpendicular-face,
+    coplanar-face, pull-direction) before the actual culprit surfaced. THE
+    RULE THAT WORKS (Hammer 2-verified across solid cube walls, the clipped
+    flipped dome brim, and the flat quad): a new wall stitched across a seam
+    edge must be wound to CONTINUE the using face it is most PARALLEL to in
+    its current orientation - align the wall's normal with that face's normal
+    (`rewind_edge_wall`). This is purely local (no centroid, no `faces_flipped`
+    check, no open-edge heuristic) and correct for solids, open shells, flat
+    quads, and interior brushes alike.
+    - **THE REAL BUG WAS THE STUB, NOT THE RULE.** Shift+drag extrudes call
+      `extrude_edge` ONCE at begin-drag with a 0.001 stub offset along the
+      face-normal BISECTOR. That stub's direction ties between the two using
+      faces of a convex edge, and its Newell normal is numerically unstable
+      (~0.02 magnitude, direction dominated by float rounding). Any rule that
+      reads the provisional wall geometry AT EXTRUDE TIME picks a near-random
+      reference face - and the rounding shifts with ABSOLUTE world
+      coordinates, so the SAME edge wound up on a brush at the origin and
+      down on the identical brush drawn off-origin (two walls up, two down).
+      We chased "position-dependent winding" for hours before the debug dump
+      showed identical local geometry with different ref-face picks.
+    - **THE FIX: two-phase winding.** `extrude_edge` winds the wall with the
+      plain manifold seam rule (traverse opposite `using_faces[0]`) as a
+      deterministic placeholder, then immediately calls `rewind_edge_wall` -
+      which, for a REAL (non-stub) offset, lands the correct final winding.
+      The gizmo drag ALSO calls `rewind_edge_wall` PER FRAME (both
+      `_apply_gizmo_delta` and `_apply_gizmo_scale_extrude` edge branches,
+      tracked via `gizmo_extrude_wall_edges` = original seam edge per wall)
+      because the stub's initial winding IS wrong and only corrects once the
+      drag rotates the wall to its real plane. Do NOT remove the per-frame
+      re-wind assuming "seam winding is topological and can't go stale" -
+      that was true only when the wall was wound correctly to begin with;
+      the stub breaks that assumption.
+    - `rewind_edge_wall(wall, a, b)` finds the (up to two) source faces
+      sharing the seam edge and flips the wall iff its normal dots NEGATIVE
+      against the most-parallel one. Stable on real geometry, order/position
+      independent.
+    - `extrude_face` walls are a fixed band (src[i]->src[j] on the source
+      edge, base+j->base+i on the cap edge) - consistent with the cap, no
+      per-frame re-wind needed (the cap keeps the source winding, so the band
+      stays coherent as it slides). `extrude_vertex` wedges are
+      (v, prev, new_v, next).
+    - `rewind_face_outward` (centroid, outward-only) survives ONLY for
+      `setup_sphere` (fresh convex solid). The old centroid re-wind of
+      extruded walls was removed - it fought the correct winding.
+    - `faces_flipped` is a pure RENDER toggle (bake emits loops as-is);
+      topology ops must ignore it.
       Reminder: a mirrored-looking texture is always a WINDING problem -
       bake UVs are position-based planar projections, loop-order
       independent. Don't touch the UV code for this (one speculative UV
       "fix" was already reverted).
+    - DEBUGGING LESSON: when a winding bug looks position- or draw-direction-
+      dependent, suspect a degenerate stub/provisional normal feeding the
+      decision BEFORE inventing a new geometric rule. `print_line` the local
+      geometry (edge verts, using-face loops/normals/traversals, the chosen
+      reference) on the exact failing input - the dump is what broke this
+      open.
 
 31. **Off-gizmo LMB swallows block selection clicks.** `_gizmo_input` runs
     BEFORE `_selection_input` in `forward_input`. The Scale tool had a
