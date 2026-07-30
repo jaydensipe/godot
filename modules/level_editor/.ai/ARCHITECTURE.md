@@ -16,7 +16,14 @@ modules/level_editor/
   level_constants.h          # LevelBrushConstants (geometry tolerances, runtime-safe)
                              #   + LevelEditorColors/LevelEditorGrid/LevelEditorHandles
                              #   (editor overlay styling) - at module ROOT so runtime code
-                             #   can include it (must stay editor-free)
+                             #   can include it (must stay editor-free)D
+  level_helpers.h            # LevelHelpers namespace: aabb_corners/AABB_EDGE_IDX/
+                             #   AABB_FACE_DIRS/aabb_face_center box helpers, pure
+                             #   gizmo-drag math (axis_drag_plane,
+                             #   closest_point_on_line_to_ray), 2D segment math
+                             #   (closest_point_on_segment_2d, clip_segment_to_rect),
+                             #   and clipped overlay drawing (draw_dashed_line_clipped,
+                             #   draw_marching_segment, draw_vertex_marker)
   icons/                     # Editor icons (LevelMap.svg = node icon, Subdivision.svg = plugin tab)
   doc_classes/
     LevelBrush.xml
@@ -27,18 +34,18 @@ modules/level_editor/
     test_level_helpers.h     # pure drag/picking math, no tags needed
   .ai/                       # Project docs for AI/agent context handoff
   editor/
-    level_editor_screen.{h,cpp}  # LevelEditorPlugin, LevelEditorScreen, LevelEditorViewport
-    level_helpers.h          # LevelHelpers namespace - aabb_corners/AABB_EDGE_IDX/
-                             #   AABB_FACE_DIRS/aabb_face_center box helpers, the
-                             #   pure gizmo-drag math (axis_drag_plane,
-                             #   closest_point_on_line_to_ray), 2D segment math
-                             #   (closest_point_on_segment_2d, clip_segment_to_rect),
-                             #   and clipped overlay drawing (draw_dashed_line_clipped,
-                             #   draw_marching_segment, draw_vertex_marker)
+    level_editor_screen.{h,cpp}  # LevelEditorScreen: toolbar + 4 viewports, owns ALL
+                                 #   editing state (tool/target, selection, drags, undo)
+    level_editor_viewport.{h,cpp} # LevelEditorViewport: one 3D pane - scene SubViewport
+                                 #   + camera + lights, gizmo overlay SubViewport, 2D/3D
+                                 #   grids, info/frame-time HUDs, freelook + ortho
+                                 #   pan/zoom, ray/projection helpers, drop forwarding
+    level_editor_plugin.{h,cpp}  # LevelEditorPlugin - main-screen "Level" tab plugin;
+                                 #   owns the screen + dock, mirrors editor selection
     tools/
       level_editor_tools.cpp     # LevelEditorScreen tool-action members (_action_*: extrude,
                                  #   flip faces, subdivide, bridge, collapse; plus
-                                 #   menu handlers and bake)
+                                 #   menu handlers, bake, and Replay Action)
       clip/
         level_editor_clip.cpp    # Clip tool state machine (begin/drag/cycle/apply/cancel)
                                  #   + cut-line and edge-color preview drawing
@@ -51,6 +58,14 @@ modules/level_editor/
         level_editor_brush.cpp   # Block tool ghost box (handles, drag, dim labels, commit)
                                  #   + shared box-handle picking (_pick_box_handle,
                                  #   _ray_to_axis_plane used by select-mode handles)
+      select/
+        level_editor_select.cpp  # Select tool (Mesh target): single-brush AABB resize
+                                 #   handles - pick/drag/undo-commit/draw + input handler
+    modifiers/
+      level_editor_bevel.cpp     # Bevel edges: armed-action plumbing (arm -> dock edits ->
+                                 #   Enter applies), bevel apply, marching-ants preview.
+                                 #   Editor-side front-end for the level_modifiers.cpp
+                                 #   geometry ops (parallels it: one file per modifier action)
     gizmos/
       level_editor_gizmos.cpp    # LevelEditorScreen gizmo members (translate/scale arrow
                                  #   gizmo, rotate rings, Shift+drag face extrude, undo commits)
@@ -72,7 +87,10 @@ modules/level_editor/
                                  #   drag_data_is_material (cheap hover check),
                                  #   material_from_drag_data (payload -> Material,
                                  #   "files" and "resource" conventions),
-                                 #   path_is_material_or_texture
+                                 #   path_is_material_or_texture. Also the
+                                 #   LevelEditorScreen material-drop members: drop
+                                 #   probe/pick, undo-committed apply, marching-ants
+                                 #   drop-target highlight (PreviewOverlay)
 ```
 
 IMPORTANT: `level_brush.*` and `level_map.*` MUST stay at module root (they

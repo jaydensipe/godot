@@ -52,7 +52,7 @@ inline constexpr real_t CHAIN_MIN_DOT = 0.5;
 // Single source for the dock descriptor default and the screen's quick-bevel
 // / armed fallback (was duplicated as a bare 0.5 in three places).
 inline constexpr real_t BEVEL_DEFAULT_SHAPE = 0.5;
-// Bevel mitre: minimum sine of the angle between an edge pair before the
+// Bevel miter: minimum sine of the angle between an edge pair before the
 // corner is rejected as nearly parallel (level_modifiers bevel).
 inline constexpr real_t BEVEL_MITRE_MIN_SIN = 0.05;
 // Bevel dock setting bounds (Width/Steps descriptors).

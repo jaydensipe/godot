@@ -30,7 +30,7 @@
 
 #pragma once
 
-#include "../editor/level_helpers.h"
+#include "../level_helpers.h"
 
 #include "tests/test_macros.h"
 

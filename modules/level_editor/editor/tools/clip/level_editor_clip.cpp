@@ -36,6 +36,7 @@
 #include "../../level_editor_screen.h"
 
 #include "editor/themes/editor_scale.h"
+#include "scene/3d/camera_3d.h"
 #include "scene/gui/control.h"
 
 // ---- Clip tool ---------------------------------------------------------------

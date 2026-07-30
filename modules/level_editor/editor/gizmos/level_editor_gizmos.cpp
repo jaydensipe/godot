@@ -34,13 +34,14 @@
 // functions, split out of level_editor_screen.cpp for organization.
 
 #include "../../level_constants.h"
+#include "../../level_helpers.h"
 #include "../level_editor_screen.h"
-#include "../level_helpers.h"
 
 #include "core/math/geometry_3d.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/themes/editor_scale.h"
+#include "scene/3d/camera_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/surface_tool.h"
@@ -1768,9 +1769,9 @@ bool LevelEditorScreen::_rotate_input(LevelEditorViewport *p_vp, Camera3D *p_cam
 	} else if (mm.is_valid()) {
 		if (rotate_drag_axis >= 0 && rotate_drag_viewport == p_vp) {
 			real_t cur = _rotate_screen_angle(p_vp, mm->get_position(), rotate_drag_axis);
-				real_t delta = cur - rotate_drag_start_angle;
-				// Snap to the rotate grid step.
-				delta = Math::snapped(delta, Math::deg_to_rad(LevelEditorGrid::ROTATE_SNAP_DEGREES));
+			real_t delta = cur - rotate_drag_start_angle;
+			// Snap to the rotate grid step.
+			delta = Math::snapped(delta, Math::deg_to_rad(LevelEditorGrid::ROTATE_SNAP_DEGREES));
 			rotate_drag_last_angle = delta;
 			_apply_gizmo_rotate(rotate_drag_axis, delta);
 			_update_overlays();

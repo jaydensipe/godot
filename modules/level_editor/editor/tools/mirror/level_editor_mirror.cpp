@@ -39,6 +39,7 @@
 #include "editor/editor_interface.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/themes/editor_scale.h"
+#include "scene/3d/camera_3d.h"
 #include "scene/gui/control.h"
 
 void LevelEditorScreen::_mirror_begin(LevelBrush *p_brush, const Vector3 &p_point, LevelEditorViewport *p_vp) {

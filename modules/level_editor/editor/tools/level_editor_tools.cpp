@@ -275,83 +275,6 @@ void LevelEditorScreen::_vertex_menu_selected(int p_id) {
 	}
 }
 
-void LevelEditorScreen::_action_bevel_edges(bool p_quick) {
-	if (!current_map || selected_edges.is_empty()) {
-		return;
-	}
-
-	if (p_quick) {
-		// F in Edge mode: bevel immediately with the current grid size and
-		// default steps/shape (no arming, no dock round-trip).
-		if (selection_target != TARGET_EDGE || armed_action != ACTION_NONE) {
-			return;
-		}
-		_bevel_edges_apply(grid_size, 0, LevelBrushConstants::BEVEL_DEFAULT_SHAPE);
-		return;
-	}
-
-	// Armed via the Edge menu: first click arms (dock shows Width/Steps/
-	// Shape); Enter applies. Direct calls (apply path) run with the armed
-	// values.
-	if (armed_action != ACTION_BEVEL_EDGES) {
-		_arm_action(ACTION_BEVEL_EDGES);
-		return;
-	}
-
-	const real_t width = get_armed_value(StringName("width"), grid_size);
-	const int steps = (int)get_armed_value(StringName("steps"), 0.0);
-	const real_t shape = get_armed_value(StringName("shape"), LevelBrushConstants::BEVEL_DEFAULT_SHAPE);
-	_bevel_edges_apply(width, steps, shape);
-}
-
-void LevelEditorScreen::_bevel_edges_apply(real_t p_width, int p_steps, real_t p_shape) {
-	if (!current_map || selected_edges.is_empty()) {
-		return;
-	}
-
-	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	bool did = false;
-	for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
-		LevelBrush *target = E.key;
-		PackedVector3Array old_verts = target->get_vertices_data();
-		Array old_faces = target->get_faces_data();
-		Array old_mats = target->get_face_materials_data();
-
-		Vector<LevelBrush::EdgeKey> edges;
-		for (const LevelBrush::EdgeKey &e : E.value) {
-			edges.push_back(e);
-		}
-
-		LevelBrush *working = target->duplicate_brush();
-		if (working->bevel_edges_profiled(edges, p_width, p_steps, p_shape) > 0) {
-			// Create the undo action lazily: an uncommitted create_action (no
-			// brush beveled anything) leaves a dangling action in the manager.
-			if (!did) {
-				undo_redo->create_action(TTR("Bevel Edges"));
-			}
-			undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
-			undo_redo->add_do_property(target, "faces", working->get_faces_data());
-			undo_redo->add_do_property(target, "face_materials", working->get_face_materials_data());
-			undo_redo->add_undo_property(target, "vertices", old_verts);
-			undo_redo->add_undo_property(target, "faces", old_faces);
-			undo_redo->add_undo_property(target, "face_materials", old_mats);
-			did = true;
-		}
-		memdelete(working);
-	}
-	if (!did) {
-		return;
-	}
-	undo_redo->add_do_method(current_map, "refresh");
-	undo_redo->add_undo_method(current_map, "refresh");
-	undo_redo->commit_action();
-
-	// compact_vertices() remaps vert indices, so the EdgeKey selection is
-	// stale - clear it (same rule as subdivide/delete, GOTCHAS #14).
-	selected_edges.clear();
-	_refresh_map();
-}
-
 void LevelEditorScreen::_edge_menu_selected(int p_id) {
 	edge_menu->release_focus();
 	switch (p_id) {
@@ -426,6 +349,120 @@ void LevelEditorScreen::_face_menu_selected(int p_id) {
 		case 3: // Flip Faces (works on the selected brush, any mode)
 			_action_flip_faces();
 			break;
+	}
+}
+
+void LevelEditorScreen::_tools_menu_selected(int p_id) {
+	if (p_id == 0) {
+		_replay_last_action();
+	}
+}
+
+void LevelEditorScreen::_record_replay_action(ReplayAction::Kind p_kind, const Vector3 &p_world_delta, int p_axis, real_t p_angle, const Vector3 &p_factors) {
+	last_action.kind = p_kind;
+	last_action.world_delta = p_world_delta;
+	last_action.axis = p_axis;
+	last_action.angle = p_angle;
+	last_action.factors = p_factors;
+}
+
+void LevelEditorScreen::_replay_last_action() {
+	if (last_action.kind == ReplayAction::KIND_NONE || !current_map) {
+		return;
+	}
+
+	if (last_action.kind == ReplayAction::KIND_DUPLICATE_DRAG) {
+		// Repeat the last Shift+drag duplicate on the current selection: copy
+		// each selected brush as a sibling, offset the copies by the recorded
+		// world delta, and select them (so repeated presses keep marching).
+		if (selected_brushes.is_empty()) {
+			return;
+		}
+		Node *root = EditorInterface::get_singleton()->get_edited_scene_root();
+		EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+		undo_redo->create_action(TTR("Replay Duplicate Brush"));
+		TypedArray<Node> sources;
+		TypedArray<Node> copies;
+		for (LevelBrush *b : selected_brushes) {
+			if (!b->is_inside_tree() || !b->get_parent()) {
+				continue;
+			}
+			LevelBrush *copy = b->duplicate_brush();
+			copy->set_name(b->get_name());
+			copy->set_transform(b->get_transform());
+			copy->set_position(b->get_position() + last_action.world_delta);
+			Node *parent = b->get_parent();
+			sources.push_back(b);
+			copies.push_back(copy);
+			undo_redo->add_do_method(parent, "add_child", copy);
+			if (root) {
+				undo_redo->add_do_method(copy, "set_owner", root);
+			}
+			undo_redo->add_undo_method(parent, "remove_child", copy);
+			undo_redo->add_do_reference(copy); // Keep the node alive across undo.
+		}
+		if (copies.is_empty()) {
+			return;
+		}
+		undo_redo->add_do_method(current_map, "refresh");
+		undo_redo->add_undo_method(current_map, "refresh");
+		undo_redo->add_undo_method(this, "set_brush_selection", sources);
+		undo_redo->add_do_method(this, "set_brush_selection", copies);
+		undo_redo->commit_action();
+		return;
+	}
+
+	// Modification replays (move/rotate/scale) operate on the current brush
+	// selection. Snapshot the pre-state, apply the recorded transform, commit.
+	if (selected_brushes.is_empty()) {
+		return;
+	}
+	HashMap<LevelBrush *, PackedVector3Array> old_verts;
+	for (LevelBrush *b : selected_brushes) {
+		if (b->is_inside_tree()) {
+			old_verts[b] = b->get_vertices_data();
+		}
+	}
+	if (old_verts.is_empty()) {
+		return;
+	}
+
+	switch (last_action.kind) {
+		case ReplayAction::KIND_MOVE: {
+			// Position is a node property, not vertex data - commit it directly.
+			EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
+			undo_redo->create_action(TTR("Replay Move Brush"));
+			for (const KeyValue<LevelBrush *, PackedVector3Array> &E : old_verts) {
+				LevelBrush *b = E.key;
+				Vector3 local = last_action.world_delta;
+				Node3D *parent = Object::cast_to<Node3D>(b->get_parent());
+				if (parent) {
+					local = parent->get_global_transform().affine_inverse().basis.xform(last_action.world_delta);
+				}
+				const Vector3 old_pos = b->get_position();
+				undo_redo->add_do_property(b, "position", old_pos + local);
+				undo_redo->add_undo_property(b, "position", old_pos);
+			}
+			undo_redo->commit_action();
+			_refresh_map();
+			return;
+		}
+		case ReplayAction::KIND_ROTATE: {
+			// Each brush rotates around its OWN center (same rule as the drag).
+			Vector3 axis;
+			axis[last_action.axis] = 1.0;
+			_brushes_transform_own_center(Basis(axis, last_action.angle));
+			_commit_brush_verts_undo(TTR("Replay Rotate Brush"), old_verts);
+			return;
+		}
+		case ReplayAction::KIND_SCALE: {
+			// Each brush scales around its OWN AABB center (same rule as the drag).
+			_brushes_transform_own_center(Basis::from_scale(last_action.factors));
+			_commit_brush_verts_undo(TTR("Replay Scale Brush"), old_verts);
+			return;
+		}
+		default:
+			return;
 	}
 }
 
@@ -659,43 +696,6 @@ void LevelEditorScreen::_action_collapse_vertices() {
 // Input handlers (dispatched from LevelEditorScreen::forward_input).
 // Each returns true when it consumed the event.
 // ---------------------------------------------------------------------------
-
-bool LevelEditorScreen::_select_handles_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
-	// Select-tool box handles take priority over the move gizmo (Mesh target
-	// only - element targets transform via the gizmo).
-	if (tool != TOOL_SELECT || selection_target != TARGET_MESH || !selected_brush) {
-		return false;
-	}
-	Ref<InputEventMouseButton> mb = p_event;
-	Ref<InputEventMouseMotion> mm = p_event;
-	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
-		if (mb->is_pressed()) {
-			int h = _pick_select_handle(p_vp, mb->get_position());
-			if (h != GHOST_NONE) {
-				select_handle_drag = h;
-				select_drag_viewport = p_vp;
-				select_drag_original_aabb = _get_brush_local_aabb(selected_brush);
-				select_drag_original_verts = selected_brush->get_vertices_data();
-				return true;
-			}
-		} else if (select_handle_drag != GHOST_NONE) {
-			_select_handle_end_drag();
-			return true;
-		}
-	} else if (mm.is_valid()) {
-		if (select_handle_drag != GHOST_NONE && select_drag_viewport == p_vp) {
-			_select_handle_drag_to(p_vp, mm->get_position());
-			return true;
-		}
-		int prev = select_handle_hover;
-		select_handle_hover = _pick_select_handle(p_vp, mm->get_position());
-		if (prev != select_handle_hover) {
-			_update_overlays();
-		}
-		p_vp->set_hover_cursor(select_handle_hover != GHOST_NONE ? _handle_cursor(p_vp, select_handle_hover, _get_brush_local_aabb(selected_brush), selected_brush->get_global_transform()) : DisplayServerEnums::CURSOR_ARROW);
-	}
-	return false;
-}
 
 bool LevelEditorScreen::_selection_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
 	// Transform tools only (the drawing tools consume their own input), and

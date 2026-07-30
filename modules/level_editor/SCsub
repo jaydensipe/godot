@@ -14,3 +14,4 @@ if env.editor_build:
     env_leveleditor.add_source_files(env.modules_sources, "editor/tools/*/*.cpp")
     env_leveleditor.add_source_files(env.modules_sources, "editor/dock/*.cpp")
     env_leveleditor.add_source_files(env.modules_sources, "editor/materials/*.cpp")
+    env_leveleditor.add_source_files(env.modules_sources, "editor/modifiers/*.cpp")

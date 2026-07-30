@@ -80,7 +80,7 @@ Known, small, and not worth churning right now. Fix when touching the area.
   `_draw_tool_preview` and `_draw_material_drop` - small shared ant-context
   helper.
 - Dock form-row construction (Label + control + connect) and hint labels
-  duplicated in `refresh()` - `add_labeled_row`/`make_hint_label` statics.
+  duplicated in `refresh()` - `add_labeled_row`/`make_hint_label` statistics.
 - Tests hand-roll "scan vertices for a position" loops in several older
   cases - convert to the `find_vert` helper when touching them.
 

@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  register_types.cpp                                                    */
+/*  level_editor_plugin.h                                                 */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,30 +28,29 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "register_types.h"
+#pragma once
 
-#include "level_brush.h"
-#include "level_map.h"
+#include "editor/plugins/editor_plugin.h"
 
-#include "core/object/class_db.h"
+class LevelEditorDock;
+class LevelEditorScreen;
 
-#ifdef TOOLS_ENABLED
-#include "editor/level_editor_plugin.h"
-#endif
+// The main-screen plugin.
+class LevelEditorPlugin : public EditorPlugin {
+	GDCLASS(LevelEditorPlugin, EditorPlugin);
 
-void initialize_level_editor_module(ModuleInitializationLevel p_level) {
-	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
-		GDREGISTER_CLASS(LevelBrush);
-		GDREGISTER_CLASS(LevelMap);
-	}
+	LevelEditorScreen *screen = nullptr;
+	LevelEditorDock *dock = nullptr;
 
-#ifdef TOOLS_ENABLED
-	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
-		GDREGISTER_CLASS(LevelEditorPlugin);
-		EditorPlugins::add_by_type<LevelEditorPlugin>();
-	}
-#endif
-}
+	void _editor_selection_changed();
 
-void uninitialize_level_editor_module(ModuleInitializationLevel p_level) {
-}
+public:
+	virtual String get_plugin_name() const override { return TTRC("Level"); }
+	virtual const Ref<Texture2D> get_plugin_icon() const override;
+	virtual bool has_main_screen() const override { return true; }
+	virtual void make_visible(bool p_visible) override;
+	virtual void edited_scene_changed() override;
+
+	LevelEditorPlugin();
+	~LevelEditorPlugin();
+};

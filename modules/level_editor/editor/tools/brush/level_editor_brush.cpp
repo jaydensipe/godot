@@ -34,13 +34,14 @@
 // split out of level_editor_screen.cpp for organization.
 
 #include "../../../level_constants.h"
+#include "../../../level_helpers.h"
 #include "../../level_editor_screen.h"
-#include "../../level_helpers.h"
 
 #include "core/math/geometry_2d.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/themes/editor_scale.h"
+#include "scene/3d/camera_3d.h"
 
 using namespace LevelHelpers;
 

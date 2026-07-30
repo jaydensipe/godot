@@ -58,7 +58,6 @@ inline int ortho_view_axis(int p_view_type) {
 	}
 }
 
-
 inline void aabb_corners(const AABB &p_aabb, Vector3 r_corners[8]) {
 	const Vector3 c = p_aabb.get_center();
 	const Vector3 hs = p_aabb.size * 0.5;

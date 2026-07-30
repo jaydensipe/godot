@@ -311,7 +311,7 @@ in ONE paint; this is repainting the EXPENSIVE overlay too OFTEN.
 35. **Drag-and-drop housekeeping: payload cache, pick throttle, Esc path.**
     `can_drop_data_fw` fires on every mouse-move during a drag: validate the
     payload ONCE per drag session (`gui_get_drag_data()` is invariant), and
-    throttle ray-picks to a few-pixel movement delta. Cancelling a drag
+    throttle ray-picks to a few-pixel movement delta. Canceling a drag
     (Esc) never calls `can_drop_data` with the (INF,INF) sentinel - clear
     drag state on `NOTIFICATION_DRAG_END` instead (propagated tree-wide).
     Also: drag-forwarding callables receive only (position[, data]) - bind
