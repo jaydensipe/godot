@@ -252,7 +252,7 @@ void LevelEditorScreen::_draw_clip(LevelEditorViewport *p_vp, Control *p_canvas)
 			side_text = TTR("Clip: split faces along line (click Clip to cycle, Enter to apply, Esc to cancel)");
 			break;
 	}
-	p_canvas->draw_string(get_theme_font(SNAME("font"), SNAME("Label")), Vector2(8, 18), side_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, LevelEditorColors::TEXT_DIM);
+	_draw_tool_hint(p_canvas, side_text);
 }
 
 // ---------------------------------------------------------------------------
@@ -260,26 +260,14 @@ void LevelEditorScreen::_draw_clip(LevelEditorViewport *p_vp, Control *p_canvas)
 // ---------------------------------------------------------------------------
 
 bool LevelEditorScreen::_clip_input(LevelEditorViewport *p_vp, Camera3D *p_camera, const Ref<InputEvent> &p_event) {
+	// Keys (Enter applies, Esc cancels) are handled in input() - owning them
+	// in two places risks double apply/cancel on a single keypress.
 	if (tool != TOOL_CLIP) {
 		return false;
 	}
 	Ref<InputEventMouseButton> mb = p_event;
 	Ref<InputEventMouseMotion> mm = p_event;
 	LevelEditorViewport *vp = p_vp;
-
-	// Keys: Enter applies, Esc cancels. (Side cycling is on the Clip
-	// toolbar button - Tab is eaten by GUI focus navigation.)
-	Ref<InputEventKey> k = p_event;
-	if (k.is_valid() && k->is_pressed() && clip_active) {
-		if (k->get_keycode() == Key::ENTER || k->get_keycode() == Key::KP_ENTER) {
-			_clip_apply();
-			return true;
-		}
-		if (k->get_keycode() == Key::ESCAPE) {
-			_clip_cancel();
-			return true;
-		}
-	}
 
 	if (mb.is_valid() && mb->get_button_index() == MouseButton::LEFT) {
 		if (mb->is_pressed()) {

@@ -143,9 +143,7 @@ void LevelEditorScreen::_draw_mirror(LevelEditorViewport *p_vp, Control *p_canva
 		}
 	}
 
-	p_canvas->draw_string(get_theme_font(SNAME("font"), SNAME("Label")), Vector2(8, 18),
-			TTR("Mirror: draw the mirror plane (Enter to apply, Esc to cancel)"),
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 13, LevelEditorColors::TEXT_DIM);
+	_draw_tool_hint(p_canvas, TTR("Mirror: draw the mirror plane (Enter to apply, Esc to cancel)"));
 }
 
 // ---------------------------------------------------------------------------

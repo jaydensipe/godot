@@ -214,5 +214,4 @@ TEST_CASE("[LevelHelpers] ortho_view_axis maps ortho views to world axes") {
 	CHECK(LevelHelpers::ortho_view_axis(99) == -1);
 }
 
-
 } // namespace TestLevelHelpers

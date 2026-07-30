@@ -68,6 +68,14 @@ void LevelBrush::_update_face_count_storage() {
 	}
 }
 
+void LevelBrush::_remove_face(int p_face) {
+	ERR_FAIL_INDEX(p_face, (int)faces.size());
+	faces.remove_at(p_face);
+	if (p_face < (int)face_materials.size()) {
+		face_materials.remove_at(p_face);
+	}
+}
+
 void LevelBrush::_notify_map_changed() {
 	// Topology/geometry changed: the cached edge sets are stale.
 	edges_dirty = true;
@@ -316,7 +324,7 @@ void LevelBrush::setup_sphere(const AABB &p_aabb, int p_sides) {
 	faces.clear();
 	face_materials.clear();
 
-	p_sides = CLAMP(p_sides, 4, 64);
+	p_sides = CLAMP(p_sides, LevelBrushConstants::SPHERE_SIDES_MIN, LevelBrushConstants::SPHERE_SIDES_MAX);
 	const Vector3 center = p_aabb.get_center();
 	const Vector3 radii = p_aabb.size * 0.5;
 

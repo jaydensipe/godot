@@ -97,6 +97,8 @@ private:
 	void _rebuild_edges_cache() const;
 
 	void _update_face_count_storage();
+	// Remove a face and its material slot (keeps faces/face_materials 1:1).
+	void _remove_face(int p_face);
 	void _notify_map_changed();
 
 public:

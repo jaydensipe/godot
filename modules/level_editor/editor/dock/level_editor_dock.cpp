@@ -30,8 +30,8 @@
 
 #include "level_editor_dock.h"
 
-#include "../level_editor_screen.h"
 #include "../../level_constants.h"
+#include "../level_editor_screen.h"
 
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
@@ -61,8 +61,8 @@ static Vector<LevelActionSetting> get_action_settings(LevelEditorScreen::ArmedAc
 				LevelActionSetting s;
 				s.id = StringName("width");
 				s.label = TTRC("Width");
-				s.min = 0.001;
-				s.max = 1024.0;
+				s.min = LevelBrushConstants::BEVEL_WIDTH_MIN;
+				s.max = LevelBrushConstants::BEVEL_WIDTH_MAX;
 				s.step = p_grid_size; // Grid-relative stepping; any value allowed.
 				s.value = p_grid_size;
 				settings.push_back(s);
@@ -72,7 +72,7 @@ static Vector<LevelActionSetting> get_action_settings(LevelEditorScreen::ArmedAc
 				s.id = StringName("steps");
 				s.label = TTRC("Steps");
 				s.min = 0.0;
-				s.max = 16.0;
+				s.max = LevelBrushConstants::BEVEL_STEPS_MAX;
 				s.step = 1.0;
 				s.value = 0.0;
 				s.rounded = true;
@@ -97,6 +97,9 @@ static Vector<LevelActionSetting> get_action_settings(LevelEditorScreen::ArmedAc
 
 void LevelEditorDock::_bind_methods() {
 }
+
+// Active-material preview thumbnail size (px, before EDSCALE).
+static const real_t MATERIAL_PREVIEW_SIZE = 96.0;
 
 void LevelEditorDock::_notification(int p_what) {
 	if (p_what == NOTIFICATION_THEME_CHANGED && material_panel) {
@@ -132,22 +135,22 @@ void LevelEditorDock::refresh() {
 		form->add_child(label);
 
 		OptionButton *type = memnew(OptionButton);
-		type->add_item(TTRC("Block"), 0);
-		type->add_item(TTRC("Quad"), 1);
-		type->add_item(TTRC("Sphere"), 2);
+		type->add_item(TTRC("Block"), LevelEditorScreen::BRUSH_BLOCK);
+		type->add_item(TTRC("Quad"), LevelEditorScreen::BRUSH_QUAD);
+		type->add_item(TTRC("Sphere"), LevelEditorScreen::BRUSH_SPHERE);
 		type->select(screen->get_brush_type());
 		type->connect("item_selected", callable_mp(this, &LevelEditorDock::_brush_type_selected));
 		form->add_child(type);
 
 		// Sphere sides (only meaningful for the Sphere type).
-		if (screen->get_brush_type() == 2) { // BRUSH_SPHERE
+		if (screen->get_brush_type() == LevelEditorScreen::BRUSH_SPHERE) {
 			Label *sides_label = memnew(Label);
 			sides_label->set_text(TTRC("Sides"));
 			form->add_child(sides_label);
 
 			SpinBox *sides = memnew(SpinBox);
-			sides->set_min(4);
-			sides->set_max(64);
+			sides->set_min(LevelBrushConstants::SPHERE_SIDES_MIN);
+			sides->set_max(LevelBrushConstants::SPHERE_SIDES_MAX);
 			sides->set_step(1);
 			sides->set_use_rounded_values(true);
 			sides->set_value(screen->get_brush_sphere_sides());
@@ -181,7 +184,9 @@ void LevelEditorDock::refresh() {
 		spin->set_max(s.max);
 		spin->set_step(s.step);
 		spin->set_allow_greater(true);
-		spin->set_allow_lesser(s.min <= 0.0);
+		// Negative values are only meaningful when the range actually allows
+		// them (min <= 0 wrongly let Steps/Shape go negative).
+		spin->set_allow_lesser(s.min < 0.0);
 		spin->set_use_rounded_values(s.rounded);
 		// Persisted value wins over the descriptor default (re-arm / refresh).
 		spin->set_value(screen->get_armed_value(s.id, s.value));
@@ -269,6 +274,10 @@ void LevelEditorDock::_material_preview_ready(const String &p_path, const Ref<Te
 	}
 	if (p_preview.is_valid()) {
 		material_preview->set_texture(p_preview);
+	} else {
+		// Preview render failed - don't leave the PREVIOUS material's
+		// texture up next to the new name.
+		material_preview->set_texture(Ref<Texture2D>());
 	}
 }
 
@@ -287,6 +296,8 @@ void LevelEditorDock::_sphere_sides_changed(double p_value) {
 }
 
 void LevelEditorDock::_browse_pressed() {
+	// Keys must reach the viewports after the click, not re-trigger this button.
+	material_browse->release_focus();
 	// Same dialog as the inspector's "Quick Load": fuzzy search over all
 	// project resources of the given base types. Textures are accepted too
 	// and get wrapped in a StandardMaterial3D on selection.
@@ -319,6 +330,7 @@ void LevelEditorDock::_browse_selected(const String &p_path) {
 }
 
 void LevelEditorDock::_save_pressed() {
+	material_save->release_focus(); // Same rule as _browse_pressed.
 	// Promote the displayed material to a standalone resource file (shared,
 	// deduped on disk instead of embedded per-brush).
 	bool is_override = false;
@@ -391,7 +403,7 @@ LevelEditorDock::LevelEditorDock() {
 	material_vbox->add_child(title);
 
 	material_preview = memnew(TextureRect);
-	material_preview->set_custom_minimum_size(Size2(96, 96) * EDSCALE);
+	material_preview->set_custom_minimum_size(Size2(MATERIAL_PREVIEW_SIZE, MATERIAL_PREVIEW_SIZE) * EDSCALE);
 	material_preview->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
 	material_preview->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
 	material_preview->set_drag_forwarding(callable_mp(this, &LevelEditorDock::_material_drag_data).bind(material_preview), Callable(), Callable());

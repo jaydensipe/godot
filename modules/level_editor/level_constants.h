@@ -55,9 +55,20 @@ inline constexpr real_t BEVEL_DEFAULT_SHAPE = 0.5;
 // Bevel mitre: minimum sine of the angle between an edge pair before the
 // corner is rejected as nearly parallel (level_modifiers bevel).
 inline constexpr real_t BEVEL_MITRE_MIN_SIN = 0.05;
+// Bevel dock setting bounds (Width/Steps descriptors).
+inline constexpr real_t BEVEL_WIDTH_MIN = 0.001;
+inline constexpr real_t BEVEL_WIDTH_MAX = 1024.0;
+inline constexpr real_t BEVEL_STEPS_MAX = 16.0;
 // Baked UV scale: world units per texture tile (planar projections in
 // get_bake_surface_data).
 inline constexpr real_t BAKE_UV_SCALE = 0.25;
+// Clip-cap angular sort: when picking a fallback reference axis perpendicular
+// to the cap normal, prefer the world X axis unless the normal is nearly
+// parallel to it (|n.x| above this threshold).
+inline constexpr real_t PERP_AXIS_MAX_X = 0.9;
+// setup_sphere side-count clamp (shared with the dock's SpinBox range).
+inline constexpr int SPHERE_SIDES_MIN = 4;
+inline constexpr int SPHERE_SIDES_MAX = 64;
 } // namespace LevelBrushConstants
 
 // Shared grid ladder (power-of-two steps) used by the toolbar dropdown and
@@ -85,6 +96,13 @@ inline constexpr int STEP_COUNT = (int)(sizeof(STEPS) / sizeof(STEPS[0]));
 // camera may move before the mesh is rebuilt (half the extent).
 inline constexpr real_t GRID_3D_EXTENT = 128.0;
 inline constexpr real_t GRID_3D_REBUILD_DIST = GRID_3D_EXTENT / 2.0;
+
+// Every Nth grid line is drawn with GRID_MAJOR (shared by the 2D overlay grid
+// and the 3D perspective grid mesh so both read the same).
+inline constexpr int GRID_MAJOR_INTERVAL = 8;
+
+// Rotate gizmo angle snap while dragging.
+inline constexpr real_t ROTATE_SNAP_DEGREES = 15.0;
 
 } // namespace LevelEditorGrid
 
@@ -184,4 +202,26 @@ inline constexpr real_t DROP_REPROBE_DIST_SQ = 16.0; // Re-pick material drop wh
 inline constexpr real_t ANTS_DASH = 8.0;
 inline constexpr real_t ANTS_PERIOD = ANTS_DASH * 2.0;
 inline constexpr real_t ANTS_SPEED = 60.0; // Phase units per second.
+// Gizmo pick rays: segment length along the ray direction (world units -
+// "infinite" for picking purposes).
+inline constexpr real_t PICK_RAY_LEN = 100000.0;
+// Rotate ring pick tolerance (px).
+inline constexpr real_t ROTATE_RING_PICK_TOL = 8.0;
+// Scale gizmo: scale factor change per world unit of drag (4 units = 2x).
+inline constexpr real_t SCALE_DRAG_RATE = 0.25;
+// Shift+drag extrude: provisional offset applied at begin-drag so the new
+// wall/wedge is never degenerate; the drag replaces it (GOTCHAS #30).
+inline constexpr real_t EXTRUDE_STUB = 0.001;
+// Open-edge dash length: overlay drawing (px) and 3D outline mesh (brush
+// units, cosmetic - approximates the screen dash at typical zooms).
+inline constexpr real_t OPEN_EDGE_DASH_PX = 6.0;
+inline constexpr real_t OPEN_EDGE_DASH_WORLD = 0.125;
+// Screen-space face fills are skipped when a projected vert exceeds this
+// magnitude (near-plane crossings can project to astronomic coordinates,
+// GOTCHAS #33).
+inline constexpr real_t FILL_COORD_LIMIT = 32768.0;
+// Mode-hint footer text (clip/mirror tools): corner offset and font size (px).
+inline constexpr real_t HINT_OFFSET_X = 8.0;
+inline constexpr real_t HINT_OFFSET_Y = 18.0;
+inline constexpr int HINT_FONT_SIZE = 13;
 } // namespace LevelEditorHandles

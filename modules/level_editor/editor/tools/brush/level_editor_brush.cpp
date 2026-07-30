@@ -37,13 +37,12 @@
 #include "../../level_editor_screen.h"
 #include "../../level_helpers.h"
 
+#include "core/math/geometry_2d.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/themes/editor_scale.h"
 
 using namespace LevelHelpers;
-
-// ---- Ghost block (stage 2) -------------------------------------------------
 
 // Shared box-handle picking: corners (high priority) then face centers.
 // Positions are computed in world space via p_xform.
@@ -166,10 +165,11 @@ bool LevelEditorScreen::_ghost_hit_test(LevelEditorViewport *p_vp, const Vector2
 		{ 0, 1, 5, 4 }, // +Y, -Y
 	};
 	for (auto &f : face_idx) {
-		Vector2 quad[4];
+		Vector<Vector2> quad;
+		quad.resize(4);
 		bool ok = true;
 		for (int i = 0; i < 4; i++) {
-			if (!p_vp->project(corners[f[i]], quad[i])) {
+			if (!p_vp->project(corners[f[i]], quad.write[i])) {
 				ok = false;
 				break;
 			}
@@ -177,19 +177,7 @@ bool LevelEditorScreen::_ghost_hit_test(LevelEditorViewport *p_vp, const Vector2
 		if (!ok) {
 			continue;
 		}
-		// Ray-casting point-in-quad test.
-		int crossings = 0;
-		for (int i = 0; i < 4; i++) {
-			Vector2 a = quad[i];
-			Vector2 b = quad[(i + 1) % 4];
-			if ((a.y > p_screen.y) != (b.y > p_screen.y)) {
-				real_t x = a.x + (p_screen.y - a.y) * (b.x - a.x) / (b.y - a.y);
-				if (p_screen.x < x) {
-					crossings++;
-				}
-			}
-		}
-		if (crossings % 2 == 1) {
+		if (Geometry2D::is_point_in_polygon(p_screen, quad)) {
 			return true;
 		}
 	}

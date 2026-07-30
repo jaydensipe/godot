@@ -39,37 +39,66 @@
 #include "core/templates/hash_map.h"
 #include "scene/resources/material.h"
 
-// Manifold seam winding (the rule behind every extrude op): a new wall
-// stitched across a seam edge must traverse that shared edge in the OPPOSITE
-// direction to its neighbor face. Two faces that share an edge and wind it
-// oppositely are consistently oriented (the surface flows continuously over
-// the seam) - this holds for solids, open shells, and interior brushes alike,
-// with no centroid or flip-flag test (GOTCHAS #30 history).
+namespace {
+
+// Return a copy of the loop with reversed winding.
+LocalVector<int> reversed_loop(const LocalVector<int> &p_loop) {
+	LocalVector<int> rev;
+	rev.resize(p_loop.size());
+	for (uint32_t i = 0; i < p_loop.size(); i++) {
+		rev[i] = p_loop[p_loop.size() - 1 - i];
+	}
+	return rev;
+}
+
+// Drop consecutive duplicates (two near-plane corners can snap to the same
+// seam vert) and the wrap-around duplicate from a face loop, in place.
+void remove_duplicate_loop_verts(LocalVector<int> &r_loop) {
+	LocalVector<int> clean;
+	for (uint32_t i = 0; i < r_loop.size(); i++) {
+		if (clean.is_empty() || clean[clean.size() - 1] != r_loop[i]) {
+			clean.push_back(r_loop[i]);
+		}
+	}
+	if (clean.size() > 1 && clean[0] == clean[clean.size() - 1]) {
+		clean.remove_at(clean.size() - 1);
+	}
+	r_loop = clean;
+}
+
+// Faces whose loop contains the edge (a,b) consecutively (either direction),
+// excluding p_exclude (-1 = none), up to p_max results (INT32_MAX = all).
+LocalVector<int> find_faces_with_edge(const LocalVector<LocalVector<int>> &p_faces, int p_a, int p_b, int p_exclude, int p_max) {
+	LocalVector<int> out;
+	for (uint32_t f = 0; f < p_faces.size() && (int)out.size() < p_max; f++) {
+		if ((int)f == p_exclude) {
+			continue;
+		}
+		const LocalVector<int> &loop = p_faces[f];
+		const uint32_t n = loop.size();
+		for (uint32_t i = 0; i < n; i++) {
+			const int ia = loop[i];
+			const int ib = loop[(i + 1) % n];
+			if ((ia == p_a && ib == p_b) || (ia == p_b && ib == p_a)) {
+				out.push_back((int)f);
+				break;
+			}
+		}
+	}
+	return out;
+}
+
+} //namespace
 
 Vector<LevelBrush::EdgeKey> LevelBrush::get_edge_loop(const EdgeKey &p_edge) const {
 	Vector<EdgeKey> loop;
 
-	// Faces using each vertex (adjacency for finding the face on the other
+	// Faces using each edge (adjacency for finding the face on the other
 	// side of an edge).
 	auto faces_with_edge = [&](const EdgeKey &e, int &r_a, int &r_b) {
-		r_a = -1;
-		r_b = -1;
-		for (uint32_t f = 0; f < faces.size(); f++) {
-			const LocalVector<int> &l = faces[f];
-			const uint32_t n = l.size();
-			for (uint32_t i = 0; i < n; i++) {
-				int ia = l[i];
-				int ib = l[(i + 1) % n];
-				if ((ia == e.a && ib == e.b) || (ia == e.b && ib == e.a)) {
-					if (r_a < 0) {
-						r_a = (int)f;
-					} else {
-						r_b = (int)f;
-						return;
-					}
-				}
-			}
-		}
+		const LocalVector<int> found = find_faces_with_edge(faces, e.a, e.b, -1, 2);
+		r_a = found.size() > 0 ? found[0] : -1;
+		r_b = found.size() > 1 ? found[1] : -1;
 	};
 
 	// Opposite edge of p_edge within face p_face (quads only; -1 verts =
@@ -225,12 +254,7 @@ void LevelBrush::mirror(const Plane &p_plane) {
 		verts[i] -= p_plane.normal * (2.0 * p_plane.distance_to(verts[i]));
 	}
 	for (uint32_t f = 0; f < faces.size(); f++) {
-		LocalVector<int> &l = faces[f];
-		LocalVector<int> rev;
-		for (int i = (int)l.size() - 1; i >= 0; i--) {
-			rev.push_back(l[i]);
-		}
-		l = rev;
+		faces[f] = reversed_loop(faces[f]);
 	}
 	_notify_map_changed();
 }
@@ -265,6 +289,7 @@ void LevelBrush::compact_vertices() {
 		}
 	}
 	verts = new_verts;
+	_notify_map_changed();
 }
 
 void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
@@ -320,17 +345,9 @@ void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 		}
 		// Drop consecutive duplicates (two near-plane corners can snap to
 		// the same seam vert) and the wrap-around duplicate.
-		LocalVector<int> clean;
-		for (uint32_t i = 0; i < out.size(); i++) {
-			if (clean.is_empty() || clean[clean.size() - 1] != out[i]) {
-				clean.push_back(out[i]);
-			}
-		}
-		if (clean.size() > 1 && clean[0] == clean[clean.size() - 1]) {
-			clean.remove_at(clean.size() - 1);
-		}
-		if (clean.size() >= 3) {
-			new_faces.push_back(LocalVector<int>(clean));
+		remove_duplicate_loop_verts(out);
+		if (out.size() >= 3) {
+			new_faces.push_back(LocalVector<int>(out));
 			new_mats.push_back(f < face_materials.size() ? face_materials[f] : Ref<Material>());
 		}
 	}
@@ -357,7 +374,7 @@ void LevelBrush::clip(const Plane &p_plane, bool p_add_cap) {
 			}
 		}
 		if (axis_u.length_squared() < CMP_EPSILON) {
-			axis_u = n.cross(Math::abs(n.x) < 0.9 ? Vector3(1, 0, 0) : Vector3(0, 1, 0));
+			axis_u = n.cross(Math::abs(n.x) < LevelBrushConstants::PERP_AXIS_MAX_X ? Vector3(1, 0, 0) : Vector3(0, 1, 0));
 		}
 		axis_u.normalize();
 		Vector3 axis_v = n.cross(axis_u).normalized();
@@ -400,11 +417,7 @@ void LevelBrush::delete_faces(const Vector<int> &p_faces) {
 		ERR_FAIL_INDEX(f, (int)faces.size());
 	}
 	for (int i = sorted.size() - 1; i >= 0; i--) {
-		int f = sorted[i];
-		faces.remove_at(f);
-		if (f < (int)face_materials.size()) {
-			face_materials.remove_at(f);
-		}
+		_remove_face(sorted[i]);
 	}
 	_notify_map_changed();
 }
@@ -444,27 +457,13 @@ void LevelBrush::weld_vertices(const Vector<int> &p_vertices) {
 	// Remove consecutive duplicates and degenerate faces.
 	for (int f = (int)faces.size() - 1; f >= 0; f--) {
 		LocalVector<int> &loop = faces[f];
-		LocalVector<int> clean;
-		for (uint32_t i = 0; i < loop.size(); i++) {
-			if (clean.is_empty() || clean[clean.size() - 1] != loop[i]) {
-				clean.push_back(loop[i]);
-			}
-		}
-		// Also check wrap-around dup (first == last).
-		if (clean.size() > 1 && clean[0] == clean[clean.size() - 1]) {
-			clean.remove_at(clean.size() - 1);
-		}
+		remove_duplicate_loop_verts(loop);
 		HashSet<int> unique;
-		for (int idx : clean) {
+		for (int idx : loop) {
 			unique.insert(idx);
 		}
 		if (unique.size() < 3) {
-			faces.remove_at(f);
-			if (f < (int)face_materials.size()) {
-				face_materials.remove_at(f);
-			}
-		} else {
-			loop = clean;
+			_remove_face(f);
 		}
 	}
 	compact_vertices();
@@ -478,6 +477,13 @@ int LevelBrush::bridge_edges(const EdgeKey &p_edge_a, const EdgeKey &p_edge_b, c
 	}
 	if (p_edge_a.a == p_edge_b.a || p_edge_a.a == p_edge_b.b || p_edge_a.b == p_edge_b.a || p_edge_a.b == p_edge_b.b) {
 		return -1; // Shared vertex - can't form a clean quad.
+	}
+	// Stale edge endpoints (e.g. a selection outliving a topology op) must
+	// not index out of bounds below.
+	if (p_edge_a.a < 0 || p_edge_a.b < 0 || p_edge_b.a < 0 || p_edge_b.b < 0 ||
+			p_edge_a.a >= (int)verts.size() || p_edge_a.b >= (int)verts.size() ||
+			p_edge_b.a >= (int)verts.size() || p_edge_b.b >= (int)verts.size()) {
+		return -1;
 	}
 
 	int quad[4] = { p_edge_a.a, p_edge_a.b, p_edge_b.b, p_edge_b.a };
@@ -514,6 +520,12 @@ void LevelBrush::collapse_vertices(const Vector<int> &p_vertices) {
 		return;
 	}
 
+	// Validate all indices up front so a stale index can't half-apply the op
+	// (same rule as delete_faces/move_vertices).
+	for (int v : p_vertices) {
+		ERR_FAIL_INDEX(v, (int)verts.size());
+	}
+
 	// Move each target vertex to the average of its edge-connected neighbors
 	// (excluding neighbors that are also being collapsed).
 	HashSet<int> targets;
@@ -522,7 +534,6 @@ void LevelBrush::collapse_vertices(const Vector<int> &p_vertices) {
 	}
 
 	for (int v : p_vertices) {
-		ERR_FAIL_INDEX(v, (int)verts.size());
 		Vector3 sum;
 		int count = 0;
 		for (uint32_t f = 0; f < faces.size(); f++) {
@@ -575,10 +586,7 @@ void LevelBrush::collapse_vertices(const Vector<int> &p_vertices) {
 			unique.insert(idx);
 		}
 		if (unique.size() < 3) {
-			faces.remove_at(f);
-			if (f < (int)face_materials.size()) {
-				face_materials.remove_at(f);
-			}
+			_remove_face(f);
 		}
 	}
 	compact_vertices();
@@ -754,25 +762,8 @@ int LevelBrush::extrude_face(int p_face, real_t p_distance) {
 	wall_neighbor.resize(n);
 	for (uint32_t i = 0; i < n; i++) {
 		const uint32_t j = (i + 1) % n;
-		wall_neighbor[i] = -1;
-		for (uint32_t f = 0; f < old_face_count; f++) {
-			if ((int)f == p_face) {
-				continue;
-			}
-			const LocalVector<int> &loop = faces[f];
-			const uint32_t m = loop.size();
-			for (uint32_t k = 0; k < m; k++) {
-				const int a = loop[k];
-				const int b = loop[(k + 1) % m];
-				if ((a == src[i] && b == src[j]) || (a == src[j] && b == src[i])) {
-					wall_neighbor[i] = (int)f;
-					break;
-				}
-			}
-			if (wall_neighbor[i] >= 0) {
-				break;
-			}
-		}
+		const LocalVector<int> found = find_faces_with_edge(faces, src[i], src[j], p_face, 1);
+		wall_neighbor[i] = found.is_empty() ? -1 : found[0];
 	}
 
 	for (uint32_t i = 0; i < n; i++) {
@@ -808,19 +799,7 @@ bool LevelBrush::extrude_edge(const EdgeKey &p_edge, const Vector3 &p_offset, in
 	// Faces that contain BOTH endpoints consecutively (the edge's faces).
 	// Source faces are NEVER rewired - the extrude appends new geometry and
 	// the original brush stays put (Hammer-style edge pull).
-	LocalVector<int> using_faces;
-	for (int f = 0; f < (int)faces.size(); f++) {
-		const LocalVector<int> &loop = faces[f];
-		const uint32_t n = loop.size();
-		for (uint32_t i = 0; i < n; i++) {
-			const int a = loop[i];
-			const int b = loop[(i + 1) % n];
-			if ((a == p_edge.a && b == p_edge.b) || (a == p_edge.b && b == p_edge.a)) {
-				using_faces.push_back(f);
-				break;
-			}
-		}
-	}
+	const LocalVector<int> using_faces = find_faces_with_edge(faces, p_edge.a, p_edge.b, -1, INT32_MAX);
 	if (using_faces.is_empty()) {
 		return false; // Dangling verts - no face to anchor the wall to.
 	}
@@ -920,6 +899,9 @@ int LevelBrush::extrude_vertex(int p_vertex, const Vector3 &p_offset) {
 	const int new_v = (int)verts.size();
 	verts.push_back(verts[p_vertex] + p_offset);
 
+	// Each wedge inherits the material of the face it's stitched to. Grow the
+	// material array once up front so the per-use assignment below is safe.
+	face_materials.resize(faces.size() + uses.size());
 	for (const VertUse &u : uses) {
 		const LocalVector<int> &loop = faces[u.face];
 		const uint32_t n = loop.size();
@@ -933,15 +915,9 @@ int LevelBrush::extrude_vertex(int p_vertex, const Vector3 &p_offset) {
 		// for solids, open shells, and interior brushes alike.
 		const uint32_t wedge_idx = faces.size();
 		faces.push_back({ p_vertex, prev, new_v, next });
-
-		// Each wedge inherits the material of the face it's stitched to.
-		if (face_materials.size() < faces.size()) {
-			face_materials.resize(faces.size());
-		}
 		face_materials[wedge_idx] = (u.face < face_materials.size()) ? face_materials[u.face] : Ref<Material>();
 	}
 
-	_update_face_count_storage();
 	_notify_map_changed();
 	return new_v;
 }
@@ -958,12 +934,7 @@ void LevelBrush::rewind_face_outward(int p_face) {
 	}
 	// Centroid strictly inside the solid => the face must point away from it.
 	if (n.dot(get_center() - verts[loop[0]]) > 0.0) {
-		LocalVector<int> rev;
-		rev.resize(loop.size());
-		for (uint32_t i = 0; i < loop.size(); i++) {
-			rev[i] = loop[loop.size() - 1 - i];
-		}
-		faces[p_face] = rev;
+		faces[p_face] = reversed_loop(loop);
 	}
 }
 
@@ -1006,13 +977,7 @@ void LevelBrush::rewind_edge_wall(int p_wall, int p_edge_a, int p_edge_b) {
 	}
 	// Align the wall's normal with the continued face's normal.
 	if (wall_n.dot(get_face_normal(best_face)) < 0.0) {
-		LocalVector<int> rev;
-		const LocalVector<int> &loop = faces[p_wall];
-		rev.resize(loop.size());
-		for (uint32_t i = 0; i < loop.size(); i++) {
-			rev[i] = loop[loop.size() - 1 - i];
-		}
-		faces[p_wall] = rev;
+		faces[p_wall] = reversed_loop(faces[p_wall]);
 	}
 }
 
@@ -1030,6 +995,10 @@ bool LevelBrush::subdivide_face(int p_face) {
 	if (p_face < (int)face_materials.size()) {
 		mat = face_materials[p_face];
 	}
+	// Sub-faces are appended after this many pre-existing faces; only they
+	// (and the rewritten source face) inherit the source material - faces
+	// AFTER p_face are unrelated and must keep their own.
+	const uint32_t old_face_count = faces.size();
 
 	// New vertex at the face's centroid (shared by both split styles).
 	Vector3 center;
@@ -1093,8 +1062,10 @@ bool LevelBrush::subdivide_face(int p_face) {
 	}
 
 	_update_face_count_storage();
-	// All new faces inherit the source material.
-	for (uint32_t i = p_face; i < faces.size(); i++) {
+	// The source face (rewritten in place) and the appended sub-faces inherit
+	// the source material; pre-existing faces keep theirs.
+	face_materials[p_face] = mat;
+	for (uint32_t i = old_face_count; i < faces.size(); i++) {
 		face_materials[i] = mat;
 	}
 	_notify_map_changed();
@@ -1551,11 +1522,7 @@ int LevelBrush::bevel_edges_profiled(const Vector<EdgeKey> &p_edges, real_t p_wi
 			Vector3 e1 = verts[strip[1]] - verts[strip[0]];
 			Vector3 e2 = verts[strip[strip.size() - 1]] - verts[strip[0]];
 			if (e1.cross(e2).dot(src_normal) < 0.0) {
-				LocalVector<int> rev;
-				for (int i = (int)strip.size() - 1; i >= 0; i--) {
-					rev.push_back(strip[i]);
-				}
-				strip = rev;
+				strip = reversed_loop(strip);
 			}
 			faces.push_back(LocalVector<int>(strip));
 			face_materials.push_back(bevel_mat);

@@ -73,6 +73,12 @@ class LevelMap : public Node3D {
 	void _update_preview();
 	void _rebuild_brush_cache(LevelBrush *p_brush, BrushCache &r_cache) const;
 
+	// Brush's transform into map-local space (falls back to local transforms
+	// when either node is detached from the tree - tests, offline tools).
+	Transform3D _brush_to_map_transform(LevelBrush *p_brush) const;
+	// Tessellate one face and append it transformed to the output arrays.
+	static void _append_face_geometry(LevelBrush *p_brush, int p_face, const Transform3D &p_to_map, const Basis &p_normal_basis, PackedVector3Array &r_verts, PackedVector3Array &r_normals, PackedVector2Array &r_uvs);
+
 	Ref<Material> _get_face_material_or_default(LevelBrush *p_brush, int p_face) const;
 
 protected:

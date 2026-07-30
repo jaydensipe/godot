@@ -325,9 +325,9 @@ void LevelEditorScreen::_ensure_gizmo_3d() {
 	}
 }
 
-// World scale that makes the gizmo read at ~GIZMO_AXIS_LEN pixels on screen
-// (Godot's method: pixels-per-world-unit at the gizmo's camera distance).
-real_t LevelEditorScreen::_gizmo_3d_world_scale(LevelEditorViewport *p_vp, const Vector3 &p_origin) const {
+// World-space size that projects to p_pixels screen pixels at p_origin's
+// camera depth (Godot's method: pixels-per-world-unit at that distance).
+real_t LevelEditorScreen::_pixels_to_world_at(LevelEditorViewport *p_vp, const Vector3 &p_origin, real_t p_pixels) const {
 	Camera3D *cam = p_vp->get_camera();
 	const Transform3D cam_xform = cam->get_global_transform();
 	const Vector3 camz = -cam_xform.basis.get_column(2).normalized();
@@ -337,7 +337,12 @@ real_t LevelEditorScreen::_gizmo_3d_world_scale(LevelEditorViewport *p_vp, const
 	const real_t d0 = cam->unproject_position(cam_xform.origin + camz * gizmo_d).y;
 	const real_t d1 = cam->unproject_position(cam_xform.origin + camz * gizmo_d + camy).y;
 	const real_t dd = MAX(Math::abs(d0 - d1), (real_t)CMP_EPSILON);
-	return (GIZMO_AXIS_LEN * EDSCALE) / dd;
+	return (p_pixels * EDSCALE) / dd;
+}
+
+// World scale that makes the gizmo read at ~GIZMO_AXIS_LEN pixels on screen.
+real_t LevelEditorScreen::_gizmo_3d_world_scale(LevelEditorViewport *p_vp, const Vector3 &p_origin) const {
+	return _pixels_to_world_at(p_vp, p_origin, GIZMO_AXIS_LEN);
 }
 
 // ---- 3D brush outlines ------------------------------------------------------
@@ -386,9 +391,9 @@ void LevelEditorScreen::_rebuild_outline_mesh(LevelBrush *p_brush, ImmediateMesh
 			r_mesh->surface_add_vertex(b);
 			continue;
 		}
-		// Open edge: pre-dash into segments (6px at EDSCALE 1, in world units
-		// approximated from the brush scale - dashes are cosmetic).
-		const real_t dash = 0.125; // ~Hammer grid dash; cosmetic only.
+		// Open edge: pre-dash into segments (in world units approximated from
+		// the brush scale - dashes are cosmetic).
+		const real_t dash = LevelEditorHandles::OPEN_EDGE_DASH_WORLD; // ~Hammer grid dash.
 		const real_t len = a.distance_to(b);
 		if (len < dash * 1.5) {
 			r_mesh->surface_add_vertex(a);
@@ -437,7 +442,8 @@ bool LevelEditorScreen::_update_outlines() {
 		}
 
 		for (LevelBrush *b : brushes) {
-			MeshInstance3D *mi = inst.getptr(b) ? inst[b] : nullptr;
+			MeshInstance3D **mi_p = inst.getptr(b);
+			MeshInstance3D *mi = mi_p ? *mi_p : nullptr;
 			if (!mi) {
 				mi = memnew(MeshInstance3D);
 				mi->set_cast_shadows_setting(GeometryInstance3D::SHADOW_CASTING_SETTING_OFF);
@@ -684,7 +690,7 @@ int LevelEditorScreen::_pick_gizmo(LevelEditorViewport *p_vp, Camera3D *p_camera
 
 	// Center cube first (smallest, most central target): free move in the
 	// camera plane.
-	if (Geometry3D::segment_intersects_sphere(ro, ro + rd * 100000.0, origin, CENTER_PICK_RADIUS * scale)) {
+	if (Geometry3D::segment_intersects_sphere(ro, ro + rd * LevelEditorHandles::PICK_RAY_LEN, origin, CENTER_PICK_RADIUS * scale)) {
 		Vector3 cam_fwd = -p_camera->get_global_transform().basis[2];
 		Vector3 ac = cam_fwd.abs();
 		if (ac.z >= ac.x && ac.z >= ac.y) {
@@ -709,8 +715,8 @@ int LevelEditorScreen::_pick_gizmo(LevelEditorViewport *p_vp, Camera3D *p_camera
 			origin + AXES[a0] * e + AXES[a1] * (e + s2),
 		};
 		Vector3 hit;
-		if (Geometry3D::segment_intersects_triangle(ro, ro + rd * 100000.0, quad[0], quad[1], quad[2], &hit) ||
-				Geometry3D::segment_intersects_triangle(ro, ro + rd * 100000.0, quad[0], quad[2], quad[3], &hit)) {
+		if (Geometry3D::segment_intersects_triangle(ro, ro + rd * LevelEditorHandles::PICK_RAY_LEN, quad[0], quad[1], quad[2], &hit) ||
+				Geometry3D::segment_intersects_triangle(ro, ro + rd * LevelEditorHandles::PICK_RAY_LEN, quad[0], quad[2], quad[3], &hit)) {
 			return GIZMO_XY + p;
 		}
 	}
@@ -722,7 +728,7 @@ int LevelEditorScreen::_pick_gizmo(LevelEditorViewport *p_vp, Camera3D *p_camera
 	for (int i = 0; i < 3; i++) {
 		const Vector3 tip = origin + AXES[i] * (AXIS_LEN * scale);
 		Vector3 r1, r2;
-		Geometry3D::get_closest_points_between_segments(origin, tip, ro, ro + rd * 100000.0, r1, r2);
+		Geometry3D::get_closest_points_between_segments(origin, tip, ro, ro + rd * LevelEditorHandles::PICK_RAY_LEN, r1, r2);
 		const real_t d = r1.distance_to(r2);
 		if (d < best_d) {
 			best_d = d;
@@ -732,10 +738,34 @@ int LevelEditorScreen::_pick_gizmo(LevelEditorViewport *p_vp, Camera3D *p_camera
 	return best;
 }
 
+// Shift+drag extrude stub offset: the average normal of the faces using the
+// element (edge p_a->p_b, or vertex p_a when p_b < 0), times EXTRUDE_STUB so
+// the provisional wall/wedge is never degenerate; the drag replaces it.
+static Vector3 _element_stub_dir(LevelBrush *p_brush, int p_a, int p_b) {
+	Vector3 dir;
+	for (int f = 0; f < p_brush->get_face_count(); f++) {
+		LocalVector<int> loop = p_brush->get_face(f);
+		bool has_a = false, has_b = (p_b < 0);
+		for (int idx : loop) {
+			has_a = has_a || idx == p_a;
+			has_b = has_b || idx == p_b;
+			if (has_a && has_b) {
+				break;
+			}
+		}
+		if (has_a && has_b) {
+			dir += p_brush->get_face_normal(f);
+		}
+	}
+	if (dir.is_zero_approx()) {
+		dir = Vector3(0, 1, 0);
+	}
+	return dir.normalized() * LevelEditorHandles::EXTRUDE_STUB;
+}
+
 void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vector2 &p_mouse) {
 	gizmo_dragging = true;
 	gizmo_drag_viewport = p_vp;
-	gizmo_drag_mouse_start = p_mouse;
 	gizmo_drag_start_origin = _get_gizmo_origin();
 
 	// Snapshot brush vertices for absolute drags + undo.
@@ -831,7 +861,7 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 						// Slide direction = the cap's stored normal (same direction
 						// extrude_face stubs along).
 						const Vector3 n = b->get_face_normal(sorted[i]);
-						if (b->extrude_face(sorted[i], 0.001) < 0) {
+						if (b->extrude_face(sorted[i], LevelEditorHandles::EXTRUDE_STUB) < 0) {
 							continue; // Degenerate face: no extrude, skip its cap.
 						}
 						caps.push_back(sorted[i]); // extrude_face replaces src with the cap in place.
@@ -867,23 +897,9 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 					for (const LevelBrush::EdgeKey &e : E.value) {
 						// Stub offset along the average normal of the edge's faces,
 						// so the stub wall is never degenerate; the drag replaces it.
-						Vector3 dir;
-						for (int f = 0; f < b->get_face_count(); f++) {
-							LocalVector<int> loop = b->get_face(f);
-							bool has_a = false, has_bv = false;
-							for (int idx : loop) {
-								has_a = has_a || idx == e.a;
-								has_bv = has_bv || idx == e.b;
-							}
-							if (has_a && has_bv) {
-								dir += b->get_face_normal(f);
-							}
-						}
-						if (dir.is_zero_approx()) {
-							dir = Vector3(0, 1, 0);
-						}
+						const Vector3 stub = _element_stub_dir(b, e.a, e.b);
 						int ids[2];
-						if (b->extrude_edge(e, dir.normalized() * 0.001, ids)) {
+						if (b->extrude_edge(e, stub, ids)) {
 							new_verts.push_back(ids[0]);
 							new_verts.push_back(ids[1]);
 							wall_edges.push_back(e); // Original seam edge, same order as walls.
@@ -910,20 +926,7 @@ void LevelEditorScreen::_gizmo_begin_drag(LevelEditorViewport *p_vp, const Vecto
 					HashSet<int> new_sel;
 					for (int v : E.value) {
 						// Stub along the average normal of the vertex's faces.
-						Vector3 dir;
-						for (int f = 0; f < b->get_face_count(); f++) {
-							LocalVector<int> loop = b->get_face(f);
-							for (int idx : loop) {
-								if (idx == v) {
-									dir += b->get_face_normal(f);
-									break;
-								}
-							}
-						}
-						if (dir.is_zero_approx()) {
-							dir = Vector3(0, 1, 0);
-						}
-						int nv = b->extrude_vertex(v, dir.normalized() * 0.001);
+						int nv = b->extrude_vertex(v, _element_stub_dir(b, v, -1));
 						if (nv >= 0) {
 							new_verts.push_back(nv);
 							new_sel.insert(nv);
@@ -1069,13 +1072,11 @@ void LevelEditorScreen::_gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 
 	_update_overlays();
 }
 
-// Extrude-drag scaling (Scale tool, element targets): per-axis factors from
-// the drag delta, applied to the extruded geometry on top of the POST-extrude
-// snapshot. Face caps scale around their OWN centers (each extrusion grows
-// independently); edge/vertex extrusions scale their duplicated-vert cluster
-// around the cluster center.
-void LevelEditorScreen::_apply_gizmo_scale_extrude(const Vector3 &p_world_delta) {
-	const real_t SCALE_RATE = 0.25; // Same rate as _apply_gizmo_scale.
+// Per-axis scale factors from a drag delta, for the current gizmo drag part
+// (plane/center drags scale uniformly by the largest component), clamped to
+// a small positive minimum so a brush can't be scaled inside-out.
+Vector3 LevelEditorScreen::_scale_factors_from_drag(const Vector3 &p_world_delta) const {
+	const real_t SCALE_RATE = LevelEditorHandles::SCALE_DRAG_RATE; // 4 world units of drag = 2x scale.
 	Vector3 factors(1, 1, 1);
 	if (gizmo_drag_part == GIZMO_XY || gizmo_drag_part == GIZMO_XZ || gizmo_drag_part == GIZMO_YZ) {
 		const real_t f = 1.0 + MAX(p_world_delta.x, MAX(p_world_delta.y, p_world_delta.z)) * SCALE_RATE;
@@ -1086,6 +1087,16 @@ void LevelEditorScreen::_apply_gizmo_scale_extrude(const Vector3 &p_world_delta)
 	factors.x = MAX(factors.x, 0.01);
 	factors.y = MAX(factors.y, 0.01);
 	factors.z = MAX(factors.z, 0.01);
+	return factors;
+}
+
+// Extrude-drag scaling (Scale tool, element targets): per-axis factors from
+// the drag delta, applied to the extruded geometry on top of the POST-extrude
+// snapshot. Face caps scale around their OWN centers (each extrusion grows
+// independently); edge/vertex extrusions scale their duplicated-vert cluster
+// around the cluster center.
+void LevelEditorScreen::_apply_gizmo_scale_extrude(const Vector3 &p_world_delta) {
+	const Vector3 factors = _scale_factors_from_drag(p_world_delta);
 
 	auto scale_verts_around = [&](LevelBrush *p_brush, const Vector<int> &p_indices, const Vector3 &p_pivot_world) {
 		Transform3D gt = p_brush->get_global_transform();
@@ -1153,23 +1164,13 @@ void LevelEditorScreen::_apply_gizmo_scale_extrude(const Vector3 &p_world_delta)
 // Radius in pixels of the rotate rings on screen (before EDSCALE; applied
 // per use - EDSCALE isn't safe to call at static-init time).
 static const real_t ROTATE_RING_PX = 64.0;
+// Segments used to sample the ring (shared by pick + draw so they agree).
+static const int ROTATE_RING_SEGMENTS = 48;
 
 // World-space ring radius that projects to ROTATE_RING_PX pixels at the
-// gizmo origin. Shared by pick + draw so they always agree. Uses the same
-// camera-relative pixels-per-world-unit measure as the 3D editor (and the
-// move gizmo): the old finite-difference along world X collapsed whenever X
-// pointed at the camera, blowing the ring up to the whole screen.
-real_t LevelEditorScreen::_rotate_world_radius(LevelEditorViewport *p_vp, const Vector3 &p_origin, const Vector2 &p_center) const {
-	Camera3D *cam = p_vp->get_camera();
-	const Transform3D cam_xform = cam->get_global_transform();
-	const Vector3 camz = -cam_xform.basis.get_column(2).normalized();
-	const Vector3 camy = -cam_xform.basis.get_column(1).normalized();
-	const Plane p(camz, cam_xform.origin);
-	const real_t d = MAX(Math::abs(p.distance_to(p_origin)), (real_t)CMP_EPSILON);
-	const real_t d0 = cam->unproject_position(cam_xform.origin + camz * d).y;
-	const real_t d1 = cam->unproject_position(cam_xform.origin + camz * d + camy).y;
-	const real_t dd = MAX(Math::abs(d0 - d1), (real_t)CMP_EPSILON);
-	return (ROTATE_RING_PX * EDSCALE) / dd;
+// gizmo origin. Shared by pick + draw so they always agree (GOTCHAS #25).
+real_t LevelEditorScreen::_rotate_world_radius(LevelEditorViewport *p_vp, const Vector3 &p_origin) const {
+	return _pixels_to_world_at(p_vp, p_origin, ROTATE_RING_PX);
 }
 
 // The only usable rotate axis per ortho view (-1 = all, perspective).
@@ -1188,24 +1189,23 @@ int LevelEditorScreen::_pick_rotate_ring(LevelEditorViewport *p_vp, const Vector
 	}
 
 	// The ring plane normal axes; ring radius matches the drawn circle.
-	const real_t tol = 8.0 * EDSCALE;
+	const real_t tol = LevelEditorHandles::ROTATE_RING_PICK_TOL * EDSCALE;
 	int best_axis = -1;
 	real_t best_dist = tol;
 
 	// In ortho views, only the ring perpendicular to the view plane is usable.
 	const int allowed_axis = _rotate_allowed_axis(p_vp->get_view_type());
-	const real_t world_radius = _rotate_world_radius(p_vp, origin, center);
+	const real_t world_radius = _rotate_world_radius(p_vp, origin);
 
 	for (int axis = 0; axis < 3; axis++) {
 		if (allowed_axis >= 0 && axis != allowed_axis) {
 			continue; // Ring disabled in this ortho view.
 		}
 		// Sample the ring in 3D and project; measure min distance to the mouse.
-		const int SEGMENTS = 48;
 		real_t min_d = (real_t)Math::INF;
 		bool any_front = false;
-		for (int s = 0; s < SEGMENTS; s++) {
-			real_t a = (real_t)s / SEGMENTS * Math::TAU;
+		for (int s = 0; s < ROTATE_RING_SEGMENTS; s++) {
+			real_t a = (real_t)s / ROTATE_RING_SEGMENTS * Math::TAU;
 			Vector3 p;
 			// Ring in the plane perpendicular to the axis.
 			int u = (axis + 1) % 3, v = (axis + 2) % 3;
@@ -1263,12 +1263,11 @@ void LevelEditorScreen::_draw_rotate_gizmo(LevelEditorViewport *p_vp, Control *p
 	Color axis_col[3] = { LevelEditorColors::GIZMO_AXIS_X, LevelEditorColors::GIZMO_AXIS_Y, LevelEditorColors::GIZMO_AXIS_Z };
 
 	// World-space radius so the ring projects to ~ROTATE_RING_PX pixels.
-	const real_t world_radius = _rotate_world_radius(p_vp, origin, center);
+	const real_t world_radius = _rotate_world_radius(p_vp, origin);
 
 	// In ortho views, only the ring perpendicular to the view plane is usable.
 	const int allowed_axis = _rotate_allowed_axis(p_vp->get_view_type());
 
-	const int SEGMENTS = 48;
 	for (int axis = 0; axis < 3; axis++) {
 		if (allowed_axis >= 0 && axis != allowed_axis) {
 			continue; // Ring disabled in this ortho view.
@@ -1280,8 +1279,8 @@ void LevelEditorScreen::_draw_rotate_gizmo(LevelEditorViewport *p_vp, Control *p
 		int u = (axis + 1) % 3, v = (axis + 2) % 3;
 		Vector3 prev_w;
 		bool has_prev = false;
-		for (int s = 0; s <= SEGMENTS; s++) {
-			real_t a = (real_t)s / SEGMENTS * Math::TAU;
+		for (int s = 0; s <= ROTATE_RING_SEGMENTS; s++) {
+			real_t a = (real_t)s / ROTATE_RING_SEGMENTS * Math::TAU;
 			Vector3 p;
 			p[u] = Math::cos(a) * world_radius;
 			p[v] = Math::sin(a) * world_radius;
@@ -1362,18 +1361,7 @@ void LevelEditorScreen::_apply_gizmo_scale(const Vector3 &p_world_delta) {
 		// Element targets: per-axis scale of the selected vertices around the
 		// drag-start selection pivot, snapped to the world grid (same rule as
 		// whole-brush scale).
-		const real_t SCALE_RATE = 0.25; // 4 world units of drag = 2x scale.
-		Vector3 factors(1, 1, 1);
-		if (gizmo_drag_part == GIZMO_XY || gizmo_drag_part == GIZMO_XZ || gizmo_drag_part == GIZMO_YZ) {
-			// Center/plane drag: uniform scale by the largest dragged component.
-			real_t f = 1.0 + MAX(p_world_delta.x, MAX(p_world_delta.y, p_world_delta.z)) * SCALE_RATE;
-			factors = Vector3(f, f, f);
-		} else if (gizmo_drag_part >= GIZMO_X && gizmo_drag_part <= GIZMO_Z) {
-			factors[gizmo_drag_part] = 1.0 + p_world_delta[gizmo_drag_part] * SCALE_RATE;
-		}
-		factors.x = MAX(factors.x, 0.01);
-		factors.y = MAX(factors.y, 0.01);
-		factors.z = MAX(factors.z, 0.01);
+		const Vector3 factors = _scale_factors_from_drag(p_world_delta);
 
 		Vector3 pivot = gizmo_drag_start_origin;
 		for (KeyValue<LevelBrush *, PackedVector3Array> &E : gizmo_drag_brush_verts) {
@@ -1512,6 +1500,7 @@ void LevelEditorScreen::_apply_gizmo_delta(const Vector3 &p_world_delta) {
 				// made an opposing pair slide the same world direction).
 				// The amount snaps to the grid (Hammer extrudes in grid steps).
 				const Vector<Vector3> &normals = gizmo_extrude_cap_normals[brush];
+				ERR_CONTINUE(normals.is_empty()); // Invariant: written together with cap_faces at begin-drag.
 				const real_t amount = _snap(local_delta.dot(normals[normals.size() - 1]));
 				for (int ci = 0; ci < E.value.size(); ci++) {
 					const Vector3 &n = normals[ci];
@@ -1779,9 +1768,9 @@ bool LevelEditorScreen::_rotate_input(LevelEditorViewport *p_vp, Camera3D *p_cam
 	} else if (mm.is_valid()) {
 		if (rotate_drag_axis >= 0 && rotate_drag_viewport == p_vp) {
 			real_t cur = _rotate_screen_angle(p_vp, mm->get_position(), rotate_drag_axis);
-			real_t delta = cur - rotate_drag_start_angle;
-			// Snap to 15 degrees.
-			delta = Math::snapped(delta, Math::deg_to_rad(15.0));
+				real_t delta = cur - rotate_drag_start_angle;
+				// Snap to the rotate grid step.
+				delta = Math::snapped(delta, Math::deg_to_rad(LevelEditorGrid::ROTATE_SNAP_DEGREES));
 			rotate_drag_last_angle = delta;
 			_apply_gizmo_rotate(rotate_drag_axis, delta);
 			_update_overlays();

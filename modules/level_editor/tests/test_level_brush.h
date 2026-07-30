@@ -47,6 +47,17 @@ static const Vector3 BOX_NORMALS[6] = {
 	Vector3(0, -1, 0), // -Y (bottom)
 };
 
+// Index of the vertex whose position matches (or -1). Tests compare
+// POSITIONS, never raw indices, across ops that can compact/remap.
+static int find_vert(const LevelBrush *p_brush, const Vector3 &p_pos) {
+	for (int i = 0; i < p_brush->get_vertex_count(); i++) {
+		if (p_brush->get_vertex(i).is_equal_approx(p_pos)) {
+			return i;
+		}
+	}
+	return -1;
+}
+
 TEST_CASE("[LevelBrush] setup_box produces a valid cube") {
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
@@ -100,6 +111,9 @@ TEST_CASE("[LevelBrush] setup_sphere clamps degenerate side counts") {
 	LevelBrush *brush = memnew(LevelBrush);
 	brush->setup_sphere(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)), 1); // Clamped to 4.
 	CHECK(brush->is_valid());
+	// Exact clamped topology: 4 sides, rings = 2 -> poles + 1 interior ring.
+	CHECK(brush->get_vertex_count() == 2 + (2 - 1) * 4);
+	CHECK(brush->get_face_count() == 2 * 4);
 	CHECK(brush->get_open_edges().size() == 0);
 	memdelete(brush);
 }
@@ -248,14 +262,15 @@ TEST_CASE("[LevelBrush] move_vertices rejects the whole op on a stale index") {
 	Vector<int> verts;
 	verts.push_back(6);
 	verts.push_back(999);
+	ERR_PRINT_OFF;
 	brush->move_vertices(verts, Vector3(1, 0, 0));
+	ERR_PRINT_ON;
 	for (int i = 0; i < 8; i++) {
 		CHECK(brush->get_vertex(i).is_equal_approx(before[i]));
 	}
 
 	memdelete(brush);
 }
-
 
 TEST_CASE("[LevelBrush] ray_intersect hits the entry face") {
 	LevelBrush *brush = memnew(LevelBrush);
@@ -1351,14 +1366,7 @@ TEST_CASE("[LevelBrush] subdivide_face splits a quad into four quads") {
 	CHECK(quad_count == 4);
 
 	// The centroid vert exists at the face center.
-	bool has_center = false;
-	for (int i = 0; i < brush->get_vertex_count(); i++) {
-		if (brush->get_vertex(i).is_equal_approx(Vector3(1, 2, 1))) {
-			has_center = true;
-			break;
-		}
-	}
-	CHECK(has_center);
+	CHECK(find_vert(brush, Vector3(1, 2, 1)) >= 0);
 
 	// Neighboring faces must pass through the new midpoint verts (no
 	// T-junctions): each of the 4 side faces of the box gains one midpoint
@@ -1691,17 +1699,9 @@ TEST_CASE("[LevelBrush] bevel_edges makes one continuous strip across a collinea
 	// Find the centroid (1,2,1) and the top face's two front-edge midpoint
 	// verts: front edge (0,2,0)-(2,2,0) midpoint (1,2,0). The middle line
 	// along X is (0,2,1)->(1,2,1)->(2,2,1): centroid + two side midpoints.
-	int centroid = -1, mid_l = -1, mid_r = -1;
-	for (int i = 0; i < brush->get_vertex_count(); i++) {
-		const Vector3 v = brush->get_vertex(i);
-		if (v.is_equal_approx(Vector3(1, 2, 1))) {
-			centroid = i;
-		} else if (v.is_equal_approx(Vector3(0, 2, 1))) {
-			mid_l = i;
-		} else if (v.is_equal_approx(Vector3(2, 2, 1))) {
-			mid_r = i;
-		}
-	}
+	int centroid = find_vert(brush, Vector3(1, 2, 1));
+	int mid_l = find_vert(brush, Vector3(0, 2, 1));
+	int mid_r = find_vert(brush, Vector3(2, 2, 1));
 	REQUIRE(centroid >= 0);
 	REQUIRE(mid_l >= 0);
 	REQUIRE(mid_r >= 0);
@@ -2086,17 +2086,9 @@ TEST_CASE("[LevelBrush] bevel_edges_profiled handles a collinear chain with step
 	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
 	REQUIRE(brush->subdivide_face(4)); // +Y face -> 4 quads.
 
-	int centroid = -1, mid_l = -1, mid_r = -1;
-	for (int i = 0; i < brush->get_vertex_count(); i++) {
-		const Vector3 v = brush->get_vertex(i);
-		if (v.is_equal_approx(Vector3(1, 2, 1))) {
-			centroid = i;
-		} else if (v.is_equal_approx(Vector3(0, 2, 1))) {
-			mid_l = i;
-		} else if (v.is_equal_approx(Vector3(2, 2, 1))) {
-			mid_r = i;
-		}
-	}
+	int centroid = find_vert(brush, Vector3(1, 2, 1));
+	int mid_l = find_vert(brush, Vector3(0, 2, 1));
+	int mid_r = find_vert(brush, Vector3(2, 2, 1));
 	REQUIRE(centroid >= 0);
 	REQUIRE(mid_l >= 0);
 	REQUIRE(mid_r >= 0);
@@ -2118,6 +2110,187 @@ TEST_CASE("[LevelBrush] bevel_edges_profiled handles a collinear chain with step
 	}
 
 	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] subdivide_face only re-materials its own sub-faces") {
+	// Regression: subdividing face 0 must not overwrite the materials of the
+	// faces AFTER it (the old loop re-assigned everything from p_face on).
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(2, 2, 2)));
+
+	Ref<Material> top;
+	top.instantiate();
+	Ref<Material> bottom;
+	bottom.instantiate();
+	brush->set_face_material(4, top); // +Y.
+	brush->set_face_material(5, bottom); // -Y.
+
+	REQUIRE(brush->subdivide_face(0)); // +Z face.
+	CHECK(brush->get_face_count() == 9);
+
+	// The unrelated faces after index 0 kept their own materials.
+	CHECK(brush->get_face_material(4) == top);
+	CHECK(brush->get_face_material(5) == bottom);
+	// Exactly those two faces carry a material at all (face 0 was untagged,
+	// so its sub-faces inherit null).
+	int tagged = 0;
+	for (int f = 0; f < brush->get_face_count(); f++) {
+		if (brush->get_face_material(f).is_valid()) {
+			tagged++;
+		}
+	}
+	CHECK(tagged == 2);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] collapse_vertices rejects the whole op on a stale index") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	Vector<int> stale;
+	stale.push_back(6);
+	stale.push_back(99); // Out of bounds.
+	ERR_PRINT_OFF;
+	brush->collapse_vertices(stale);
+	ERR_PRINT_ON;
+
+	// No partial apply: vertex 6 is untouched, topology unchanged.
+	CHECK(brush->get_vertex(6).is_equal_approx(Vector3(1, 1, 1)));
+	CHECK(brush->get_vertex_count() == 8);
+	CHECK(brush->get_face_count() == 6);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] weld_vertices rejects the whole op on a stale index") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	Vector<int> stale;
+	stale.push_back(0);
+	stale.push_back(1);
+	stale.push_back(42); // Out of bounds.
+	ERR_PRINT_OFF;
+	brush->weld_vertices(stale);
+	ERR_PRINT_ON;
+
+	CHECK(brush->get_vertex(0).is_equal_approx(Vector3(0, 0, 0)));
+	CHECK(brush->get_vertex(1).is_equal_approx(Vector3(1, 0, 0)));
+	CHECK(brush->get_vertex_count() == 8);
+	CHECK(brush->get_face_count() == 6);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] bridge_edges assigns the given material to the new face") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	Ref<Material> mat;
+	mat.instantiate();
+	const int face = brush->bridge_edges(LevelBrush::EdgeKey(3, 2), LevelBrush::EdgeKey(7, 6), mat);
+	REQUIRE(face >= 0);
+	CHECK(brush->get_face_material(face) == mat);
+
+	// Stale edge endpoints (indices past the vertex array) are rejected,
+	// not indexed out of bounds.
+	CHECK(brush->bridge_edges(LevelBrush::EdgeKey(0, 1), LevelBrush::EdgeKey(90, 91), Ref<Material>()) == -1);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] bevel_edges_profiled rejects open edges and zero width") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	Vector<LevelBrush::EdgeKey> edges;
+	edges.push_back(LevelBrush::EdgeKey(3, 2));
+	CHECK(brush->bevel_edges_profiled(edges, 0.0, 1, 0.5) == 0);
+	CHECK(brush->bevel_edges_profiled(edges, -1.0, 1, 0.5) == 0);
+	CHECK(brush->get_face_count() == 6);
+
+	// Open edge (one adjacent face after deleting the top face).
+	Vector<int> del;
+	del.push_back(4);
+	brush->delete_faces(del);
+	REQUIRE(brush->get_face_count() == 5);
+	CHECK(brush->bevel_edges_profiled(edges, 0.25, 1, 0.5) == 0);
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] get_bake_surface_data projects planar UVs") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// The +Y (top) face projects onto X/Z with BAKE_UV_SCALE: uv == (x, z) * scale.
+	Vector<Vector3> v, n;
+	Vector<Vector2> uv;
+	brush->get_bake_surface_data(4, v, n, uv);
+	REQUIRE(v.size() == 6); // Quad fan = 2 triangles.
+	REQUIRE(uv.size() == 6);
+	for (int i = 0; i < v.size(); i++) {
+		CHECK(Math::is_equal_approx(uv[i].x, (real_t)(v[i].x * 0.25)));
+		CHECK(Math::is_equal_approx(uv[i].y, (real_t)(v[i].z * 0.25)));
+	}
+
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] clip_split with a fully-front plane leaves the brush and returns an empty shell") {
+	LevelBrush *brush = memnew(LevelBrush);
+	brush->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+
+	// The whole box is strictly on the keep side of the plane.
+	LevelBrush *back = brush->clip_split(Plane(Vector3(1, 0, 0), -5.0));
+	REQUIRE(back != nullptr);
+
+	// This brush is untouched; the returned back side is empty (caller owns it).
+	CHECK(brush->get_vertex_count() == 8);
+	CHECK(brush->get_face_count() == 6);
+	CHECK(back->get_face_count() == 0);
+
+	memdelete(back);
+	memdelete(brush);
+}
+
+TEST_CASE("[LevelBrush] rewind_edge_wall re-aligns the wall as the drag rotates it") {
+	// The two-phase winding behind Shift+drag edge extrudes (GOTCHAS #30):
+	// the wall is created off a 0.001 stub (direction unknowable), then
+	// re-wound against REAL geometry - pulling the seam along X makes the
+	// wall continue the +Y (top) face, pulling along Y continues +X (right).
+	// NB: dot checks, not exact equality - the stub leaves a residual tilt
+	// (~0.001) in the wall, so its normal is only APPROXIMATELY axis-aligned.
+	const Vector3 stub = Vector3(1, 1, 0).normalized() * 0.001;
+
+	LevelBrush *pull_x = memnew(LevelBrush);
+	pull_x->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+	int ids_x[2];
+	REQUIRE(pull_x->extrude_edge(LevelBrush::EdgeKey(2, 6), stub, ids_x));
+	const int wall_x = pull_x->get_face_count() - 1;
+	Vector<int> moved_x;
+	moved_x.push_back(ids_x[0]);
+	moved_x.push_back(ids_x[1]);
+	pull_x->move_vertices(moved_x, Vector3(1, 0, 0)); // Real pull along +X.
+	pull_x->rewind_edge_wall(wall_x, 2, 6);
+	// Continues the top (+Y) face, and points OUT of the solid.
+	CHECK(pull_x->get_face_normal(wall_x).dot(Vector3(0, 1, 0)) > 0.99);
+	memdelete(pull_x);
+
+	LevelBrush *pull_y = memnew(LevelBrush);
+	pull_y->setup_box(AABB(Vector3(0, 0, 0), Vector3(1, 1, 1)));
+	int ids_y[2];
+	REQUIRE(pull_y->extrude_edge(LevelBrush::EdgeKey(2, 6), stub, ids_y));
+	const int wall_y = pull_y->get_face_count() - 1;
+	Vector<int> moved_y;
+	moved_y.push_back(ids_y[0]);
+	moved_y.push_back(ids_y[1]);
+	pull_y->move_vertices(moved_y, Vector3(0, 1, 0)); // Real pull along +Y.
+	pull_y->rewind_edge_wall(wall_y, 2, 6);
+	// Continues the right (+X) face, and points OUT of the solid.
+	CHECK(pull_y->get_face_normal(wall_y).dot(Vector3(1, 0, 0)) > 0.99);
+	memdelete(pull_y);
 }
 
 } // namespace TestLevelBrush

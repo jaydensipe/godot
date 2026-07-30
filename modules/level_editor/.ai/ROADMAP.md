@@ -65,10 +65,24 @@ Known, small, and not worth churning right now. Fix when touching the area.
 - Face fill+outline projection block appears 3 times with divergent
   degenerate-projection guards - `draw_projected_face` helper (audit pass 4).
 - `_pick_gizmo` re-implements `LevelHelpers::closest_point_on_segment_2d`
-  inline; `_ghost_hit_test` re-implements `Geometry2D::is_point_in_polygon`
-  (audit pass 4).
+  inline (audit pass 4). (`_ghost_hit_test` now uses
+  `Geometry2D::is_point_in_polygon` - done in pass 6.)
 - `clip_split`, `get_face_center`, `is_valid` are production-dead
   (test-only) - keep for tests or delete (audit pass 4).
+- `_pick_rotate_ring` / `_draw_rotate_gizmo` each re-sample the same ring -
+  a shared `_sample_rotate_ring` would keep pick/draw in lockstep by
+  construction (they currently only share `_rotate_world_radius`).
+- `_action_extrude_faces` / `_action_subdivide_faces` / `_bevel_edges_apply`
+  share a ~20-line snapshot -> duplicate_brush -> mutate -> 6x do/undo
+  property skeleton - `_apply_on_working_copy` helper candidate (undo
+  semantics are subtle; only when touching them).
+- Marching-ants preamble (dash/period/visible-rect/phase) duplicated between
+  `_draw_tool_preview` and `_draw_material_drop` - small shared ant-context
+  helper.
+- Dock form-row construction (Label + control + connect) and hint labels
+  duplicated in `refresh()` - `add_labeled_row`/`make_hint_label` statics.
+- Tests hand-roll "scan vertices for a position" loops in several older
+  cases - convert to the `find_vert` helper when touching them.
 
 ## Good to follow
 

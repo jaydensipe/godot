@@ -32,8 +32,8 @@
 // flipping, bridging, and baking. These are LevelEditorScreen member
 // functions, split out of level_editor_screen.cpp for organization.
 
-#include "../level_editor_screen.h"
 #include "../../level_constants.h"
+#include "../level_editor_screen.h"
 
 #include "editor/editor_interface.h"
 #include "editor/editor_undo_redo_manager.h"
@@ -41,6 +41,12 @@
 #include "scene/gui/button.h"
 #include "scene/gui/menu_button.h"
 #include "scene/gui/popup_menu.h"
+
+void LevelEditorScreen::_draw_tool_hint(Control *p_canvas, const String &p_text) const {
+	p_canvas->draw_string(get_theme_font(SNAME("font"), SNAME("Label")),
+			Vector2(LevelEditorHandles::HINT_OFFSET_X, LevelEditorHandles::HINT_OFFSET_Y), p_text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, LevelEditorHandles::HINT_FONT_SIZE, LevelEditorColors::TEXT_DIM);
+}
 
 // ---------------------------------------------------------------------------
 // Element menu actions (Vertex / Edge / Face toolbar menus).
@@ -233,8 +239,6 @@ void LevelEditorScreen::_action_extrude_vertices() {
 	_refresh_map();
 }
 
-
-
 void LevelEditorScreen::_action_flip_faces() {
 	if (!current_map || !selected_brush) {
 		return;
@@ -306,7 +310,6 @@ void LevelEditorScreen::_bevel_edges_apply(real_t p_width, int p_steps, real_t p
 	}
 
 	EditorUndoRedoManager *undo_redo = EditorUndoRedoManager::get_singleton();
-	undo_redo->create_action(TTR("Bevel Edges"));
 	bool did = false;
 	for (const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E : selected_edges) {
 		LevelBrush *target = E.key;
@@ -321,6 +324,11 @@ void LevelEditorScreen::_bevel_edges_apply(real_t p_width, int p_steps, real_t p
 
 		LevelBrush *working = target->duplicate_brush();
 		if (working->bevel_edges_profiled(edges, p_width, p_steps, p_shape) > 0) {
+			// Create the undo action lazily: an uncommitted create_action (no
+			// brush beveled anything) leaves a dangling action in the manager.
+			if (!did) {
+				undo_redo->create_action(TTR("Bevel Edges"));
+			}
 			undo_redo->add_do_property(target, "vertices", working->get_vertices_data());
 			undo_redo->add_do_property(target, "faces", working->get_faces_data());
 			undo_redo->add_do_property(target, "face_materials", working->get_face_materials_data());
@@ -441,6 +449,19 @@ void LevelEditorScreen::_view_grid_toggled(int p_id) {
 	_update_overlays();
 }
 
+void LevelEditorScreen::_sync_display_submenu(int p_vp, int p_mode) {
+	PopupMenu *sub = view_submenus[p_vp];
+	if (!sub) {
+		return;
+	}
+	for (int i = 0; i < sub->get_item_count(); i++) {
+		int id = sub->get_item_id(i);
+		if (id >= 0 && id < LevelEditorViewport::DISPLAY_MAX) {
+			sub->set_item_checked(i, id == p_mode);
+		}
+	}
+}
+
 void LevelEditorScreen::_view_display_selected(int p_id, int p_vp) {
 	view_menu->release_focus();
 	const int vp = p_vp;
@@ -467,17 +488,8 @@ void LevelEditorScreen::_view_display_selected(int p_id, int p_vp) {
 
 	viewports[vp]->set_display_mode((LevelEditorViewport::DisplayMode)disp_mode);
 
-	// Keep the radio state in sync within that viewport's submenu (only the
-	// display-mode items - skip the HUD toggles past the mode range).
-	PopupMenu *sub = view_submenus[vp];
-	if (sub) {
-		for (int i = 0; i < sub->get_item_count(); i++) {
-			int id = sub->get_item_id(i);
-			if (id >= 0 && id < LevelEditorViewport::DISPLAY_MAX) {
-				sub->set_item_checked(i, id == disp_mode);
-			}
-		}
-	}
+	// Keep the radio state in sync within that viewport's submenu.
+	_sync_display_submenu(vp, disp_mode);
 
 	// Persist all four modes for this project.
 	Array modes;

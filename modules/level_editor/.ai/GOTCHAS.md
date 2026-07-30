@@ -479,3 +479,14 @@ in ONE paint; this is repainting the EXPENSIVE overlay too OFTEN.
     resource is duplicated per viewport (meshes, caches), its dirty/version
     tracking must be per viewport too - a shared stamp always starves every
     consumer after the first.
+
+55. **Scene change must ABANDON drags, not end them.** `on_scene_changed`
+    used to only cancel ghost/clip/mirror and clear the selection - an
+    in-flight gizmo/rotate/select-handle drag kept running against the old
+    scene's brushes, and its undo never committed. `_abandon_drags()` now
+    resets every drag member WITHOUT ending the drags the `_set_tool` way:
+    ending means dereferencing brushes (snapshot restores, undo commits)
+    that may already be freed, and the scene's undo history is gone anyway.
+    RULE: scene teardown resets state; tool/target switches end drags
+    cleanly (brushes survive there). Same split applies to any NEW drag
+    state - add it to both `_abandon_drags()` and `_set_tool`/`_set_target`.

@@ -114,22 +114,22 @@ SubViewportContainer
   `extrude_edge`/`extrude_vertex` (duplicate the element's verts with an
   offset, rewire using faces to the dupes, stitch one wall quad/wedge per
   face; the wall is wound to CONTINUE the using face it is most parallel to
-  - `rewind_edge_wall` - and re-wound per-frame by the gizmo as the drag
-  rotates it off the 0.001 stub, see GOTCHAS #30),
-  `clip(plane)` (solid clip + cap), `split_faces(plane)` (subdivide in place),
-  `mirror(plane)` (reflect verts + reverse winding - reflection flips
-  chirality), `compact_vertices` (drop unreferenced verts, remap loops),
-  `clip_split`, `delete_faces`, `collapse_vertices`, `weld_vertices`,
-  `bridge_edges`, `get_edge_loop`/`get_edge_chain` (quad-strip walkers),
-  `subdivide_face`, `rewind_face_outward` (per-face winding fix, setup_sphere
-  only), `rewind_edge_wall` (re-wind an extruded edge wall to continue its
-  most-parallel source face; called at extrude time and per-frame by the
-  gizmo drag),
-  `bevel_edges`/`bevel_edges_profiled` (Blender-style bevel: edge consumed, one
-  strip quad per edge bridging offset lines p_distance into each adjacent
-  face; meeting edges mitred to shared corner verts; collinear chains
-  share verts into one continuous strip),
-  `flip_faces`/`set_faces_flipped`.
+    - `rewind_edge_wall` - and re-wound per-frame by the gizmo as the drag
+      rotates it off the 0.001 stub, see GOTCHAS #30),
+      `clip(plane)` (solid clip + cap), `split_faces(plane)` (subdivide in place),
+      `mirror(plane)` (reflect verts + reverse winding - reflection flips
+      chirality), `compact_vertices` (drop unreferenced verts, remap loops),
+      `clip_split`, `delete_faces`, `collapse_vertices`, `weld_vertices`,
+      `bridge_edges`, `get_edge_loop`/`get_edge_chain` (quad-strip walkers),
+      `subdivide_face`, `rewind_face_outward` (per-face winding fix, setup_sphere
+      only), `rewind_edge_wall` (re-wind an extruded edge wall to continue its
+      most-parallel source face; called at extrude time and per-frame by the
+      gizmo drag),
+      `bevel_edges`/`bevel_edges_profiled` (Blender-style bevel: edge consumed, one
+      strip quad per edge bridging offset lines p_distance into each adjacent
+      face; meeting edges mitred to shared corner verts; collinear chains
+      share verts into one continuous strip),
+      `flip_faces`/`set_faces_flipped`.
 - `EdgeKey {int a,b; ordered}` + `EdgeKeyHasher` used for edge identity;
   `get_edges()` (unique set) and `get_open_edges()` (used by <2 faces =
   surface boundary; dashed in overlays).
@@ -318,11 +318,17 @@ HashSet<...>>` sets (cross-brush selection). `_set_target` clears
   perspective/unknown=-1) - the one place that mapping lives.
 - `level_constants.h` (`LevelEditorColors`): all overlay colors + `hot(color)`
   (50% white lerp for hover/drag states). (`LevelEditorGrid`): grid `STEPS`/
-  `STEP_COUNT` ladder + `GRID_3D_EXTENT`/`GRID_3D_REBUILD_DIST` for the
-  perspective 3D grid mesh.
+  `STEP_COUNT` ladder, `GRID_3D_EXTENT`/`GRID_3D_REBUILD_DIST` for the
+  perspective 3D grid mesh, `GRID_MAJOR_INTERVAL`, `ROTATE_SNAP_DEGREES`.
+  (`LevelBrushConstants`): geometry tolerances + sphere/bevel/bake bounds.
+  (`LevelEditorHandles`): pick tolerances, handle sizes, marching-ants,
+  gizmo pick ray/stub/scale-rate, open-edge dashes, fill coord limit, hint
+  text metrics.
 - Rotate gizmo: `_rotate_world_radius()` (screen-constant ring radius) and
   `_rotate_allowed_axis()` (per-view axis filter) are shared by pick + draw -
   they MUST stay in sync (a desync made rings unpickable at most zooms).
+  `_rotate_world_radius` and `_gizmo_3d_world_scale` both delegate to ONE
+  pixels->world helper, `_pixels_to_world_at` (GOTCHAS #25).
 - `LevelEditorViewport::ray_to_view_plane(screen, point, hit)` - ray to the
   viewport's natural edit plane through a point (Y plane for perspective/top,
   Z for front, X for side). Use this for ALL edit-plane intersections.
@@ -330,6 +336,20 @@ HashSet<...>>` sets (cross-brush selection). `_set_target` clears
   corner/face handle picking for ghost + select handles.
 - `LevelEditorScreen::_commit_brush_undo(action, brush, old_verts, old_faces,
 old_mats, execute=false)` - one-call vertices/faces/materials undo record.
+- `level_modifiers.cpp` anonymous namespace (brush-local): `reversed_loop`
+  (loop copy with flipped winding), `remove_duplicate_loop_verts`
+  (consecutive + wrap-around dup cleanup), `find_faces_with_edge` (faces
+  containing an edge consecutively, exclude + max-count). Plus the private
+  member `LevelBrush::_remove_face` (face + material slot removal, keeps the
+  arrays 1:1).
+- `LevelMap::_brush_to_map_transform(brush)` (global-vs-local fallback in
+  one place) and `_append_face_geometry` (tessellate + transform + append
+  one face) - shared by the per-brush preview cache and `bake()`.
+- `LevelEditorScreen::_abandon_drags()` (scene-change drag reset WITHOUT
+  undo commits - GOTCHAS #55), `_scale_factors_from_drag` (element-target
+  scale paths), `_sync_display_submenu` (View-menu radio sync),
+  `_draw_tool_hint` (clip/mirror corner hint), `_element_stub_dir` (gizmos:
+  average-normal extrude stub for edges/vertices).
 
 ## Checklist: adding a LevelBrush geometry op
 

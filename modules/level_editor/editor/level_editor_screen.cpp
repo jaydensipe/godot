@@ -414,7 +414,7 @@ void LevelEditorViewport::_rebuild_grid_mesh(real_t p_grid_size) {
 	int end = (int)Math::ceil(extent / p_grid_size);
 	for (int i = start; i <= end; i++) {
 		real_t a = i * p_grid_size;
-		bool is_major = (i % 8) == 0;
+		bool is_major = (i % LevelEditorGrid::GRID_MAJOR_INTERVAL) == 0;
 
 		// Line parallel to Z at world x = center.x + a: axis-blue only when
 		// that x is exactly 0. Lines parallel to X get the same test on z.
@@ -488,6 +488,12 @@ void LevelEditorViewport::set_display_mode(DisplayMode p_mode) {
 	};
 	subviewport->set_debug_draw(modes[p_mode]);
 }
+
+// Ortho wheel zoom: distance limits (world units) and per-notch factors.
+static const real_t ORTHO_ZOOM_MIN = 0.5;
+static const real_t ORTHO_ZOOM_MAX = 2000.0;
+static const real_t ORTHO_ZOOM_IN = 0.9;
+static const real_t ORTHO_ZOOM_OUT = 1.1;
 
 void LevelEditorViewport::_update_camera_transform() {
 	if (!camera) {
@@ -880,7 +886,7 @@ void LevelEditorViewport::_draw_grid() {
 		Vector2 s1, s2;
 		if (project(p1, s1) && project(p2, s2)) {
 			bool is_axis = Math::is_zero_approx(a);
-			bool is_major = (i % 8) == 0;
+			bool is_major = (i % LevelEditorGrid::GRID_MAJOR_INTERVAL) == 0;
 			overlay->draw_line(s1, s2, is_axis ? axis_col : (is_major ? major : minor), is_axis ? 2.0 : 1.0);
 		}
 	}
@@ -897,7 +903,7 @@ void LevelEditorViewport::_draw_grid() {
 		Vector2 s1, s2;
 		if (project(p1, s1) && project(p2, s2)) {
 			bool is_axis = Math::is_zero_approx(b);
-			bool is_major = (i % 8) == 0;
+			bool is_major = (i % LevelEditorGrid::GRID_MAJOR_INTERVAL) == 0;
 			overlay->draw_line(s1, s2, is_axis ? axis_col : (is_major ? major : minor), is_axis ? 2.0 : 1.0);
 		}
 	}
@@ -960,16 +966,14 @@ void LevelEditorViewport::gui_input(const Ref<InputEvent> &p_event) {
 			// Zoom centered on the mouse: keep the world point under the cursor
 			// fixed on screen while the ortho size changes.
 			Vector3 before;
-			if (intersect_ortho_plane(mb->get_position(), before)) {
-				distance = (mb->get_button_index() == MouseButton::WHEEL_UP) ? MAX(0.5, distance * 0.9) : MIN(2000.0, distance * 1.1);
-				_update_camera_transform();
+			const bool has_pivot_point = intersect_ortho_plane(mb->get_position(), before);
+			distance = (mb->get_button_index() == MouseButton::WHEEL_UP) ? MAX(ORTHO_ZOOM_MIN, distance * ORTHO_ZOOM_IN) : MIN(ORTHO_ZOOM_MAX, distance * ORTHO_ZOOM_OUT);
+			_update_camera_transform();
+			if (has_pivot_point) {
 				Vector3 after;
 				if (intersect_ortho_plane(mb->get_position(), after)) {
 					pivot += before - after;
 				}
-				_update_camera_transform();
-			} else {
-				distance = (mb->get_button_index() == MouseButton::WHEEL_UP) ? MAX(0.5, distance * 0.9) : MIN(2000.0, distance * 1.1);
 				_update_camera_transform();
 			}
 			accept_event();
@@ -1285,12 +1289,7 @@ LevelEditorScreen::LevelEditorScreen() {
 	// stays unshaded. Saved modes override below.
 	for (int vp = 1; vp < 4; vp++) {
 		viewports[vp]->set_display_mode(LevelEditorViewport::DISPLAY_OVERDRAW);
-		for (int i = 0; i < view_submenus[vp]->get_item_count(); i++) {
-			int id = view_submenus[vp]->get_item_id(i);
-			if (id >= 0 && id < LevelEditorViewport::DISPLAY_MAX) {
-				view_submenus[vp]->set_item_checked(i, id == LevelEditorViewport::DISPLAY_OVERDRAW);
-			}
-		}
+		_sync_display_submenu(vp, LevelEditorViewport::DISPLAY_OVERDRAW);
 	}
 
 	// Restore per-viewport display modes saved for this project (default is
@@ -1303,12 +1302,7 @@ LevelEditorScreen::LevelEditorScreen() {
 				continue;
 			}
 			viewports[vp]->set_display_mode((LevelEditorViewport::DisplayMode)m);
-			for (int i = 0; i < view_submenus[vp]->get_item_count(); i++) {
-				int id = view_submenus[vp]->get_item_id(i);
-				if (id >= 0 && id < LevelEditorViewport::DISPLAY_MAX) {
-					view_submenus[vp]->set_item_checked(i, id == m);
-				}
-			}
+			_sync_display_submenu(vp, m);
 		}
 	}
 
@@ -1763,8 +1757,56 @@ void LevelEditorScreen::_resolve_map() {
 	}
 }
 
+void LevelEditorScreen::_abandon_drags() {
+	// Scene change: the brushes any drag references belong to the old scene,
+	// so nothing here may dereference them (no undo commit, no map refresh).
+	dragging = false;
+	drag_active = false;
+	drag_viewport = nullptr;
+
+	ghost_handle_hover = GHOST_NONE;
+	ghost_handle_drag = GHOST_NONE;
+	ghost_drag_viewport = nullptr;
+	ghost_moving = false;
+
+	clip_drag_point = -1;
+	mirror_drag_point = -1;
+
+	gizmo_dragging = false;
+	gizmo_drag_part = GIZMO_NONE;
+	gizmo_drag_viewport = nullptr;
+	gizmo_drag_brush_verts.clear();
+	gizmo_drag_original_positions.clear();
+	gizmo_dup_sources.clear();
+	gizmo_extrude_drag = false;
+	gizmo_duplicate_drag = false;
+	gizmo_extrude_orig_verts.clear();
+	gizmo_extrude_orig_faces.clear();
+	gizmo_extrude_orig_mats.clear();
+	gizmo_extrude_cap_faces.clear();
+	gizmo_extrude_cap_normals.clear();
+	gizmo_extrude_elem_verts.clear();
+	gizmo_extrude_wall_edges.clear();
+	gizmo_extrude_moved_verts.clear();
+
+	rotate_hover_axis = -1;
+	rotate_drag_axis = -1;
+	rotate_drag_viewport = nullptr;
+
+	select_handle_hover = GHOST_NONE;
+	select_handle_drag = GHOST_NONE;
+	select_drag_viewport = nullptr;
+	select_moving = false;
+	select_move_viewport = nullptr;
+	select_move_original_positions.clear();
+
+	paint_select_active = false;
+	paint_select_viewport = nullptr;
+}
+
 void LevelEditorScreen::on_scene_changed() {
 	current_map = nullptr;
+	_abandon_drags();
 	if (ghost_active) {
 		_ghost_cancel();
 	}
@@ -2027,7 +2069,7 @@ void LevelEditorScreen::_bevel_preview_rebuild() {
 
 	const real_t width = get_armed_value(StringName("width"), grid_size);
 	const int steps = (int)get_armed_value(StringName("steps"), 0.0);
-	const real_t shape = get_armed_value(StringName("shape"), 0.5);
+	const real_t shape = get_armed_value(StringName("shape"), LevelBrushConstants::BEVEL_DEFAULT_SHAPE);
 	const KeyValue<LevelBrush *, HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher>> &E = *selected_edges.begin();
 
 	// Cache key: everything the preview depends on (brush, selection,
@@ -2099,7 +2141,7 @@ void LevelEditorScreen::_draw_tool_preview(LevelEditorViewport *p_vp, Control *p
 		// Yellow marching-ants (ACTION_PREVIEW). The phase runs continuously
 		// across segments so dashes turn corners; the helper clips near-plane-
 		// asymptotic projections to the overlay rect.
-		const real_t dash_len = 8.0 * EDSCALE;
+		const real_t dash_len = LevelEditorHandles::ANTS_DASH * EDSCALE;
 		const real_t period = dash_len * 2.0;
 		const Rect2 visible_rect = LevelHelpers::overlay_visible_rect(p_canvas);
 		real_t phase = Math::fposmod((real_t)preview_ants_phase * EDSCALE, period);
@@ -2521,30 +2563,23 @@ void LevelEditorScreen::_update_hover(LevelEditorViewport *p_vp, const Vector2 &
 		} break;
 		case TARGET_VERTEX: {
 			has_hover_vertex = _pick_vertex(cam, p_mouse, hover_brush, hover_vertex);
-			// Also resolve which brush is under the cursor (face pick) so all of
-			// its vertices can be shown even when not directly over one.
-			if (!has_hover_vertex) {
-				Vector3 hit;
-				int f;
-				LevelBrush *b = nullptr;
-				if (_pick_face(cam, p_mouse, b, f, hit)) {
-					hover_brush = b;
-				}
-			}
 		} break;
 		case TARGET_EDGE: {
 			has_hover_edge = _pick_edge(cam, p_mouse, hover_brush, hover_edge);
-			if (!has_hover_edge) {
-				Vector3 hit;
-				int f;
-				LevelBrush *b = nullptr;
-				if (_pick_face(cam, p_mouse, b, f, hit)) {
-					hover_brush = b;
-				}
-			}
 		} break;
 		default:
 			break;
+	}
+	// Element targets: when no element is under the cursor, still resolve the
+	// brush under it (face pick) so all of its elements can be shown.
+	if ((selection_target == TARGET_VERTEX && !has_hover_vertex) ||
+			(selection_target == TARGET_EDGE && !has_hover_edge)) {
+		Vector3 hit;
+		int f;
+		LevelBrush *b = nullptr;
+		if (_pick_face(cam, p_mouse, b, f, hit)) {
+			hover_brush = b;
+		}
 	}
 
 	// Repaint only when the pick actually changed - moving the mouse across
@@ -2930,7 +2965,7 @@ void LevelEditorScreen::_draw_viewport_overlay(LevelEditorViewport *p_vp, Contro
 				Vector2 a, b;
 				if (p_vp->project_segment(gt.xform(brush->get_vertex(hover_edge.a)), gt.xform(brush->get_vertex(hover_edge.b)), a, b)) {
 					if (brush->get_open_edges().has(hover_edge)) {
-						LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, LevelEditorColors::HOVER_ELEMENT, 2.5, 6.0 * EDSCALE);
+						LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, LevelEditorColors::HOVER_ELEMENT, 2.5, LevelEditorHandles::OPEN_EDGE_DASH_PX * EDSCALE);
 					} else {
 						p_canvas->draw_line(a, b, LevelEditorColors::HOVER_ELEMENT, 2.5);
 					}
@@ -3020,7 +3055,7 @@ void LevelEditorScreen::_draw_material_drop(LevelEditorViewport *p_vp, Control *
 				// astronomic screen coordinates (rasterizing it would scan
 				// millions of pixels). The clipped dashes still draw.
 				bool fill_ok = true;
-				const real_t coord_limit = 32768.0;
+				const real_t coord_limit = LevelEditorHandles::FILL_COORD_LIMIT;
 				for (const Vector2 &p : pts) {
 					if (Math::abs(p.x) > coord_limit || Math::abs(p.y) > coord_limit) {
 						fill_ok = false;
@@ -3052,8 +3087,6 @@ void LevelEditorScreen::_draw_material_drop(LevelEditorViewport *p_vp, Control *
 	}
 }
 
-
-
 void LevelEditorScreen::_draw_drag_feedback(LevelEditorViewport *p_vp, Control *p_canvas) {
 	if (!dragging || !drag_active || !drag_viewport || ghost_active) {
 		return;
@@ -3069,16 +3102,16 @@ void LevelEditorScreen::_draw_drag_feedback(LevelEditorViewport *p_vp, Control *
 		_rebuild_sphere_preview(AABB(mins, maxs - mins));
 		_draw_sphere_preview(p_vp, p_canvas, col);
 	} else {
-		LevelBrush *preview = memnew(LevelBrush);
-		preview->setup_box(AABB(mins, maxs - mins));
-		const HashSet<LevelBrush::EdgeKey, LevelBrush::EdgeKeyHasher> &edges = preview->get_edges();
-		for (const LevelBrush::EdgeKey &e : edges) {
+		// Box edges are constant - draw them straight from the AABB (the old
+		// per-paint memnew(LevelBrush)+setup_box ran x4 viewports per frame).
+		Vector3 corners[8];
+		LevelHelpers::aabb_corners(AABB(mins, maxs - mins), corners);
+		for (const auto &edge : LevelHelpers::AABB_EDGE_IDX) {
 			Vector2 a, b;
-			if (p_vp->project(preview->get_vertex(e.a), a) && p_vp->project(preview->get_vertex(e.b), b)) {
+			if (p_vp->project(corners[edge[0]], a) && p_vp->project(corners[edge[1]], b)) {
 				p_canvas->draw_line(a, b, col, 2.0);
 			}
 		}
-		memdelete(preview);
 	}
 
 	// Show the in-progress box's dimensions too.
@@ -3137,7 +3170,7 @@ void LevelEditorScreen::_draw_selection(LevelEditorViewport *p_vp, Control *p_ca
 				Vector2 a, b;
 				if (p_vp->project_segment(gt.xform(E.key->get_vertex(e.a)), gt.xform(E.key->get_vertex(e.b)), a, b)) {
 					if (open_edges.has(e)) {
-						LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, edge_col, 3.0, 6.0 * EDSCALE);
+						LevelHelpers::draw_dashed_line_clipped(p_canvas, a, b, edge_col, 3.0, LevelEditorHandles::OPEN_EDGE_DASH_PX * EDSCALE);
 					} else {
 						p_canvas->draw_line(a, b, edge_col, 3.0);
 					}

@@ -168,10 +168,25 @@ void LevelMap::notify_brush_changed(LevelBrush *p_brush) {
 }
 
 // Tessellate one brush into map-local per-material surface arrays.
+Transform3D LevelMap::_brush_to_map_transform(LevelBrush *p_brush) const {
+	const Transform3D map_inv = is_inside_tree() ? get_global_transform().affine_inverse() : get_transform().affine_inverse();
+	return map_inv * (p_brush->is_inside_tree() ? p_brush->get_global_transform() : p_brush->get_transform());
+}
+
+void LevelMap::_append_face_geometry(LevelBrush *p_brush, int p_face, const Transform3D &p_to_map, const Basis &p_normal_basis, PackedVector3Array &r_verts, PackedVector3Array &r_normals, PackedVector2Array &r_uvs) {
+	Vector<Vector3> v, n;
+	Vector<Vector2> uv;
+	p_brush->get_bake_surface_data(p_face, v, n, uv);
+	for (int j = 0; j < v.size(); j++) {
+		r_verts.push_back(p_to_map.xform(v[j]));
+		r_normals.push_back(p_normal_basis.xform(n[j]).normalized());
+		r_uvs.push_back(uv[j]);
+	}
+}
+
 void LevelMap::_rebuild_brush_cache(LevelBrush *p_brush, BrushCache &r_cache) const {
 	r_cache.surfaces.clear();
-	const Transform3D map_inv = is_inside_tree() ? get_global_transform().affine_inverse() : get_transform().affine_inverse();
-	const Transform3D brush_to_map = map_inv * (p_brush->is_inside_tree() ? p_brush->get_global_transform() : p_brush->get_transform());
+	const Transform3D brush_to_map = _brush_to_map_transform(p_brush);
 	const Basis normal_basis = brush_to_map.basis.inverse().transposed();
 
 	// Group faces by material (insertion order for stable surfaces).
@@ -192,14 +207,7 @@ void LevelMap::_rebuild_brush_cache(LevelBrush *p_brush, BrushCache &r_cache) co
 		BrushCache::SurfaceData sd;
 		sd.material = mat;
 		for (int f : mat_faces[mat]) {
-			Vector<Vector3> v, n;
-			Vector<Vector2> uv;
-			p_brush->get_bake_surface_data(f, v, n, uv);
-			for (int j = 0; j < v.size(); j++) {
-				sd.verts.push_back(brush_to_map.xform(v[j]));
-				sd.normals.push_back(normal_basis.xform(n[j]).normalized());
-				sd.uvs.push_back(uv[j]);
-			}
+			_append_face_geometry(p_brush, f, brush_to_map, normal_basis, sd.verts, sd.normals, sd.uvs);
 		}
 		if (!sd.verts.is_empty()) {
 			r_cache.surfaces.push_back(sd);
@@ -246,8 +254,7 @@ void LevelMap::_update_preview() {
 
 	Ref<ArrayMesh> mesh = preview_mesh_instance->get_mesh();
 	const bool structure_changed = any_dirty || dead.size() > 0 || mesh.is_null() ||
-			(int)preview_surface_brush.size() != mesh->get_surface_count() ||
-			(!mesh.is_null() && mesh->get_surface_count() == 0 && any_dirty);
+			(int)preview_surface_brush.size() != mesh->get_surface_count();
 
 	if (!structure_changed && mesh.is_valid()) {
 		return; // Nothing to do.
@@ -284,8 +291,9 @@ void LevelMap::_update_preview() {
 	// and correct; per-frame drags keep the SAME layout, so they hit the
 	// cheap per-surface replace path below.
 	const bool layout_same = (int)new_brush.size() == (int)preview_surface_brush.size() &&
-			memcmp(new_brush.ptr(), preview_surface_brush.ptr(), new_brush.size() * sizeof(LevelBrush *)) == 0 &&
-			(new_idx.is_empty() || memcmp(new_idx.ptr(), preview_surface_idx.ptr(), new_idx.size() * sizeof(int)) == 0);
+			(new_brush.is_empty() ||
+					(memcmp(new_brush.ptr(), preview_surface_brush.ptr(), new_brush.size() * sizeof(LevelBrush *)) == 0 &&
+							(new_idx.is_empty() || memcmp(new_idx.ptr(), preview_surface_idx.ptr(), new_idx.size() * sizeof(int)) == 0)));
 
 	if (!layout_same) {
 		mesh->clear_surfaces();
@@ -358,10 +366,6 @@ Node3D *LevelMap::bake(bool p_geometry_only) const {
 		return nullptr;
 	}
 
-	// Fall back to the local transform when detached from the tree (tests,
-	// offline tools) instead of spamming get_global_transform errors.
-	const Transform3D map_inv = is_inside_tree() ? get_global_transform().affine_inverse() : get_transform().affine_inverse();
-
 	// One surface per unique material. Single pass: group each brush's faces
 	// by material up front (the old per-material re-scan of every face was
 	// O(materials x faces) - quadratic with per-face unique materials).
@@ -391,7 +395,7 @@ Node3D *LevelMap::bake(bool p_geometry_only) const {
 	LocalVector<Transform3D> brush_to_map;
 	LocalVector<Basis> brush_normal_basis;
 	for (LevelBrush *brush : brushes) {
-		const Transform3D t = map_inv * (brush->is_inside_tree() ? brush->get_global_transform() : brush->get_transform());
+		const Transform3D t = _brush_to_map_transform(brush);
 		brush_to_map.push_back(t);
 		brush_normal_basis.push_back(t.basis.inverse().transposed());
 	}
@@ -405,14 +409,7 @@ Node3D *LevelMap::bake(bool p_geometry_only) const {
 		for (uint32_t i = 0; i < list.size(); i += 2) {
 			const int b = list[i];
 			const int f = list[i + 1];
-			Vector<Vector3> v, n;
-			Vector<Vector2> uv;
-			brushes[b]->get_bake_surface_data(f, v, n, uv);
-			for (int j = 0; j < v.size(); j++) {
-				verts.push_back(brush_to_map[b].xform(v[j]));
-				normals.push_back(brush_normal_basis[b].xform(n[j]).normalized());
-				uvs.push_back(uv[j]);
-			}
+			_append_face_geometry(brushes[b], f, brush_to_map[b], brush_normal_basis[b], verts, normals, uvs);
 		}
 
 		if (verts.is_empty()) {
@@ -443,11 +440,11 @@ Node3D *LevelMap::bake(bool p_geometry_only) const {
 
 	// Collision + occluder geometry (map-local).
 	for (LevelBrush *brush : brushes) {
-		const Transform3D brush_to_map = map_inv * (brush->is_inside_tree() ? brush->get_global_transform() : brush->get_transform());
+		const Transform3D to_map = _brush_to_map_transform(brush);
 		Vector<Vector3> faces;
 		brush->get_collision_faces(faces);
 		for (const Vector3 &p : faces) {
-			collision_faces.push_back(brush_to_map.xform(p));
+			collision_faces.push_back(to_map.xform(p));
 		}
 	}
 

@@ -232,3 +232,96 @@ PARALLEL_DOT}` in level_brush.h.
 - Kept (intentional): unreachable-looking Enter/Esc branches in
   forward_input (focus-path ambiguity, harmless), `clip(p_add_cap=false)`
   param, key-swallow lists.
+
+## Audit (2026-07, pass 6) - full-module multi-agent sweep
+
+Scope: whole module (runtime + editor + dock + tests), 4 parallel audit
+agents, findings verified and fixed by hand. Deferred-smell big refactors
+(clip/mirror state-machine merge, ctor/`_gizmo_begin_drag`/`_selection_input`
+splits, `bevel_edges_profiled` split) deliberately LEFT, per roadmap policy.
+
+Bugs fixed:
+
+- `subdivide_face` clobbered the materials of every pre-existing face AFTER
+  the subdivided index (re-assigned `face_materials[p_face..end]` instead of
+  only the source + appended sub-faces). Regression test added.
+- `collapse_vertices` validated indices mid-op (stale index half-applied the
+  collapse). Now validates up front, same rule as move_vertices/delete_faces.
+- `compact_vertices` never called `_notify_map_changed()` when called
+  standalone (stale edge caches/geometry version). Now notifies (the no-op
+  early-out still skips).
+- `bridge_edges` indexed `verts[]` with unchecked EdgeKey endpoints (stale
+  selection could OOB). Now bounds-rejects.
+- `_bevel_edges_apply` left a dangling uncommitted `create_action` when no
+  brush beveled anything. Action is now created lazily on first success.
+- `on_scene_changed` left in-flight drags running against brushes of the old
+  scene (gizmo/rotate/select-handle/block drags, extrude snapshot maps).
+  New `_abandon_drags()` resets ALL drag state without committing undo (the
+  brushes and the scene's undo history are gone - unlike `_set_tool`, which
+  ends drags cleanly because the brushes survive). GOTCHAS #55.
+- `_clip_input` handled Enter/Esc AND `input()` handled them (double-key
+  risk). Clip keys now live only in `input()`, matching mirror.
+- `_draw_drag_feedback` allocated a `LevelBrush` + `setup_box` per overlay
+  paint (x4 viewports per frame during block drags). Draws the 12 AABB edges
+  directly via `aabb_corners`/`AABB_EDGE_IDX` (same pattern as the sphere
+  preview cache).
+- `_apply_gizmo_delta` face-extrude path indexed `cap_normals[...][size-1]`
+  on an implicitly-nonempty map - guarded with ERR_CONTINUE.
+- Dock: armed-action SpinBoxes with `min == 0` (bevel Steps/Shape) allowed
+  negative values (`allow_lesser` was `min <= 0`; now `min < 0`). Dock:
+  failed material preview renders left the previous material's texture up;
+  now cleared. Dock: Browse/Save buttons now `release_focus()` like every
+  other toolbar button.
+- `LevelMap::_update_preview`: removed a redundant `structure_changed`
+  clause (subsumed by `any_dirty ||`) and guarded the `memcmp` layout diff
+  against empty (null-ptr) arrays.
+
+Considered and REJECTED: validating face-loop indices in `set_faces_data`
+(corrupt .tscn defense) - undo restores faces BEFORE vertices (reverse
+order), so validation would falsely reject legitimate restores where the
+do-state shrank the vertex array. Documented here so nobody re-adds it.
+
+Dead code removed:
+
+- `LevelEditorViewport::get_gizmo_root()`, `is_info_visible()`,
+  `is_frame_time_visible()` (never called).
+- `gizmo_drag_mouse_start` (write-only member).
+- `_rotate_world_radius`'s unused `p_center` parameter.
+- Enter/Esc block in `_clip_input` (dead - `input()` runs first and swallows).
+
+Helpers/constants added:
+
+- `level_modifiers.cpp` anonymous namespace: `reversed_loop` (4 copies),
+  `remove_duplicate_loop_verts` (2 copies), `find_faces_with_edge` (3
+  face/edge adjacency scans). New private member `LevelBrush::_remove_face`
+  (face+material removal, 3 copies).
+- `LevelMap::_brush_to_map_transform` (3 copies of the map-local transform
+  expression) and `_append_face_geometry` (2 copies of the tessellate-
+  transform-append loop).
+- `LevelEditorScreen::_pixels_to_world_at` - the ONE pixels->world helper
+  `_gizmo_3d_world_scale` and `_rotate_world_radius` now share (GOTCHAS #25
+  rule). `_scale_factors_from_drag` (2 identical scale-factor blocks).
+  `_sync_display_submenu` (3 copies of the display-mode radio sync loop).
+  `_draw_tool_hint` (clip/mirror mode-hint footer).
+  `_element_stub_dir` (gizmos; edge/vertex stub-normal dup + EXTRUDE_STUB).
+- Constants: `LevelBrushConstants::PERP_AXIS_MAX_X`, `SPHERE_SIDES_MIN/MAX`,
+  `BEVEL_WIDTH_MIN/MAX`, `BEVEL_STEPS_MAX`; `LevelEditorGrid::
+  GRID_MAJOR_INTERVAL`, `ROTATE_SNAP_DEGREES`; `LevelEditorHandles::
+  PICK_RAY_LEN`, `ROTATE_RING_PICK_TOL`, `SCALE_DRAG_RATE`, `EXTRUDE_STUB`,
+  `OPEN_EDGE_DASH_PX/WORLD`, `FILL_COORD_LIMIT`, `HINT_OFFSET_X/Y`,
+  `HINT_FONT_SIZE`; file-static `ORTHO_ZOOM_*` (screen.cpp),
+  `ROTATE_RING_SEGMENTS` (gizmos), `MATERIAL_PREVIEW_SIZE` (dock). Fixed the
+  missed `BEVEL_DEFAULT_SHAPE`/`ANTS_DASH` sites from pass 5/4.
+- Dock brush-type item ids and sphere range now use the BrushType enum /
+  SPHERE_SIDES constants instead of bare 0/1/2 and 4/64.
+- `_ghost_hit_test` now uses `Geometry2D::is_point_in_polygon` instead of a
+  hand-rolled ray-casting test (removes the pass-4 deferred smell).
+- `_update_hover`'s duplicated "no element hit, resolve the brush" fallback
+  collapsed to one shared block.
+
+Tests added: subdivide_face material preservation (regression), collapse/
+weld stale-index whole-op rejection, bridge_edges material + stale-endpoint
+rejection, bevel_edges_profiled rejection cases, get_bake_surface_data UV
+projection values, clip_split fully-front plane, rewind_edge_wall two-phase
+re-wind (GOTCHAS #30 mechanism, direct), setup_sphere min-clamp exact counts,
+find_vert test helper.

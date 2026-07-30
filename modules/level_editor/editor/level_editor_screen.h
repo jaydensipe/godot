@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "../level_constants.h"
 #include "../level_map.h"
 #include "materials/level_editor_materials.h"
 
@@ -224,7 +225,6 @@ public:
 	Camera3D *get_camera() const { return camera; }
 	SubViewport *get_subviewport() const { return subviewport; }
 	SubViewport *get_gizmo_subviewport() const { return gizmo_subviewport; }
-	Node3D *get_gizmo_root() const { return gizmo_root; }
 	void set_gizmo_root(Node3D *p_root);
 	HashMap<LevelBrush *, MeshInstance3D *> &get_outline_instances() { return outline_instances; }
 	// Sync the gizmo overlay camera to the scene camera (called per frame).
@@ -260,8 +260,6 @@ public:
 	void set_grid_3d_visible(bool p_visible);
 	void set_info_visible(bool p_visible);
 	void set_frame_time_visible(bool p_visible);
-	bool is_info_visible() const { return show_info; }
-	bool is_frame_time_visible() const { return show_frame_time; }
 
 	LevelEditorViewport();
 };
@@ -435,6 +433,8 @@ private:
 	// Shared by clip + mirror: plane through two world points containing
 	// the captured view direction, converted to p_brush local space.
 	static Plane _two_point_plane(const Vector3 p_points[2], const Vector3 &p_view_dir, const LevelBrush *p_brush);
+	// Mode-hint footer text in the viewport corner (clip/mirror tools).
+	void _draw_tool_hint(Control *p_canvas, const String &p_text) const;
 
 	// --- Mirror tool state (clip-style 2-point plane, previews the ---
 	// mirrored copy; Enter creates it as a NEW brush node).
@@ -519,7 +519,7 @@ public:
 	void set_brush_type(int p_type) { brush_type = (BrushType)p_type; }
 	int get_brush_sphere_sides() const { return brush_sphere_sides; }
 	void set_brush_sphere_sides(int p_sides) {
-		brush_sphere_sides = CLAMP(p_sides, 4, 64);
+		brush_sphere_sides = CLAMP(p_sides, LevelBrushConstants::SPHERE_SIDES_MIN, LevelBrushConstants::SPHERE_SIDES_MAX);
 		_update_overlays(); // The drag/ghost preview follows the sides live.
 	}
 	void cancel_armed_action() { _action_cancel_armed(); }
@@ -569,7 +569,7 @@ private:
 
 	int _pick_rotate_ring(LevelEditorViewport *p_vp, const Vector2 &p_screen) const;
 	real_t _rotate_screen_angle(LevelEditorViewport *p_vp, const Vector2 &p_screen, int p_axis) const;
-	real_t _rotate_world_radius(LevelEditorViewport *p_vp, const Vector3 &p_origin, const Vector2 &p_center) const;
+	real_t _rotate_world_radius(LevelEditorViewport *p_vp, const Vector3 &p_origin) const;
 	int _rotate_allowed_axis(LevelEditorViewport::ViewType p_type) const;
 	void _draw_rotate_gizmo(LevelEditorViewport *p_vp, Control *p_canvas);
 	void _rotate_end_drag();
@@ -635,7 +635,6 @@ private:
 	bool gizmo_dragging = false;
 	Vector3 gizmo_drag_start_origin; // World-space gizmo origin at drag start.
 	Vector3 gizmo_drag_grab_offset; // Closest point on the drag axis/plane to the grab click, minus the origin (kills first-frame jumps).
-	Vector2 gizmo_drag_mouse_start;
 	LevelEditorViewport *gizmo_drag_viewport = nullptr;
 	Vector3 gizmo_drag_plane_normal;
 	Vector3 gizmo_drag_plane_point;
@@ -741,6 +740,10 @@ private:
 	Ref<Material> gizmo_3d_center_mat;
 	void _ensure_gizmo_3d();
 	void _update_gizmo_3d();
+	// World-space size that projects to p_pixels screen pixels at p_origin's
+	// camera depth (Godot's pixels-per-world-unit measure) - the ONE helper
+	// all screen-constant gizmo sizing funnels through (GOTCHAS #25).
+	real_t _pixels_to_world_at(LevelEditorViewport *p_vp, const Vector3 &p_origin, real_t p_pixels) const;
 	real_t _gizmo_3d_world_scale(LevelEditorViewport *p_vp, const Vector3 &p_origin) const;
 	void _gizmo_begin_drag(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _gizmo_drag_to(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
@@ -755,6 +758,9 @@ private:
 	// per-axis factors against the primary brush's size). Used by the drag and
 	// by Replay Action recording.
 	Vector3 _compute_mesh_scale_factors(const Vector3 &p_world_delta) const;
+	// Unsnapped per-axis factors from a drag delta for the current drag part
+	// (shared by the element-target scale paths).
+	Vector3 _scale_factors_from_drag(const Vector3 &p_world_delta) const;
 	void _apply_mesh_scale_factors(const Vector3 &p_factors);
 
 	LevelMap *_get_or_create_map();
@@ -823,6 +829,9 @@ private:
 	static constexpr int VIEW_MENU_GRID_3D_ID = 101;
 
 	void _view_display_selected(int p_id, int p_vp);
+	// Check only the display-mode radio items of one viewport's View submenu
+	// (skips the HUD toggles past the mode range).
+	void _sync_display_submenu(int p_vp, int p_mode);
 	void _view_grid_toggled(int p_id);
 	void _action_bridge_edges();
 	// p_quick = F in Edge mode: grid-size bevel with default steps/shape,
@@ -844,6 +853,10 @@ private:
 
 	void _update_hover(LevelEditorViewport *p_vp, const Vector2 &p_mouse);
 	void _clear_selection();
+	// Drop ALL in-flight drag state WITHOUT committing undo (scene change:
+	// the referenced brushes and the scene's undo history are gone - unlike
+	// _set_tool, which ends drags cleanly because the brushes survive).
+	void _abandon_drags();
 	void _delete_selection();
 	void _action_delete_faces();
 	void _action_collapse_edges();

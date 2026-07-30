@@ -40,7 +40,19 @@ bin\godot.windows.editor.dev.x86_64.exe --test --test-case="*[LevelMap]*"
 - vertex/face accessors round-trip; `is_valid` negative (empty) and minimal
   (single quad) cases
 - `move_vertices` isolation (only the moved vertex changes; incident faces tilt);
-  stale-index rejection (one bad index fails the whole op, no partial apply)
+  stale-index rejection (one bad index fails the whole op, no partial apply) -
+  same whole-op rejection tests exist for `collapse_vertices`/`weld_vertices`
+- `subdivide_face` only re-materials its own sub-faces (faces after the
+  subdivided index keep their materials - regression)
+- `bridge_edges` assigns the given material; rejects stale (OOB) endpoints
+- `bevel_edges_profiled` rejection cases (open edge, zero/negative width)
+- `get_bake_surface_data` UV projection values (unit-box face, (x,z)*0.25)
+- `clip_split` with the brush fully on the keep side (untouched; empty shell
+  returned)
+- `rewind_edge_wall` two-phase re-wind (stub extrude + real pull along X/Y
+  re-aligns the wall to the face it continues - GOTCHAS #30 mechanism)
+- `find_vert` helper (position-based vertex lookup - compare POSITIONS, not
+  indices, across compacting ops)
 - `ray_intersect` (entry face, distance, miss)
 - `extrude_face` (cap + side walls, counts)
 - `extrude_edge` (edge dup + one wall per using face, winding verified
@@ -138,6 +150,10 @@ physics server for `StaticBody3D` construction — untagged cases crash):
 
 ## Gotchas for future test authors
 
+- Tests that intentionally pass invalid indices (rejection tests) must wrap
+  the call in `ERR_PRINT_OFF` / `ERR_PRINT_ON` - the expected ERR_FAIL spam
+  otherwise pollutes the test log.
+
 - Anything constructing physics nodes (`StaticBody3D`, `CollisionShape3D`)
   must be tagged `[SceneTree]` (or `[Editor]`) — the harness only starts a
   physics server for those tags. Otherwise you get a SIGSEGV in
@@ -149,7 +165,8 @@ physics server for `StaticBody3D` construction — untagged cases crash):
 - Geometry tolerances live in `LevelBrushConstants` (level_constants.h,
   module root): `PLANE_EPSILON` 0.0005, `WELD_DIST` = 4x that,
   `PARALLEL_DOT` 0.999, `CHAIN_MIN_DOT` 0.5, `BEVEL_DEFAULT_SHAPE` 0.5,
-  `BEVEL_MITRE_MIN_SIN` 0.05, `BAKE_UV_SCALE` 0.25.
+  `BEVEL_MITRE_MIN_SIN` 0.05, `BAKE_UV_SCALE` 0.25, `PERP_AXIS_MAX_X` 0.9,
+  `SPHERE_SIDES_MIN/MAX` 4/64, `BEVEL_WIDTH_MIN/MAX`, `BEVEL_STEPS_MAX` 16.
 - `LevelMap::bake()` falls back to local transforms when detached from the
   tree, but in `[SceneTree]` tests the map/brushes are in-tree and use
   globals — write assertions accordingly.
